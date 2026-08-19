@@ -6,15 +6,15 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/hibiken/asynq"
 	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	"github.com/maaransoft/isp-bss-oss/internal/health"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/rs/zerolog/log"
 )
 
 // sessionTaskRetention bounds how long a completed session-control task's
-// result is kept in Asynq, matching the retention the FUP scanner already uses
+// result is kept in the queue, matching the retention the FUP scanner already uses
 // for CoA tasks.
 const sessionTaskRetention = 24 * time.Hour
 
@@ -32,10 +32,10 @@ type SessionController interface {
 	SetFUPActive(ctx context.Context, subscriberID int, active bool) error
 }
 
-// TaskEnqueuer is the subset of *asynq.Client the API needs to trigger
+// TaskEnqueuer is the subset of *jobqueue.Client the API needs to trigger
 // session-control tasks that the radiusd worker pool executes.
 type TaskEnqueuer interface {
-	Enqueue(task *asynq.Task, opts ...asynq.Option) (*asynq.TaskInfo, error)
+	Enqueue(task *jobqueue.Task, opts ...jobqueue.Option) (*jobqueue.TaskInfo, error)
 }
 
 // GetActiveSession handles GET /api/v1/sessions/{subscriber_id}/active.
@@ -86,8 +86,8 @@ func (h *Handler) DisconnectSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload, _ := json.Marshal(fup.PoDPayload{SubscriberID: subscriberID}) //nolint:errcheck // static struct, cannot fail
-	task := asynq.NewTask(fup.TaskTypePoD, payload,
-		asynq.Queue(fup.QueueNetCommands), asynq.MaxRetry(5), asynq.Retention(sessionTaskRetention))
+	task := jobqueue.NewTask(fup.TaskTypePoD, payload,
+		jobqueue.Queue(fup.QueueNetCommands), jobqueue.MaxRetry(5), jobqueue.Retention(sessionTaskRetention))
 	if _, err := h.tasks.Enqueue(task); err != nil {
 		log.Error().Err(err).Str("session_id", sessionID).Msg("api: enqueue PoD task failed")
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not enqueue disconnect")
@@ -145,8 +145,8 @@ func (h *Handler) FUPOverride(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload, _ := json.Marshal(fup.CoAPayload{SubscriberID: subscriberID, NasIP: nasIP}) //nolint:errcheck
-	task := asynq.NewTask(fup.TaskTypeCoA, payload,
-		asynq.Queue(fup.QueueNetCommands), asynq.MaxRetry(5), asynq.Retention(sessionTaskRetention))
+	task := jobqueue.NewTask(fup.TaskTypeCoA, payload,
+		jobqueue.Queue(fup.QueueNetCommands), jobqueue.MaxRetry(5), jobqueue.Retention(sessionTaskRetention))
 	if _, err := h.tasks.Enqueue(task); err != nil {
 		log.Error().Err(err).Str("session_id", sessionID).Msg("api: enqueue CoA task failed")
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not enqueue CoA")

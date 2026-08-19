@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 )
 
 // DunningNotifier is the notification surface the handler depends on. It is
@@ -28,12 +28,12 @@ func NewDunningNoticeHandler(n DunningNotifier) *DunningNoticeHandler {
 	return &DunningNoticeHandler{notifier: n}
 }
 
-// ProcessTask implements asynq.Handler for TaskTypeDunningNotice.
-func (h *DunningNoticeHandler) ProcessTask(ctx context.Context, t *asynq.Task) error {
+// ProcessTask implements jobqueue.Handler for TaskTypeDunningNotice.
+func (h *DunningNoticeHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p DunningNoticePayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		// A malformed payload will never become valid on retry.
-		return fmt.Errorf("dunning notice: unmarshal payload: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("dunning notice: unmarshal payload: %w: %w", err, jobqueue.SkipRetry)
 	}
 	if h.notifier == nil {
 		return fmt.Errorf("dunning notice: notifier not configured")
@@ -63,7 +63,7 @@ func NewPaymentReceiptHandler(n DunningNotifier) *PaymentReceiptHandler {
 	return &PaymentReceiptHandler{notifier: n}
 }
 
-// PaymentReceiptPayload is the Asynq payload for a payment acknowledgement.
+// PaymentReceiptPayload is the task payload for a payment acknowledgement.
 type PaymentReceiptPayload struct {
 	SubscriberID int    `json:"subscriber_id"`
 	Username     string `json:"username"`
@@ -74,11 +74,11 @@ type PaymentReceiptPayload struct {
 	Restored bool `json:"restored"`
 }
 
-// ProcessTask implements asynq.Handler for TaskTypePaymentReceipt.
-func (h *PaymentReceiptHandler) ProcessTask(ctx context.Context, t *asynq.Task) error {
+// ProcessTask implements jobqueue.Handler for TaskTypePaymentReceipt.
+func (h *PaymentReceiptHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p PaymentReceiptPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("payment receipt: unmarshal payload: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("payment receipt: unmarshal payload: %w: %w", err, jobqueue.SkipRetry)
 	}
 	if h.notifier == nil {
 		return fmt.Errorf("payment receipt: notifier not configured")

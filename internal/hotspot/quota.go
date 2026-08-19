@@ -67,7 +67,7 @@ type QuotaStore interface {
 }
 
 // Disconnector ends a live session on the NAS. Satisfied by a small adapter
-// over the Asynq client in cmd/radiusd.
+// over the queue client in cmd/radiusd.
 //
 // An interface rather than a direct dependency on the task queue so this
 // package does not import internal/fup, and so the scanner can be tested

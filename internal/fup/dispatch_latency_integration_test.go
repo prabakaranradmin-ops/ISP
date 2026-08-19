@@ -8,9 +8,14 @@
 //
 // This is deliberately an end-to-end path rather than a unit test of the
 // handler. The budget covers queue wait plus handler execution plus the
-// provider round trip, and only a real Asynq server dequeuing from a real
-// Redis can produce the first of those three. Calling ProcessTask directly
-// would measure the one segment that was never in question.
+// provider round trip, and only a real worker pool dequeuing from the real
+// queue tables can produce the first of those three. Calling ProcessTask
+// directly would measure the one segment that was never in question.
+//
+// It is also what holds the queue's LISTEN/NOTIFY wake-up honest: the
+// server's poll fallback is two seconds, so if a notification were not
+// delivered the queue wait alone would consume most of the 5s budget and
+// this test would start failing rather than silently degrading.
 //
 // Run: go test -tags=integration -run TestFR_NOTIF_009 ./internal/fup/
 package fup
@@ -24,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/notifications"
 )
 
@@ -72,12 +77,12 @@ func (db *itLatencyNotifDB) entries() []notifications.NotificationLog {
 }
 
 // TestFR_NOTIF_009_DispatchLatencyWithinBudget enqueues a real FUP-warning
-// task, lets a real Asynq server dequeue it, and measures from enqueue to the
+// task, lets a real worker pool dequeue it, and measures from enqueue to the
 // sent_at written into notification_log by the WhatsApp client.
 //
 // L5-008 | INT-NOTIF-006 | FR-NOTIF-009 | FR-FUP-004
 func TestFR_NOTIF_009_DispatchLatencyWithinBudget(t *testing.T) {
-	opt, client, _ := itRedis(t)
+	pool, client, _ := itQueue(t)
 
 	// Stub Meta Graph API. It responds immediately: the point is to measure the
 	// pipeline's own overhead, not to simulate a slow provider (that belongs in
@@ -102,14 +107,14 @@ func TestFR_NOTIF_009_DispatchLatencyWithinBudget(t *testing.T) {
 	// the path under measurement.
 	handler := NewWarningHandler(notifications.NewDispatcher(db, wa, nil))
 
-	srv := asynq.NewServer(opt, asynq.Config{
+	srv := jobqueue.NewServer(pool, jobqueue.Config{
 		Concurrency: 1,
 		Queues:      map[string]int{QueueNotifications: 1},
 	})
-	mux := asynq.NewServeMux()
+	mux := jobqueue.NewServeMux()
 	mux.Handle(TaskTypeFUPWarning, handler)
 	if err := srv.Start(mux); err != nil {
-		t.Fatalf("start asynq server: %v", err)
+		t.Fatalf("start worker pool: %v", err)
 	}
 	defer srv.Shutdown()
 
@@ -119,7 +124,7 @@ func TestFR_NOTIF_009_DispatchLatencyWithinBudget(t *testing.T) {
 	}
 
 	enqueuedAt := time.Now()
-	if _, err := client.Enqueue(asynq.NewTask(TaskTypeFUPWarning, payload), asynq.Queue(QueueNotifications)); err != nil {
+	if _, err := client.Enqueue(jobqueue.NewTask(TaskTypeFUPWarning, payload), jobqueue.Queue(QueueNotifications)); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
 
@@ -175,7 +180,7 @@ func TestFR_NOTIF_009_DispatchLatencyWithinBudget(t *testing.T) {
 func TestFR_NOTIF_009_DispatchLatencyUnderQueueBacklog(t *testing.T) {
 	const backlog = 50
 
-	opt, client, _ := itRedis(t)
+	pool, client, _ := itQueue(t)
 
 	meta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -197,19 +202,19 @@ func TestFR_NOTIF_009_DispatchLatencyUnderQueueBacklog(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal payload %d: %v", i, err)
 		}
-		if _, err := client.Enqueue(asynq.NewTask(TaskTypeFUPWarning, payload), asynq.Queue(QueueNotifications)); err != nil {
+		if _, err := client.Enqueue(jobqueue.NewTask(TaskTypeFUPWarning, payload), jobqueue.Queue(QueueNotifications)); err != nil {
 			t.Fatalf("enqueue %d: %v", i, err)
 		}
 	}
 
-	srv := asynq.NewServer(opt, asynq.Config{
+	srv := jobqueue.NewServer(pool, jobqueue.Config{
 		Concurrency: 10,
 		Queues:      map[string]int{QueueNotifications: 1},
 	})
-	mux := asynq.NewServeMux()
+	mux := jobqueue.NewServeMux()
 	mux.Handle(TaskTypeFUPWarning, handler)
 	if err := srv.Start(mux); err != nil {
-		t.Fatalf("start asynq server: %v", err)
+		t.Fatalf("start worker pool: %v", err)
 	}
 	defer srv.Shutdown()
 

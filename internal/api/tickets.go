@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/rs/zerolog/log"
 
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
@@ -184,10 +184,10 @@ func (h *Handler) enqueueTicketUpdate(ctx context.Context, ticket TicketRecord) 
 		return
 	}
 
-	task := asynq.NewTask(tickettask.TaskTypeTicketUpdate, payload,
-		asynq.Queue("notifications"),
-		asynq.MaxRetry(3),
-		asynq.Retention(24*time.Hour))
+	task := jobqueue.NewTask(tickettask.TaskTypeTicketUpdate, payload,
+		jobqueue.Queue("notifications"),
+		jobqueue.MaxRetry(3),
+		jobqueue.Retention(24*time.Hour))
 	if _, err := h.tasks.Enqueue(task); err != nil {
 		log.Warn().Err(err).Int("ticket_id", ticket.ID).
 			Msg("api: ticket update enqueue failed")

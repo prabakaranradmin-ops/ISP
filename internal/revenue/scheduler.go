@@ -10,7 +10,7 @@ import (
 )
 
 // ReconcileJob shipped complete and tested, documented as running "nightly at
-// 02:00 IST via Asynq cron", and was never constructed anywhere in cmd/. The
+// 02:00 IST on a nightly schedule", and was never constructed anywhere in cmd/. The
 // nightly revenue reconciliation therefore never ran: no snapshot was written,
 // no ledger variance was ever compared, and no collections forecast was
 // produced. This is the scheduler that runs it.

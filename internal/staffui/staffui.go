@@ -21,7 +21,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/health"
@@ -77,13 +77,13 @@ type TicketQuerier interface {
 	UpdateTicketAdmin(ctx context.Context, ticketID int, status *string, assignedTo *int, priority *string) (*api.TicketRecord, error)
 }
 
-// TaskEnqueuer is the subset of *asynq.Client the console needs to trigger
+// TaskEnqueuer is the subset of *jobqueue.Client the console needs to trigger
 // background work — currently just the ticket status-change notification
 // (FR-NOTIF-007). Redefined per package rather than shared with internal/api,
 // matching how internal/billing and internal/fup each keep their own
 // Notifier-shaped interface.
 type TaskEnqueuer interface {
-	Enqueue(task *asynq.Task, opts ...asynq.Option) (*asynq.TaskInfo, error)
+	Enqueue(task *jobqueue.Task, opts ...jobqueue.Option) (*jobqueue.TaskInfo, error)
 }
 
 // LEAQuerier serves the law-enforcement lookup.

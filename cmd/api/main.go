@@ -1,8 +1,8 @@
 // Command api runs the BSS/OSS HTTP API and the subscriber self-service portal.
 //
-// Wires the persistence layer, the Redis session cache and the AES key store
-// into the route handlers, then serves the API on API_ADDR and Prometheus
-// metrics on METRICS_ADDR.
+// Wires the persistence layer, the live session store and the AES key store
+// into the route handlers, then serves the API over HTTPS on API_ADDR and
+// Prometheus metrics on METRICS_ADDR.
 //
 // IDD §8.1 | API §7
 package main
@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -104,11 +104,11 @@ func run() error {
 	sessions := cache.NewSessionStore(database.Pool())
 
 	// The API enqueues session-control (PoD/CoA) tasks for the radiusd worker
-	// pool to execute; it never talks RADIUS itself. Asynq is the only Redis
-	// dependency left in this process — Phase 2 of the Docker-free native
-	// port replaces it with a Postgres-backed queue.
-	asynqClient := asynq.NewClient(asynqRedisOpt(cfg))
-	defer asynqClient.Close() //nolint:errcheck
+	// pool to execute; it never talks RADIUS itself. The queue is a table in
+	// the same PostgreSQL (internal/jobqueue), so a task and the row whose
+	// change scheduled it commit against the same database.
+	taskClient := jobqueue.NewClient(database.Pool())
+	defer taskClient.Close() //nolint:errcheck
 
 	// Gotenberg is optional: GetInvoicePDF reports 503 rather than the process
 	// refusing to start when it is not configured.
@@ -148,7 +148,7 @@ func run() error {
 		Ledger:     database.Billing(),
 		Sessions:   sessions,
 		SessionCtl: database.FUP(),
-		Tasks:      asynqClient,
+		Tasks:      taskClient,
 		Invoices:   database.Billing(),
 		PDF:        pdfGen,
 		Tickets:    database.Tickets(),
@@ -192,7 +192,7 @@ func run() error {
 		// Fans lifecycle events out to subscribed partner endpoints. Emission
 		// never fails the operation that triggered it — a third party's
 		// configuration must not be able to break subscriber creation.
-		Events: partner.NewEmitter(database.Partner(), asynqClient),
+		Events: partner.NewEmitter(database.Partner(), taskClient),
 		// Hotspot voucher issuance and MAB device registration (FR-HSP-001..002).
 		// The same store backs the captive portal below; the split is in the
 		// interfaces, not the data — staff can mint what the public portal can
@@ -251,7 +251,7 @@ func run() error {
 		Tickets:     staffTicketStore{portal: database.Portal(), admin: database.Tickets()},
 		LEA:         database.FUP(),
 		Revenue:     database.Revenue(),
-		Tasks:       asynqClient,
+		Tasks:       taskClient,
 		JWTSecret:   cfg.JWTSecret,
 	})
 
@@ -493,11 +493,10 @@ func extendPlanExpiry(ctx context.Context, store portal.PlanExpiryStore, subscri
 // readinessHandler reports whether the backing store is reachable, so an
 // orchestrator can withhold traffic from an instance that cannot serve it.
 //
-// Postgres only: Redis used to be checked here too, but the caches and
-// session state that made it load-bearing for serving a request are now
-// in-process or in Postgres. Asynq still uses Redis, and deliberately is not
-// checked — a broken queue delays a CoA or a notification, it does not stop
-// this process answering the API and portal requests readiness gates.
+// Postgres only, and that is now the whole story: Redis used to be checked
+// here too, and there is no longer a Redis to check — the caches and session
+// state that made it load-bearing moved in-process or into Postgres, and the
+// task queue followed (internal/jobqueue).
 func readinessHandler(database *db.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -546,27 +545,6 @@ func dbConfig(cfg *config.Config) db.Config {
 	c.MinConns = cfg.DBMinConns
 	c.ConnectTimeout = cfg.DBConnTimeout
 	return c
-}
-
-// asynqRedisOpt mirrors the Redis configuration for Asynq, which takes its own
-// connection options rather than an existing client. Kept in step with
-// cmd/radiusd's copy: both must resolve to the same Redis so a task the API
-// enqueues is visible to the radiusd worker pool that executes it.
-//
-// Asynq is the last thing in this process that needs Redis at all — Phase 2
-// of the Docker-free native port replaces it with a Postgres-backed queue.
-func asynqRedisOpt(cfg *config.Config) asynq.RedisConnOpt {
-	if cfg.UsesSentinel() {
-		return asynq.RedisFailoverClientOpt{
-			MasterName:    cfg.RedisMasterName,
-			SentinelAddrs: cfg.RedisSentinelAddrs,
-			Password:      cfg.RedisPassword,
-		}
-	}
-	return asynq.RedisClientOpt{
-		Addr:     cfg.RedisAddr,
-		Password: cfg.RedisPassword,
-	}
 }
 
 func configureLogging(cfg *config.Config) {

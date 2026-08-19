@@ -378,7 +378,7 @@ func TestFR_SEC_001_BruteForce_ResetOnSuccessfulAuth(t *testing.T) {
 // TestFR_AAA_003_Dedup_DuplicateInterimSkipped verifies a replayed Interim-Update with the
 // same session and octet count is counted once only.
 //
-// Run with -count=3 per the tracker; each run gets a fresh miniredis and the
+// Run with -count=3 per the tracker; each run starts from a clean store and the
 // assertions are on deltas, so repeats are independent.
 //
 // INT-AAA-005 | FR-AAA-003

@@ -235,7 +235,7 @@ func (s *PartnerStore) SubscribersFor(ctx context.Context, eventType string) ([]
 // RecordDeliveryAttempt creates or updates the audit row for one delivery.
 //
 // ON CONFLICT on (endpoint_id, event_id) makes a retry update the existing row
-// rather than inserting a second one. Without it an Asynq retry after a
+// rather than inserting a second one. Without it a queue retry after a
 // mid-write crash would double-log, and the attempt count — the number used to
 // spot a flapping partner — would be meaningless.
 func (s *PartnerStore) RecordDeliveryAttempt(ctx context.Context, endpointID int, ev partner.Event,

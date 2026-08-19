@@ -1,9 +1,9 @@
 // Command radiusd runs the RADIUS AAA daemon together with the background
-// workers that react to what it observes: the FUP scanner, the Asynq task
-// workers that send CoA and notifications, and the dead-letter monitor.
+// workers that react to what it observes: the FUP scanner, the task workers
+// that send CoA and notifications, and the dead-letter monitor.
 //
 // These share a process because they all operate on live session state and
-// would otherwise need a second copy of the same database and Redis wiring.
+// would otherwise need a second copy of the same database wiring.
 //
 // IDD §8.1 | DDS §5.1, §5.3
 package main
@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -77,17 +77,13 @@ func run() error {
 	defer database.Close()
 	log.Info().Msg("radiusd: PostgreSQL connected")
 
-	// Asynq (the task queue for CoA/PoD, notifications and webhooks) still
-	// runs on Redis in this phase — see the Phase 2 plan for its
-	// Postgres-backed replacement. It is the only remaining Redis dependency
-	// in radiusd: everything else that used to be Redis-backed (the RADIUS
-	// auth cache, the verifier cache, the brute-force guard, EAP session
-	// state, accounting dedup) is now an in-process cache — see
-	// internal/localcache's package doc for why a single-machine install no
-	// longer needs those to be network-visible.
-	asynqRedis := asynqRedisOpt(cfg)
-	asynqClient := asynq.NewClient(asynqRedis)
-	defer asynqClient.Close() //nolint:errcheck
+	// The task queue (CoA/PoD, notifications, webhooks, report exports)
+	// runs on the same PostgreSQL as everything else — see
+	// internal/jobqueue. Nothing in this process talks to Redis any more:
+	// the caches that used to are in-process (internal/localcache) and live
+	// session state is a table (migration 036).
+	taskClient := jobqueue.NewClient(database.Pool())
+	defer taskClient.Close() //nolint:errcheck
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 4)
@@ -201,7 +197,7 @@ func run() error {
 
 	// ── FUP scanner ─────────────────────────────────────────────────────────
 
-	scanner := fup.NewScanner(database.FUP(), asynqClient)
+	scanner := fup.NewScanner(database.FUP(), taskClient)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -216,7 +212,7 @@ func run() error {
 	// notice for each stage. The state machine it drives shipped complete and
 	// tested but with no caller, so until this was wired nobody was reminded to
 	// pay and nobody was suspended for not paying.
-	dunningScanner := billing.NewDunningScanner(database.Billing(), asynqClient)
+	dunningScanner := billing.NewDunningScanner(database.Billing(), taskClient)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -237,7 +233,7 @@ func run() error {
 		database.Billing(), billing.NewWalletService(database.Billing()))
 	// Publishes invoice.generated to subscribed partners (FR-API-002). Renewal
 	// itself never depends on this succeeding.
-	autoRenewalScanner.SetEventEmitter(partner.NewEmitter(database.Partner(), asynqClient))
+	autoRenewalScanner.SetEventEmitter(partner.NewEmitter(database.Partner(), taskClient))
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -318,7 +314,7 @@ func run() error {
 	// have no subscriber row, so the FUP scanner cannot see them; they are
 	// metered on the grant by RADIUS accounting and enforced here.
 	quotaScanner := hotspot.NewQuotaScanner(database.Hotspot(),
-		&voucherDisconnector{client: asynqClient}, 0)
+		&voucherDisconnector{client: taskClient}, 0)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -356,7 +352,7 @@ func run() error {
 		log.Warn().Msg("radiusd: ARCHIVE_DIR unset — document archival and retention purge are disabled")
 	}
 
-	// ── Asynq workers ───────────────────────────────────────────────────────
+	// ── Task workers ────────────────────────────────────────────────────────
 
 	dispatcher := newDispatcher(cfg, database)
 	coaHandler := fup.NewCoAHandler(database.FUP(), []byte(cfg.RadiusSecret))
@@ -371,7 +367,7 @@ func run() error {
 	ticketUpdateHandler := tickets.NewUpdateHandler(dispatcher)
 	announcementHandler := notifications.NewAnnouncementHandler(dispatcher)
 
-	workerServer := asynq.NewServer(asynqRedis, asynq.Config{
+	workerServer := jobqueue.NewServer(database.Pool(), jobqueue.Config{
 		Concurrency: workerConcurrency,
 		// network_commands outranks notifications: a CoA that restores a
 		// subscriber's speed matters more than the message telling them about it.
@@ -394,12 +390,16 @@ func run() error {
 			"reports": 1,
 			"default": 1,
 		},
-		ErrorHandler: asynq.ErrorHandlerFunc(func(_ context.Context, task *asynq.Task, err error) {
+		// Long enough to outlast the slowest handler this pool runs (a
+		// ten-year report aggregate), so a task still executing is never
+		// reclaimed and run a second time in parallel.
+		LeaseDuration: 10 * time.Minute,
+		ErrorHandler: func(_ context.Context, task *jobqueue.Task, err error) {
 			log.Error().Err(err).Str("task_type", task.Type()).Msg("radiusd: task failed")
-		}),
+		},
 	})
 
-	workerMux := asynq.NewServeMux()
+	workerMux := jobqueue.NewServeMux()
 	workerMux.Handle(fup.TaskTypeCoA, coaHandler)
 	workerMux.Handle(fup.TaskTypePoD, podHandler)
 	workerMux.Handle(fup.TaskTypeFUPWarning, warningHandler)
@@ -433,9 +433,9 @@ func run() error {
 	}
 
 	if err := workerServer.Start(workerMux); err != nil {
-		return fmt.Errorf("start Asynq workers: %w", err)
+		return fmt.Errorf("start task workers: %w", err)
 	}
-	log.Info().Int("concurrency", workerConcurrency).Msg("radiusd: Asynq workers started")
+	log.Info().Int("concurrency", workerConcurrency).Msg("radiusd: task workers started")
 
 	// ── Dead-letter monitor ─────────────────────────────────────────────────
 
@@ -446,7 +446,7 @@ func run() error {
 		Bool("pagerduty_key_set", cfg.PagerDutyRoutingKey != "").
 		Msg("radiusd: PagerDuty delivery is not implemented — alerts go to logs only")
 
-	monitor := fup.NewDeadLetterMonitor(asynqRedis, logAlerter{})
+	monitor := fup.NewDeadLetterMonitor(jobqueue.NewInspector(database.Pool()), logAlerter{})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -482,7 +482,7 @@ func run() error {
 		log.Info().Msg("radiusd: shutdown signal received")
 	}
 
-	// Asynq drains in-flight tasks first: a CoA abandoned mid-flight would leave
+	// The queue drains in-flight tasks first: a CoA abandoned mid-flight would leave
 	// a subscriber throttled in the database but not on the NAS.
 	workerServer.Shutdown()
 
@@ -565,10 +565,10 @@ type logAlerter struct{}
 // Disconnect-Request.
 //
 // An adapter rather than internal/hotspot depending on the task queue
-// directly: the captive-portal package has no other reason to know Asynq
-// exists, and keeping it that way is what lets its quota scanner be tested
-// without Redis.
-type voucherDisconnector struct{ client *asynq.Client }
+// directly: the captive-portal package has no other reason to know how
+// background work is queued, and keeping it that way is what lets its
+// quota scanner be tested without one.
+type voucherDisconnector struct{ client *jobqueue.Client }
 
 func (d *voucherDisconnector) Disconnect(ctx context.Context, nasIP, sessionID string) error {
 	task, err := fup.NewDirectPoDTask(nasIP, sessionID)
@@ -606,27 +606,6 @@ func dbConfig(cfg *config.Config) db.Config {
 	c.MinConns = cfg.DBMinConns
 	c.ConnectTimeout = cfg.DBConnTimeout
 	return c
-}
-
-// asynqRedisOpt mirrors the Redis configuration for Asynq, which takes its own
-// connection options rather than an existing client.
-//
-// Asynq is the only thing left in radiusd that talks to Redis — every cache
-// and session store that used to is now in-process (internal/localcache) or
-// in Postgres. Its own Postgres-backed replacement is Phase 2 of the
-// Docker-free native port; until that lands, a Redis is still required.
-func asynqRedisOpt(cfg *config.Config) asynq.RedisConnOpt {
-	if cfg.UsesSentinel() {
-		return asynq.RedisFailoverClientOpt{
-			MasterName:    cfg.RedisMasterName,
-			SentinelAddrs: cfg.RedisSentinelAddrs,
-			Password:      cfg.RedisPassword,
-		}
-	}
-	return asynq.RedisClientOpt{
-		Addr:     cfg.RedisAddr,
-		Password: cfg.RedisPassword,
-	}
 }
 
 func configureLogging(cfg *config.Config) {

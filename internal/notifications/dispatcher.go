@@ -134,7 +134,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, task NotificationTask) error 
 //
 // Deliberately not an error: most subscribers will never install the app or
 // supply an address, so returning one would push an ordinary state into
-// Asynq's retry-and-dead-letter path for a condition no retry can fix. This
+// the queue's retry-and-dead-letter path for a condition no retry can fix. This
 // is the same judgment PoDHandler makes with SkipRetry when a subscriber has
 // no live session.
 func (d *Dispatcher) recordUnreachable(ctx context.Context, task NotificationTask, reason string) error {
@@ -187,7 +187,7 @@ func firstVariable(task NotificationTask) string {
 // Notify sends a transactional WhatsApp template to a subscriber, resolving the
 // destination number from the subscriber record.
 //
-// It is the entry point used by Asynq task handlers, which know a subscriber ID
+// It is the entry point used by task handlers, which know a subscriber ID
 // and a template but not a phone number.
 func (d *Dispatcher) Notify(ctx context.Context, subscriberID int, templateID, triggerEvent string, vars []string) error {
 	return d.Dispatch(ctx, NotificationTask{

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/partner"
 )
 
@@ -71,7 +71,7 @@ type plainDecryptor struct{ secret string }
 
 func (d plainDecryptor) Decrypt(string) (string, error) { return d.secret, nil }
 
-func newTask(t *testing.T, endpointID int, url string) *asynq.Task {
+func newTask(t *testing.T, endpointID int, url string) *jobqueue.Task {
 	t.Helper()
 	ev, err := partner.NewEvent(partner.EventTicketCreated, 42, time.Now())
 	if err != nil {
@@ -86,7 +86,7 @@ func newTask(t *testing.T, endpointID int, url string) *asynq.Task {
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	return asynq.NewTask(partner.TaskTypeWebhook, payload)
+	return jobqueue.NewTask(partner.TaskTypeWebhook, payload)
 }
 
 func TestFR_API_002_DeliverySignsWhatThePartnerVerifies(t *testing.T) {

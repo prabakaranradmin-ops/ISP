@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 
@@ -366,8 +366,8 @@ func enqueueCoAIfSessionActive(ctx context.Context, h *Handler, subscriberID int
 		return
 	}
 	payload, _ := json.Marshal(fup.CoAPayload{SubscriberID: subscriberID, NasIP: sess.NasIP}) //nolint:errcheck
-	task := asynq.NewTask(fup.TaskTypeCoA, payload,
-		asynq.Queue(fup.QueueNetCommands), asynq.MaxRetry(5), asynq.Retention(lifecycleTaskRetention))
+	task := jobqueue.NewTask(fup.TaskTypeCoA, payload,
+		jobqueue.Queue(fup.QueueNetCommands), jobqueue.MaxRetry(5), jobqueue.Retention(lifecycleTaskRetention))
 	if _, err := h.tasks.Enqueue(task); err != nil {
 		log.Error().Err(err).Int("subscriber_id", subscriberID).Msg("api: enqueue CoA task failed")
 	}
@@ -385,8 +385,8 @@ func enqueuePoDIfSessionActive(ctx context.Context, h *Handler, subscriberID int
 		return
 	}
 	payload, _ := json.Marshal(fup.PoDPayload{SubscriberID: subscriberID}) //nolint:errcheck
-	task := asynq.NewTask(fup.TaskTypePoD, payload,
-		asynq.Queue(fup.QueueNetCommands), asynq.MaxRetry(5), asynq.Retention(lifecycleTaskRetention))
+	task := jobqueue.NewTask(fup.TaskTypePoD, payload,
+		jobqueue.Queue(fup.QueueNetCommands), jobqueue.MaxRetry(5), jobqueue.Retention(lifecycleTaskRetention))
 	if _, err := h.tasks.Enqueue(task); err != nil {
 		log.Error().Err(err).Int("subscriber_id", subscriberID).Msg("api: enqueue PoD task failed")
 	}

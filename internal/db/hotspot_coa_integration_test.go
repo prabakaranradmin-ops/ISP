@@ -15,7 +15,7 @@
 //
 //	hotspot device authorised by MAB
 //	  → live session over the plan's FUP threshold in PostgreSQL
-//	    → FUP scanner enqueues a CoA task through a real Asynq client
+//	    → FUP scanner enqueues a CoA task through a real queue client
 //	      → CoA handler resolves the session and sends a CoA-Request over UDP
 //	        → the NAS receives a packet carrying the *throttled* rate limit
 //
@@ -28,16 +28,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/maaransoft/isp-bss-oss/internal/db"
 	"github.com/maaransoft/isp-bss-oss/internal/fup"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"layeh.com/radius"
 )
 
@@ -95,18 +93,15 @@ func startCoAStubNAS(t *testing.T, secret []byte, ackCode radius.Code) *coaCaptu
 	return stub
 }
 
-// pendingCoATasks lists the queued CoA tasks, treating a queue that has never
-// received one as empty.
+// pendingCoATasks lists the queued CoA tasks.
 //
-// asynq reports ErrQueueNotFound rather than an empty list in that case, and
-// "no queue at all" is precisely the state the under-quota test wants to
-// assert — so it has to be a pass, not a failure.
-func pendingCoATasks(t *testing.T, inspector *asynq.Inspector) []*asynq.TaskInfo {
+// A queue nothing has been enqueued on reads back as an empty list, which is
+// precisely the state the under-quota test asserts. (The Asynq version of
+// this helper had to special-case that: it reported ErrQueueNotFound rather
+// than an empty list when a queue had never received a task.)
+func pendingCoATasks(t *testing.T, inspector *jobqueue.Inspector) []jobqueue.PendingTask {
 	t.Helper()
-	tasks, err := inspector.ListPendingTasks(fup.QueueNetCommands)
-	if errors.Is(err, asynq.ErrQueueNotFound) {
-		return nil
-	}
+	tasks, err := inspector.ListPending(context.Background(), fup.QueueNetCommands)
 	if err != nil {
 		t.Fatalf("list pending CoA tasks: %v", err)
 	}
@@ -179,15 +174,15 @@ func TestFR_HSP_003_OverQuotaHotspotSessionIsThrottledByCoA(t *testing.T) {
 	seedSession(ctx, t, pool, 1, "hotspot-sess-001", "127.0.0.1", 1_100_000_000, 500_000_000)
 
 	// ── The scanner notices ─────────────────────────────────────────────────
-	mr := miniredis.RunT(t)
-	redisOpt := asynq.RedisClientOpt{Addr: mr.Addr()}
-	asynqClient := asynq.NewClient(redisOpt)
-	defer asynqClient.Close() //nolint:errcheck
-	inspector := asynq.NewInspector(redisOpt)
-	defer inspector.Close() //nolint:errcheck
+	if _, err := pool.Exec(ctx, `TRUNCATE TABLE jobqueue_tasks RESTART IDENTITY`); err != nil {
+		t.Fatalf("truncate jobqueue_tasks: %v", err)
+	}
+	taskClient := jobqueue.NewClient(pool)
+	defer taskClient.Close() //nolint:errcheck
+	inspector := jobqueue.NewInspector(pool)
 
 	fupStore := database.FUP()
-	if err := fup.NewScanner(fupStore, asynqClient).ScanOnce(ctx); err != nil {
+	if err := fup.NewScanner(fupStore, taskClient).ScanOnce(ctx); err != nil {
 		t.Fatalf("FUP scan: %v", err)
 	}
 
@@ -215,7 +210,7 @@ func TestFR_HSP_003_OverQuotaHotspotSessionIsThrottledByCoA(t *testing.T) {
 
 	coaHandler := fup.NewCoAHandler(fupStore, hotspotCoASecret)
 	coaHandler.SetPort(stub.port)
-	if err := coaHandler.ProcessTask(ctx, asynq.NewTask(fup.TaskTypeCoA, pending[0].Payload)); err != nil {
+	if err := coaHandler.ProcessTask(ctx, jobqueue.NewTask(fup.TaskTypeCoA, pending[0].Payload)); err != nil {
 		t.Fatalf("CoA dispatch for an over-quota hotspot session failed: %v", err)
 	}
 
@@ -256,14 +251,14 @@ func TestFR_HSP_003_HotspotSessionUnderQuotaIsLeftAlone(t *testing.T) {
 	// Half the quota: past nothing.
 	seedSession(ctx, t, pool, 1, "hotspot-sess-002", "127.0.0.1", 300_000_000, 200_000_000)
 
-	mr := miniredis.RunT(t)
-	redisOpt := asynq.RedisClientOpt{Addr: mr.Addr()}
-	asynqClient := asynq.NewClient(redisOpt)
-	defer asynqClient.Close() //nolint:errcheck
-	inspector := asynq.NewInspector(redisOpt)
-	defer inspector.Close() //nolint:errcheck
+	if _, err := pool.Exec(ctx, `TRUNCATE TABLE jobqueue_tasks RESTART IDENTITY`); err != nil {
+		t.Fatalf("truncate jobqueue_tasks: %v", err)
+	}
+	taskClient := jobqueue.NewClient(pool)
+	defer taskClient.Close() //nolint:errcheck
+	inspector := jobqueue.NewInspector(pool)
 
-	if err := fup.NewScanner(database.FUP(), asynqClient).ScanOnce(ctx); err != nil {
+	if err := fup.NewScanner(database.FUP(), taskClient).ScanOnce(ctx); err != nil {
 		t.Fatalf("FUP scan: %v", err)
 	}
 
@@ -291,14 +286,14 @@ func TestFR_HSP_003_ThrottledHotspotSessionIsNotReThrottled(t *testing.T) {
 	}
 	seedSession(ctx, t, pool, 1, "hotspot-sess-003", "127.0.0.1", 1_100_000_000, 500_000_000)
 
-	mr := miniredis.RunT(t)
-	redisOpt := asynq.RedisClientOpt{Addr: mr.Addr()}
-	asynqClient := asynq.NewClient(redisOpt)
-	defer asynqClient.Close() //nolint:errcheck
-	inspector := asynq.NewInspector(redisOpt)
-	defer inspector.Close() //nolint:errcheck
+	if _, err := pool.Exec(ctx, `TRUNCATE TABLE jobqueue_tasks RESTART IDENTITY`); err != nil {
+		t.Fatalf("truncate jobqueue_tasks: %v", err)
+	}
+	taskClient := jobqueue.NewClient(pool)
+	defer taskClient.Close() //nolint:errcheck
+	inspector := jobqueue.NewInspector(pool)
 
-	scanner := fup.NewScanner(database.FUP(), asynqClient)
+	scanner := fup.NewScanner(database.FUP(), taskClient)
 	for pass := 1; pass <= 3; pass++ {
 		if err := scanner.ScanOnce(ctx); err != nil {
 			t.Fatalf("FUP scan pass %d: %v", pass, err)

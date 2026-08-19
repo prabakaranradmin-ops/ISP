@@ -26,10 +26,10 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/hibiken/asynq"
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/health"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	tickettask "github.com/maaransoft/isp-bss-oss/internal/tickets"
 )
@@ -98,24 +98,24 @@ func (s *stubSessionCtl) snapshot() []bool {
 
 type stubTaskEnqueuer struct {
 	mu    sync.Mutex
-	tasks []*asynq.Task
+	tasks []*jobqueue.Task
 	err   error
 }
 
-func (s *stubTaskEnqueuer) Enqueue(task *asynq.Task, _ ...asynq.Option) (*asynq.TaskInfo, error) {
+func (s *stubTaskEnqueuer) Enqueue(task *jobqueue.Task, _ ...jobqueue.Option) (*jobqueue.TaskInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.err != nil {
 		return nil, s.err
 	}
 	s.tasks = append(s.tasks, task)
-	return &asynq.TaskInfo{ID: "stub"}, nil
+	return &jobqueue.TaskInfo{ID: 1}, nil
 }
 
-func (s *stubTaskEnqueuer) snapshot() []*asynq.Task {
+func (s *stubTaskEnqueuer) snapshot() []*jobqueue.Task {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]*asynq.Task(nil), s.tasks...)
+	return append([]*jobqueue.Task(nil), s.tasks...)
 }
 
 type stubInvoices struct {

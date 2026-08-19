@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
@@ -67,11 +67,11 @@ type FUPQuerier interface {
 // FR: FR-FUP-001 | DDS §5.3
 type Scanner struct {
 	db     FUPQuerier
-	client *asynq.Client
+	client *jobqueue.Client
 }
 
 // NewScanner constructs a FUP Scanner.
-func NewScanner(db FUPQuerier, client *asynq.Client) *Scanner {
+func NewScanner(db FUPQuerier, client *jobqueue.Client) *Scanner {
 	return &Scanner{db: db, client: client}
 }
 
@@ -120,15 +120,15 @@ func (s *Scanner) scanWarnings(ctx context.Context) error {
 		}
 		payload := []byte(fmt.Sprintf(`{"subscriber_id":%d,"username":%q,"pct_used":%d}`,
 			sess.SubscriberID, sess.Username, UsagePct(sess.BytesUsed, sess.FUPThreshold)))
-		task := asynq.NewTask(TaskTypeFUPWarning, payload,
-			asynq.Queue(QueueNotifications),
-			asynq.TaskID(WarningTaskID(sess.SubscriberID, sess.FUPThreshold)),
-			asynq.MaxRetry(3),
-			asynq.Retention(24*time.Hour))
+		task := jobqueue.NewTask(TaskTypeFUPWarning, payload,
+			jobqueue.Queue(QueueNotifications),
+			jobqueue.TaskID(WarningTaskID(sess.SubscriberID, sess.FUPThreshold)),
+			jobqueue.MaxRetry(3),
+			jobqueue.Retention(24*time.Hour))
 		if _, err := s.client.EnqueueContext(ctx, task); err != nil {
 			// A conflict means this subscriber was already warned for this quota
 			// cycle — that is the idempotency guarantee working, not a failure.
-			if errors.Is(err, asynq.ErrTaskIDConflict) {
+			if errors.Is(err, jobqueue.ErrTaskIDConflict) {
 				continue
 			}
 			return fmt.Errorf("fup: enqueue warning for sub %d: %w", sess.SubscriberID, err)
@@ -138,7 +138,7 @@ func (s *Scanner) scanWarnings(ctx context.Context) error {
 	return nil
 }
 
-// WarningTaskID returns the Asynq task ID that makes an 80% warning idempotent
+// WarningTaskID returns the task ID that makes an 80% warning idempotent
 // for a given subscriber and quota cycle.
 func WarningTaskID(subscriberID int, threshold int64) string {
 	return fmt.Sprintf("fupwarn-%d-%d", subscriberID, threshold)
@@ -161,10 +161,10 @@ func (s *Scanner) scanBreaches(ctx context.Context) error {
 			}
 			coaPayload := []byte(fmt.Sprintf(`{"subscriber_id":%d,"nas_ip":"%s"}`,
 				sess.SubscriberID, sess.NasIP))
-			task := asynq.NewTask(TaskTypeCoA, coaPayload,
-				asynq.Queue(QueueNetCommands),
-				asynq.MaxRetry(5),
-				asynq.Retention(24*time.Hour))
+			task := jobqueue.NewTask(TaskTypeCoA, coaPayload,
+				jobqueue.Queue(QueueNetCommands),
+				jobqueue.MaxRetry(5),
+				jobqueue.Retention(24*time.Hour))
 			if _, err := s.client.EnqueueContext(ctx, task); err != nil {
 				return fmt.Errorf("fup: enqueue CoA for sub %d: %w", sess.SubscriberID, err)
 			}

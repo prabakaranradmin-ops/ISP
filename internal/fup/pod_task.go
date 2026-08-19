@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"layeh.com/radius"
@@ -18,7 +18,7 @@ var podAckTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help: "PoD (Disconnect-Request) response counts by result",
 }, []string{"result"})
 
-// PoDPayload is the Asynq task payload for a forced disconnect.
+// PoDPayload is the task payload for a forced disconnect.
 //
 // Either the session is named directly, or it is resolved from a subscriber.
 // The direct form exists for voucher-backed hotspot sessions (FR-HSP-001),
@@ -36,7 +36,7 @@ type PoDPayload struct {
 func (p PoDPayload) direct() bool { return p.NasIP != "" && p.SessionID != "" }
 
 // PoDHandler processes forced-disconnect tasks with exponential backoff via
-// Asynq retry, sharing CoAQuerier since both need the same NAS session lookup.
+// queue retry, sharing CoAQuerier since both need the same NAS session lookup.
 //
 // FR: FR-NET-002, FR-NAS-002 | DDS §5.3 | MDS §4.11
 type PoDHandler struct {
@@ -64,8 +64,8 @@ func (h *PoDHandler) SetNASResolver(r *nas.Resolver) {
 	h.nasResolver = r
 }
 
-// ProcessTask implements asynq.Handler.
-func (h *PoDHandler) ProcessTask(ctx context.Context, t *asynq.Task) error {
+// ProcessTask implements jobqueue.Handler.
+func (h *PoDHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p PoDPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		return fmt.Errorf("pod: unmarshal payload: %w", err)
@@ -78,7 +78,7 @@ func (h *PoDHandler) ProcessTask(ctx context.Context, t *asynq.Task) error {
 		if err != nil {
 			// No live session means there is nothing left to disconnect.
 			// Retrying cannot change that, so the task should not be retried.
-			return fmt.Errorf("pod: get NAS session for sub %d: %w: %w", p.SubscriberID, err, asynq.SkipRetry)
+			return fmt.Errorf("pod: get NAS session for sub %d: %w: %w", p.SubscriberID, err, jobqueue.SkipRetry)
 		}
 	}
 
@@ -95,18 +95,18 @@ func (h *PoDHandler) ProcessTask(ctx context.Context, t *asynq.Task) error {
 
 // NewDirectPoDTask builds a disconnect task for a session named outright,
 // used where there is no subscriber to resolve it from.
-func NewDirectPoDTask(nasIP, sessionID string) (*asynq.Task, error) {
+func NewDirectPoDTask(nasIP, sessionID string) (*jobqueue.Task, error) {
 	payload, err := json.Marshal(PoDPayload{NasIP: nasIP, SessionID: sessionID})
 	if err != nil {
 		return nil, fmt.Errorf("pod: marshal payload: %w", err)
 	}
-	return asynq.NewTask(TaskTypePoD, payload,
-		asynq.Queue(QueueNetCommands),
-		asynq.MaxRetry(3)), nil
+	return jobqueue.NewTask(TaskTypePoD, payload,
+		jobqueue.Queue(QueueNetCommands),
+		jobqueue.MaxRetry(3)), nil
 }
 
 // SendReliablePoD sends a Disconnect-Request to the NAS and waits for
-// Disconnect-ACK. Returns an error on NAK or timeout — Asynq will retry with
+// Disconnect-ACK. Returns an error on NAK or timeout — the queue will retry with
 // exponential backoff.
 //
 // DDS §5.3

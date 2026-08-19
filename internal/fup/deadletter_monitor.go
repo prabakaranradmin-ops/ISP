@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/hibiken/asynq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
@@ -23,22 +22,37 @@ type Alerter interface {
 	Trigger(event string, detail any)
 }
 
-// DeadLetterMonitor polls the Asynq dead-letter queue every 30s
-// and fires an alert if dead tasks are present.
+// DeadCounter reports how many tasks on a queue have exhausted their
+// retries. Satisfied by *jobqueue.Inspector.
+//
+// An interface rather than the concrete inspector so this package does not
+// depend on the queue implementation — it did depend on Asynq's directly before the move,
+// which is what made swapping the queue reach into a monitor that has
+// nothing to do with how tasks are stored.
+type DeadCounter interface {
+	DeadCount(ctx context.Context, queue string) (int, error)
+}
+
+// DeadLetterMonitor polls the dead-letter count every 30s and fires an
+// alert if any task has been abandoned.
+//
+// A rising count means work is being dropped: CoA commands that never
+// reached a NAS, notifications never delivered. That is why it alerts
+// rather than only exporting a metric.
 //
 // FR: FR-FUP-003 | DDS §5.3
 type DeadLetterMonitor struct {
-	redisOpt asynq.RedisConnOpt
+	counter  DeadCounter
 	alerter  Alerter
 	interval time.Duration
 }
 
-// DefaultDeadLetterInterval is how often the archived queue is polled.
+// DefaultDeadLetterInterval is how often the dead-letter count is polled.
 const DefaultDeadLetterInterval = 30 * time.Second
 
 // NewDeadLetterMonitor constructs a DeadLetterMonitor.
-func NewDeadLetterMonitor(redisOpt asynq.RedisConnOpt, alerter Alerter) *DeadLetterMonitor {
-	return &DeadLetterMonitor{redisOpt: redisOpt, alerter: alerter, interval: DefaultDeadLetterInterval}
+func NewDeadLetterMonitor(counter DeadCounter, alerter Alerter) *DeadLetterMonitor {
+	return &DeadLetterMonitor{counter: counter, alerter: alerter, interval: DefaultDeadLetterInterval}
 }
 
 // SetInterval overrides the poll interval.
@@ -54,31 +68,33 @@ func (m *DeadLetterMonitor) Run(ctx context.Context) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	inspector := asynq.NewInspector(m.redisOpt)
-	defer inspector.Close() //nolint:errcheck
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := m.checkOnce(inspector); err != nil {
+			if err := m.checkOnce(ctx); err != nil {
 				log.Error().Err(err).Msg("dead_letter_monitor: queue info error")
 			}
 		}
 	}
 }
 
-// checkOnce samples the archived depth and alerts if any task has dead-lettered.
-func (m *DeadLetterMonitor) checkOnce(inspector *asynq.Inspector) error {
-	info, err := inspector.GetQueueInfo(QueueNetCommands)
-	if err != nil {
-		return fmt.Errorf("dead_letter_monitor: get queue info: %w", err)
+// checkOnce samples the dead-letter depth and alerts if any task has been
+// abandoned.
+func (m *DeadLetterMonitor) checkOnce(ctx context.Context) error {
+	if m.counter == nil {
+		return nil
 	}
-	deadLetterQueueDepth.Set(float64(info.Archived))
-	if info.Archived > 0 {
-		log.Warn().Int("archived_count", info.Archived).Msg("dead_letter_monitor: archived tasks detected")
-		m.alerter.Trigger("dead_letter_queue_non_empty", info.Archived)
+	dead, err := m.counter.DeadCount(ctx, QueueNetCommands)
+	if err != nil {
+		return fmt.Errorf("dead_letter_monitor: count dead tasks: %w", err)
+	}
+	deadLetterQueueDepth.Set(float64(dead))
+	if dead > 0 {
+		log.Warn().Int("archived_count", dead).Msg("dead_letter_monitor: archived tasks detected")
+		m.alerter.Trigger("dead_letter_queue_non_empty", dead)
 	}
 	return nil
 }

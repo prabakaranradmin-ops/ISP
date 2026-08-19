@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 )
 
 type stubNotifier struct {
@@ -41,7 +41,7 @@ func TestUpdateHandler_ProcessTask_DispatchesWithTemplateAndVars(t *testing.T) {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	if err := h.ProcessTask(context.Background(), asynq.NewTask(TaskTypeTicketUpdate, payload)); err != nil {
+	if err := h.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypeTicketUpdate, payload)); err != nil {
 		t.Fatalf("ProcessTask: %v", err)
 	}
 
@@ -66,17 +66,17 @@ func TestUpdateHandler_ProcessTask_DispatchesWithTemplateAndVars(t *testing.T) {
 }
 
 // A malformed payload must not retry: it will never become valid, and Asynq
-// only skips retry when the handler wraps asynq.SkipRetry into the error it
+// only skips retry when the handler wraps jobqueue.SkipRetry into the error it
 // returns.
 func TestUpdateHandler_ProcessTask_MalformedPayloadSkipsRetry(t *testing.T) {
 	h := NewUpdateHandler(&stubNotifier{})
 
-	err := h.ProcessTask(context.Background(), asynq.NewTask(TaskTypeTicketUpdate, []byte("{not json")))
+	err := h.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypeTicketUpdate, []byte("{not json")))
 	if err == nil {
 		t.Fatal("expected an error for malformed payload")
 	}
-	if !errors.Is(err, asynq.SkipRetry) {
-		t.Errorf("expected error to wrap asynq.SkipRetry, got: %v", err)
+	if !errors.Is(err, jobqueue.SkipRetry) {
+		t.Errorf("expected error to wrap jobqueue.SkipRetry, got: %v", err)
 	}
 }
 
@@ -84,7 +84,7 @@ func TestUpdateHandler_ProcessTask_NilNotifierErrors(t *testing.T) {
 	h := NewUpdateHandler(nil)
 
 	payload, _ := json.Marshal(UpdatePayload{SubscriberID: 1, TicketID: 1, Status: "open"})
-	err := h.ProcessTask(context.Background(), asynq.NewTask(TaskTypeTicketUpdate, payload))
+	err := h.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypeTicketUpdate, payload))
 	if err == nil {
 		t.Fatal("expected an error when notifier is not configured")
 	}
@@ -95,7 +95,7 @@ func TestUpdateHandler_ProcessTask_NotifierErrorPropagates(t *testing.T) {
 	h := NewUpdateHandler(&stubNotifier{err: wantErr})
 
 	payload, _ := json.Marshal(UpdatePayload{SubscriberID: 1, TicketID: 1, Status: "open"})
-	err := h.ProcessTask(context.Background(), asynq.NewTask(TaskTypeTicketUpdate, payload))
+	err := h.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypeTicketUpdate, payload))
 	if err == nil || !errors.Is(err, wantErr) {
 		t.Fatalf("expected error wrapping %v, got %v", wantErr, err)
 	}

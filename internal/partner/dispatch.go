@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
@@ -30,7 +30,7 @@ const (
 	// front of a payment receipt or a suspension notice.
 	QueueWebhooks = "webhooks"
 
-	// MaxAttempts before a delivery is abandoned. Asynq's exponential backoff
+	// MaxAttempts before a delivery is abandoned. the queue's exponential backoff
 	// spreads these across roughly a day, which is long enough to ride out a
 	// partner's deploy or short outage and short enough that a permanently
 	// dead endpoint stops consuming the queue.
@@ -75,12 +75,12 @@ type Decryptor interface {
 	Decrypt(versionedCiphertext string) (string, error)
 }
 
-// TaskPayload is the Asynq payload for one endpoint's copy of one event.
+// TaskPayload is the task payload for one endpoint's copy of one event.
 type TaskPayload struct {
 	EndpointID int    `json:"endpoint_id"`
 	URL        string `json:"url"`
 	// SecretEncrypted, not Secret: this is ciphertext sitting in Redis (the
-	// Asynq queue backend) until ProcessTask decrypts it, and the field name
+	// queue backend) until ProcessTask decrypts it, and the field name
 	// said otherwise — gosec's G117 flags struct fields named like a secret
 	// that get marshaled, and here it was also just an inaccurate name, not
 	// only a lint finding. The JSON tag is unchanged; only the Go-side name
@@ -92,12 +92,12 @@ type TaskPayload struct {
 // Emitter fans an event out to every subscribed endpoint.
 type Emitter struct {
 	store  DeliveryStore
-	client *asynq.Client
+	client *jobqueue.Client
 }
 
 // NewEmitter constructs an Emitter. A nil client disables emission, which is
 // how a deployment with no partner integrations runs unchanged.
-func NewEmitter(store DeliveryStore, client *asynq.Client) *Emitter {
+func NewEmitter(store DeliveryStore, client *jobqueue.Client) *Emitter {
 	return &Emitter{store: store, client: client}
 }
 
@@ -135,17 +135,17 @@ func (e *Emitter) Emit(ctx context.Context, eventType string, entityID int) {
 			log.Error().Err(err).Int("endpoint_id", ep.EndpointID).Msg("partner: marshal webhook task")
 			continue
 		}
-		task := asynq.NewTask(TaskTypeWebhook, payload,
-			asynq.Queue(QueueWebhooks),
-			asynq.MaxRetry(MaxAttempts),
-			asynq.Timeout(deliveryTimeout+10*time.Second))
+		task := jobqueue.NewTask(TaskTypeWebhook, payload,
+			jobqueue.Queue(QueueWebhooks),
+			jobqueue.MaxRetry(MaxAttempts),
+			jobqueue.Timeout(deliveryTimeout+10*time.Second))
 		if _, err := e.client.EnqueueContext(ctx, task); err != nil {
 			log.Error().Err(err).Int("endpoint_id", ep.EndpointID).Msg("partner: enqueue webhook")
 		}
 	}
 }
 
-// Sender delivers one webhook. It is the Asynq handler.
+// Sender delivers one webhook. It is the queue handler.
 type Sender struct {
 	store     DeliveryStore
 	decryptor Decryptor
@@ -163,30 +163,30 @@ func NewSender(store DeliveryStore, decryptor Decryptor) *Sender {
 	}
 }
 
-// ProcessTask implements asynq.Handler for TaskTypeWebhook.
+// ProcessTask implements jobqueue.Handler for TaskTypeWebhook.
 //
-// Returning an error hands the task back to Asynq for exponential backoff;
-// returning nil retires it. asynq.SkipRetry is used for anything no retry can
+// Returning an error hands the task back to the queue for exponential backoff;
+// returning nil retires it. jobqueue.SkipRetry is used for anything no retry can
 // fix — a malformed payload, an undecryptable secret, a blocked address — so a
 // permanent misconfiguration does not occupy the queue for a day.
-func (s *Sender) ProcessTask(ctx context.Context, t *asynq.Task) error {
+func (s *Sender) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p TaskPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("partner: unmarshal webhook task: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("partner: unmarshal webhook task: %w: %w", err, jobqueue.SkipRetry)
 	}
 
 	secret, err := s.decryptor.Decrypt(p.SecretEncrypted)
 	if err != nil {
 		s.record(ctx, p, StatusAbandoned, nil, "", "signing secret could not be decrypted")
-		return fmt.Errorf("partner: decrypt webhook secret: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("partner: decrypt webhook secret: %w: %w", err, jobqueue.SkipRetry)
 	}
 
 	body, err := json.Marshal(p.Event)
 	if err != nil {
-		return fmt.Errorf("partner: marshal webhook body: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("partner: marshal webhook body: %w: %w", err, jobqueue.SkipRetry)
 	}
 
-	attempt, _ := asynq.GetRetryCount(ctx)
+	attempt, _ := jobqueue.RetryCount(ctx)
 	outcome, status, excerpt, sendErr := s.send(ctx, p, secret, body)
 
 	switch {
@@ -202,7 +202,7 @@ func (s *Sender) ProcessTask(ctx context.Context, t *asynq.Task) error {
 		webhookBlocked.Inc()
 		webhooksSent.WithLabelValues(p.Event.EventType, "blocked").Inc()
 		s.record(ctx, p, StatusAbandoned, status, excerpt, sendErr.Error())
-		return fmt.Errorf("partner: %w: %w", sendErr, asynq.SkipRetry)
+		return fmt.Errorf("partner: %w: %w", sendErr, jobqueue.SkipRetry)
 
 	case attempt+1 >= MaxAttempts:
 		webhooksAbandoned.WithLabelValues(p.Event.EventType).Inc()
@@ -282,7 +282,7 @@ func (s *Sender) recordWithNext(ctx context.Context, p TaskPayload, status strin
 	}
 }
 
-// backoff mirrors Asynq's schedule so next_attempt_at in the delivery log
+// backoff mirrors the queue's schedule so next_attempt_at in the delivery log
 // matches when the retry will actually run. A log that disagrees with reality
 // is worse than no log, because somebody will trust it.
 // backoffSchedule is written out rather than computed with a shift.
@@ -291,7 +291,7 @@ func (s *Sender) recordWithNext(ctx context.Context, p TaskPayload, status strin
 // negative or near-zero duration that schedules the next attempt in the past
 // and turns the backoff into a hot loop against a partner already struggling.
 // It also makes the actual schedule readable, which matters when the whole
-// point is to mirror what Asynq will really do.
+// point is to mirror what the queue will really do.
 //
 // Total elapsed across all 8 attempts is a little over two hours, then the 6h
 // ceiling holds for anything beyond.

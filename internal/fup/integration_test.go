@@ -4,12 +4,15 @@
 //
 // Covers INT-FUP-001 .. INT-FUP-004 and INT-NOTIF-005 from the Integration Tests
 // tracker sheet. The tracker lists the last three under ./internal/tasks/; the
-// Asynq handlers actually live in this package, so they are exercised here.
+// task handlers actually live in this package, so they are exercised here.
 //
-// Asynq runs against a real Redis (miniredis, in-process), so queue routing,
-// task IDs and archival are exercised through the genuine client and inspector.
+// The queue runs against a real PostgreSQL (internal/jobqueue, migration
+// 037), so queue routing, idempotency keys and dead-lettering are exercised
+// through the genuine client and inspector rather than mocked. These ran
+// against a real in-process Redis (miniredis) for the same reason before
+// the queue moved off Asynq.
 //
-// Run: ./scripts/run_tests.ps1 -Pkg ./internal/fup -Tags integration
+// Run: ./scripts/run_db_tests.sh, which sets TEST_DB_DSN
 package fup
 
 import (
@@ -17,12 +20,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/hibiken/asynq"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"layeh.com/radius"
@@ -126,31 +130,56 @@ func (n *itNotifier) snapshot() []itNotifyCall {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-func itRedis(t *testing.T) (asynq.RedisClientOpt, *asynq.Client, *asynq.Inspector) {
+// itQueue returns a pool, client and inspector against the real queue
+// tables, emptied first so a test starts from a known state.
+func itQueue(t *testing.T) (*pgxpool.Pool, *jobqueue.Client, *jobqueue.Inspector) {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	opt := asynq.RedisClientOpt{Addr: mr.Addr()}
-	client := asynq.NewClient(opt)
-	inspector := asynq.NewInspector(opt)
-	t.Cleanup(func() {
-		_ = client.Close()
-		_ = inspector.Close()
-	})
-	return opt, client, inspector
+	dsn := os.Getenv("TEST_DB_DSN")
+	if dsn == "" {
+		t.Skip("TEST_DB_DSN not set — run via ./scripts/run_db_tests.sh")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to test database: %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		t.Fatalf("ping test database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	if _, err := pool.Exec(ctx, `TRUNCATE TABLE jobqueue_tasks RESTART IDENTITY`); err != nil {
+		t.Fatalf("truncate jobqueue_tasks: %v", err)
+	}
+	return pool, jobqueue.NewClient(pool), jobqueue.NewInspector(pool)
 }
 
-// itPendingTasks lists pending tasks, treating a queue that has never received
-// a task as empty — asynq reports ErrQueueNotFound rather than an empty list.
-func itPendingTasks(t *testing.T, inspector *asynq.Inspector, queue string) []*asynq.TaskInfo {
+// itPendingTasks lists pending tasks on a queue.
+func itPendingTasks(t *testing.T, inspector *jobqueue.Inspector, queue string) []jobqueue.PendingTask {
 	t.Helper()
-	tasks, err := inspector.ListPendingTasks(queue)
-	if errors.Is(err, asynq.ErrQueueNotFound) {
-		return nil
-	}
+	tasks, err := inspector.ListPending(context.Background(), queue)
 	if err != nil {
 		t.Fatalf("list %s: %v", queue, err)
 	}
 	return tasks
+}
+
+// itDeadLetter drives a task to the terminal dead state directly.
+//
+// Exhausting retries is what dead-letters a task in production; forcing the
+// state reaches the same place without burning the backoff delays, which is
+// the same shortcut the Asynq version of these tests took with ArchiveTask.
+func itDeadLetter(t *testing.T, pool *pgxpool.Pool, taskID int64) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(),
+		`UPDATE jobqueue_tasks SET status = 'dead', completed_at = now() WHERE id = $1`, taskID)
+	if err != nil {
+		t.Fatalf("dead-letter task %d: %v", taskID, err)
+	}
 }
 
 func itCounterValue(t *testing.T, c prometheus.Counter) float64 {
@@ -231,7 +260,7 @@ func itStubNAS(t *testing.T, secret []byte, respondWith radius.Code) (int, <-cha
 //
 // INT-FUP-001 | FR-FUP-001
 func TestFR_FUP_001_FUPScanner_EnqueuesCoAOn100Pct(t *testing.T) {
-	_, client, inspector := itRedis(t)
+	_, client, inspector := itQueue(t)
 
 	const threshold = int64(1_771_674_009_600) // 1.65 TB
 	db := &itFUPDB{
@@ -277,7 +306,7 @@ func TestFR_FUP_001_FUPScanner_EnqueuesCoAOn100Pct(t *testing.T) {
 //
 // INT-FUP-001 (supporting) | FR-FUP-001
 func TestFR_FUP_001_FUPScanner_SkipsUnlimitedAndAlreadyThrottled(t *testing.T) {
-	_, client, inspector := itRedis(t)
+	_, client, inspector := itQueue(t)
 
 	db := &itFUPDB{
 		aboveFUP: []SessionStats{
@@ -303,7 +332,7 @@ func TestFR_FUP_001_FUPScanner_SkipsUnlimitedAndAlreadyThrottled(t *testing.T) {
 //
 // INT-FUP-002 | FR-FUP-004
 func TestFR_FUP_004_FUPScanner_Warns80Pct(t *testing.T) {
-	_, client, inspector := itRedis(t)
+	_, client, inspector := itQueue(t)
 
 	const threshold = int64(3_543_348_019_200) // 3.3 TB
 	db := &itFUPDB{
@@ -391,7 +420,7 @@ func TestFR_FUP_002_CoATask_RetriesOnNAK(t *testing.T) {
 	beforeNAK := itCounterVecValue(t, coaAckTotal, "nak")
 
 	payload, _ := json.Marshal(CoAPayload{SubscriberID: 9, NasIP: "127.0.0.1"})
-	err := handler.ProcessTask(context.Background(), asynq.NewTask(TaskTypeCoA, payload))
+	err := handler.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypeCoA, payload))
 
 	if err == nil {
 		t.Fatal("CoA-NAK must return an error so Asynq retries the task")
@@ -423,7 +452,7 @@ func TestFR_FUP_002_CoATask_SucceedsOnACK(t *testing.T) {
 	beforeACK := itCounterVecValue(t, coaAckTotal, "ack")
 
 	payload, _ := json.Marshal(CoAPayload{SubscriberID: 10, NasIP: "127.0.0.1"})
-	if err := handler.ProcessTask(context.Background(), asynq.NewTask(TaskTypeCoA, payload)); err != nil {
+	if err := handler.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypeCoA, payload)); err != nil {
 		t.Fatalf("CoA-ACK must succeed, got: %v", err)
 	}
 	if got := itCounterVecValue(t, coaAckTotal, "ack"); got != beforeACK+1 {
@@ -431,12 +460,13 @@ func TestFR_FUP_002_CoATask_SucceedsOnACK(t *testing.T) {
 	}
 }
 
-// TestFR_FUP_002_CoATask_AsynqRetriesFailedTask drives the failure through a live Asynq
-// server and asserts the task is actually re-attempted rather than dropped.
+// TestFR_FUP_002_CoATask_QueueRetriesFailedTask drives the failure through a
+// live worker pool and asserts the task is actually re-attempted rather than
+// dropped.
 //
 // INT-FUP-003 | FR-FUP-002
-func TestFR_FUP_002_CoATask_AsynqRetriesFailedTask(t *testing.T) {
-	opt, client, inspector := itRedis(t)
+func TestFR_FUP_002_CoATask_QueueRetriesFailedTask(t *testing.T) {
+	pool, client, inspector := itQueue(t)
 
 	secret := []byte("coa-secret")
 	port, _ := itStubNAS(t, secret, radius.CodeCoANAK)
@@ -447,25 +477,27 @@ func TestFR_FUP_002_CoATask_AsynqRetriesFailedTask(t *testing.T) {
 	}, secret)
 	handler.SetPort(port)
 
-	srv := asynq.NewServer(opt, asynq.Config{
+	srv := jobqueue.NewServer(pool, jobqueue.Config{
 		Concurrency: 1,
 		Queues:      map[string]int{QueueNetCommands: 1},
-		RetryDelayFunc: func(int, error, *asynq.Task) time.Duration {
-			return 50 * time.Millisecond
-		},
+		// The production schedule starts at 10s, which would make this test
+		// wait out a real backoff to observe a retry that is not about
+		// timing.
+		RetryDelay:   func(int) time.Duration { return 50 * time.Millisecond },
+		PollInterval: 50 * time.Millisecond,
 	})
-	mux := asynq.NewServeMux()
+	mux := jobqueue.NewServeMux()
 	mux.Handle(TaskTypeCoA, handler)
 	if err := srv.Start(mux); err != nil {
-		t.Fatalf("start asynq server: %v", err)
+		t.Fatalf("start worker pool: %v", err)
 	}
 	defer srv.Shutdown()
 
 	payload, _ := json.Marshal(CoAPayload{SubscriberID: 11, NasIP: "127.0.0.1"})
 	info, err := client.Enqueue(
-		asynq.NewTask(TaskTypeCoA, payload),
-		asynq.Queue(QueueNetCommands),
-		asynq.MaxRetry(5),
+		jobqueue.NewTask(TaskTypeCoA, payload),
+		jobqueue.Queue(QueueNetCommands),
+		jobqueue.MaxRetry(5),
 	)
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -473,14 +505,14 @@ func TestFR_FUP_002_CoATask_AsynqRetriesFailedTask(t *testing.T) {
 
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		task, err := inspector.GetTaskInfo(QueueNetCommands, info.ID)
-		if err == nil && task.Retried >= 1 {
+		task, err := inspector.TaskByID(context.Background(), info.ID)
+		if err == nil && task != nil && task.RetryCount >= 1 {
 			return // the NAK was retried, which is what INT-FUP-003 asserts
 		}
 		if time.Now().After(deadline) {
 			retried := -1
-			if err == nil {
-				retried = task.Retried
+			if err == nil && task != nil {
+				retried = task.RetryCount
 			}
 			t.Fatalf("task was not retried after CoA-NAK (retried=%d, lookup err=%v)", retried, err)
 		}
@@ -507,7 +539,7 @@ func TestFR_NET_002_PoDTask_SucceedsOnACK(t *testing.T) {
 	beforeACK := itCounterVecValue(t, podAckTotal, "ack")
 
 	payload, _ := json.Marshal(PoDPayload{SubscriberID: 20})
-	if err := handler.ProcessTask(context.Background(), asynq.NewTask(TaskTypePoD, payload)); err != nil {
+	if err := handler.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypePoD, payload)); err != nil {
 		t.Fatalf("Disconnect-ACK must succeed, got: %v", err)
 	}
 	select {
@@ -537,7 +569,7 @@ func TestFR_NET_002_PoDTask_RetriesOnNAK(t *testing.T) {
 	beforeNAK := itCounterVecValue(t, podAckTotal, "nak")
 
 	payload, _ := json.Marshal(PoDPayload{SubscriberID: 21})
-	err := handler.ProcessTask(context.Background(), asynq.NewTask(TaskTypePoD, payload))
+	err := handler.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypePoD, payload))
 
 	if err == nil {
 		t.Fatal("Disconnect-NAK must return an error so Asynq retries the task")
@@ -556,13 +588,13 @@ func TestFR_NET_002_PoDTask_NoLiveSessionSkipsRetry(t *testing.T) {
 	handler := NewPoDHandler(&itNoSessionDB{}, []byte("pod-secret"))
 
 	payload, _ := json.Marshal(PoDPayload{SubscriberID: 22})
-	err := handler.ProcessTask(context.Background(), asynq.NewTask(TaskTypePoD, payload))
+	err := handler.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypePoD, payload))
 
 	if err == nil {
 		t.Fatal("expected an error when there is no live session")
 	}
 	if !errorIsSkipRetry(err) {
-		t.Errorf("a missing session must wrap asynq.SkipRetry, got: %v", err)
+		t.Errorf("a missing session must wrap jobqueue.SkipRetry, got: %v", err)
 	}
 }
 
@@ -584,28 +616,24 @@ func (itNoSessionDB) GetSubscriberNASSession(context.Context, int) (string, stri
 //
 // INT-FUP-004 | FR-FUP-003
 func TestFR_FUP_003_DeadLetterMonitor_AlertsOnNonZero(t *testing.T) {
-	opt, client, inspector := itRedis(t)
+	pool, client, inspector := itQueue(t)
 
 	payload, _ := json.Marshal(CoAPayload{SubscriberID: 12, NasIP: "10.0.0.9"})
-	info, err := client.Enqueue(asynq.NewTask(TaskTypeCoA, payload), asynq.Queue(QueueNetCommands))
+	info, err := client.Enqueue(jobqueue.NewTask(TaskTypeCoA, payload), jobqueue.Queue(QueueNetCommands))
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	// Exhausting retries is what archives a task in production; archiving it
-	// directly reaches the same terminal state without burning the retry delays.
-	if err := inspector.ArchiveTask(QueueNetCommands, info.ID); err != nil {
-		t.Fatalf("archive task: %v", err)
-	}
+	itDeadLetter(t, pool, info.ID)
 
 	alerter := &itAlerter{}
-	monitor := NewDeadLetterMonitor(opt, alerter)
+	monitor := NewDeadLetterMonitor(inspector, alerter)
 
-	if err := monitor.checkOnce(inspector); err != nil {
+	if err := monitor.checkOnce(context.Background()); err != nil {
 		t.Fatalf("checkOnce: %v", err)
 	}
 
 	if !alerter.WasTriggered("dead_letter_queue_non_empty") {
-		t.Error("expected dead_letter_queue_non_empty alert for an archived task")
+		t.Error("expected dead_letter_queue_non_empty alert for a dead-lettered task")
 	}
 }
 
@@ -613,22 +641,22 @@ func TestFR_FUP_003_DeadLetterMonitor_AlertsOnNonZero(t *testing.T) {
 //
 // INT-FUP-004 (supporting) | FR-FUP-003
 func TestFR_FUP_003_DeadLetterMonitor_SilentWhenEmpty(t *testing.T) {
-	opt, client, inspector := itRedis(t)
+	_, client, inspector := itQueue(t)
 
 	payload, _ := json.Marshal(CoAPayload{SubscriberID: 13, NasIP: "10.0.0.10"})
-	if _, err := client.Enqueue(asynq.NewTask(TaskTypeCoA, payload), asynq.Queue(QueueNetCommands)); err != nil {
+	if _, err := client.Enqueue(jobqueue.NewTask(TaskTypeCoA, payload), jobqueue.Queue(QueueNetCommands)); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
 
 	alerter := &itAlerter{}
-	monitor := NewDeadLetterMonitor(opt, alerter)
+	monitor := NewDeadLetterMonitor(inspector, alerter)
 
-	if err := monitor.checkOnce(inspector); err != nil {
+	if err := monitor.checkOnce(context.Background()); err != nil {
 		t.Fatalf("checkOnce: %v", err)
 	}
 
 	if alerter.WasTriggered("dead_letter_queue_non_empty") {
-		t.Error("no alert expected while the queue has no archived tasks")
+		t.Error("no alert expected while the queue has no dead-lettered tasks")
 	}
 }
 
@@ -637,19 +665,17 @@ func TestFR_FUP_003_DeadLetterMonitor_SilentWhenEmpty(t *testing.T) {
 //
 // INT-FUP-004 (supporting) | FR-FUP-003
 func TestFR_FUP_003_DeadLetterMonitor_RunAlertsOnTick(t *testing.T) {
-	opt, client, inspector := itRedis(t)
+	pool, client, inspector := itQueue(t)
 
 	payload, _ := json.Marshal(CoAPayload{SubscriberID: 14, NasIP: "10.0.0.11"})
-	info, err := client.Enqueue(asynq.NewTask(TaskTypeCoA, payload), asynq.Queue(QueueNetCommands))
+	info, err := client.Enqueue(jobqueue.NewTask(TaskTypeCoA, payload), jobqueue.Queue(QueueNetCommands))
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	if err := inspector.ArchiveTask(QueueNetCommands, info.ID); err != nil {
-		t.Fatalf("archive task: %v", err)
-	}
+	itDeadLetter(t, pool, info.ID)
 
 	alerter := &itAlerter{}
-	monitor := NewDeadLetterMonitor(opt, alerter)
+	monitor := NewDeadLetterMonitor(inspector, alerter)
 	monitor.SetInterval(20 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -676,7 +702,7 @@ func TestFR_FUP_004_FUPWarningTask_DispatchesWhatsApp(t *testing.T) {
 	handler := NewWarningHandler(notifier)
 
 	payload, _ := json.Marshal(WarningPayload{SubscriberID: 55, Username: "nearly@isp", PctUsed: 82})
-	if err := handler.ProcessTask(context.Background(), asynq.NewTask(TaskTypeFUPWarning, payload)); err != nil {
+	if err := handler.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypeFUPWarning, payload)); err != nil {
 		t.Fatalf("ProcessTask: %v", err)
 	}
 
@@ -702,18 +728,18 @@ func TestFR_FUP_004_FUPWarningTask_DispatchesWhatsApp(t *testing.T) {
 func TestFR_FUP_004_FUPWarningTask_MalformedPayloadSkipsRetry(t *testing.T) {
 	handler := NewWarningHandler(&itNotifier{})
 
-	err := handler.ProcessTask(context.Background(), asynq.NewTask(TaskTypeFUPWarning, []byte("{not json")))
+	err := handler.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypeFUPWarning, []byte("{not json")))
 	if err == nil {
 		t.Fatal("expected an error for a malformed payload")
 	}
 	if !errorIsSkipRetry(err) {
-		t.Errorf("malformed payload must wrap asynq.SkipRetry, got: %v", err)
+		t.Errorf("malformed payload must wrap jobqueue.SkipRetry, got: %v", err)
 	}
 }
 
 func errorIsSkipRetry(err error) bool {
 	for e := err; e != nil; {
-		if e == asynq.SkipRetry { //nolint:errorlint,err113
+		if e == jobqueue.SkipRetry { //nolint:errorlint,err113
 			return true
 		}
 		unwrapper, ok := e.(interface{ Unwrap() []error })

@@ -61,12 +61,6 @@ type Config struct {
 	DBMinConns    int32
 	DBConnTimeout time.Duration
 
-	// Redis: Sentinel in production, a direct address for local development.
-	RedisSentinelAddrs []string
-	RedisMasterName    string
-	RedisAddr          string
-	RedisPassword      string
-
 	// SubscriberCacheTTL bounds how long the RADIUS auth cache serves a record.
 	// It is the window in which a suspended subscriber could still re-authenticate,
 	// so raising it trades enforcement latency for database load.
@@ -146,10 +140,6 @@ func Load(service string) (*Config, error) {
 		DBMinConns:    int32(envInt("DB_MIN_CONNS", 5)),  //nolint:gosec // bounded by envInt
 		DBConnTimeout: time.Duration(envInt("DB_CONN_TIMEOUT_SECONDS", 10)) * time.Second,
 
-		RedisSentinelAddrs: envList("REDIS_SENTINEL_ADDRS"),
-		RedisMasterName:    env("REDIS_MASTER_NAME", "bss_master"),
-		RedisAddr:          env("REDIS_ADDR", ""),
-		RedisPassword:      env("REDIS_PASSWORD", ""),
 		SubscriberCacheTTL: time.Duration(envInt("SUBSCRIBER_CACHE_TTL_SECONDS", 60)) * time.Second,
 
 		JWTSecret:             env("JWT_SECRET", ""),
@@ -245,19 +235,12 @@ func Load(service string) (*Config, error) {
 		}
 	}
 
-	if len(cfg.RedisSentinelAddrs) == 0 && cfg.RedisAddr == "" {
-		problems = append(problems, "one of REDIS_SENTINEL_ADDRS or REDIS_ADDR must be set")
-	}
-
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("config: invalid configuration for %s:\n  - %s",
 			service, strings.Join(problems, "\n  - "))
 	}
 	return cfg, nil
 }
-
-// UsesSentinel reports whether Redis should be reached through Sentinel.
-func (c *Config) UsesSentinel() bool { return len(c.RedisSentinelAddrs) > 0 }
 
 // Redact returns a copy safe to log: every secret is replaced by a set/unset
 // marker so a startup log can show what is configured without leaking values.
@@ -273,8 +256,6 @@ func (c *Config) Redact() map[string]string {
 		"tls_hostname":           c.TLSHostname,
 		"db_dsn":                 redactDSN(c.DBDSN),
 		"db_max_conns":           strconv.Itoa(int(c.DBMaxConns)),
-		"redis_mode":             redisMode(c),
-		"redis_master":           c.RedisMasterName,
 		"jwt_secret":             setOrUnset(c.JWTSecret),
 		"radius_secret":          setOrUnset(c.RadiusSecret),
 		"radius_verifier_secret": setOrUnset(c.RadiusVerifierSecret),
@@ -289,13 +270,6 @@ func (c *Config) Redact() map[string]string {
 		"pagerduty_key":          setOrUnset(c.PagerDutyRoutingKey),
 		"gotenberg_url":          c.GotenbergURL,
 	}
-}
-
-func redisMode(c *Config) string {
-	if c.UsesSentinel() {
-		return fmt.Sprintf("sentinel(%d)", len(c.RedisSentinelAddrs))
-	}
-	return "direct"
 }
 
 func setOrUnset(v string) string {
@@ -343,19 +317,4 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
-}
-
-func envList(key string) []string {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }

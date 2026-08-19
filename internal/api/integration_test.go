@@ -22,9 +22,9 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/hibiken/asynq"
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/maaransoft/isp-bss-oss/pkg/crypto"
 )
@@ -680,18 +680,18 @@ func TestWalletRecharge_InvalidAmount(t *testing.T) {
 // itTaskRecorder captures enqueued Asynq tasks.
 type itTaskRecorder struct {
 	mu    sync.Mutex
-	tasks []*asynq.Task
+	tasks []*jobqueue.Task
 	err   error
 }
 
-func (r *itTaskRecorder) Enqueue(task *asynq.Task, _ ...asynq.Option) (*asynq.TaskInfo, error) {
+func (r *itTaskRecorder) Enqueue(task *jobqueue.Task, _ ...jobqueue.Option) (*jobqueue.TaskInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.err != nil {
 		return nil, r.err
 	}
 	r.tasks = append(r.tasks, task)
-	return &asynq.TaskInfo{}, nil
+	return &jobqueue.TaskInfo{}, nil
 }
 
 func (r *itTaskRecorder) receipts(t *testing.T) []billing.PaymentReceiptPayload {

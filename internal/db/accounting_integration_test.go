@@ -25,10 +25,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/hibiken/asynq"
 	"github.com/maaransoft/isp-bss-oss/internal/db"
 	"github.com/maaransoft/isp-bss-oss/internal/fup"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	ispradius "github.com/maaransoft/isp-bss-oss/internal/radius"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
@@ -226,13 +225,14 @@ func TestFR_AAA_003_AccountingReachesTheDatabaseAndDrivesFUP(t *testing.T) {
 	}
 
 	// ── The scanner now sees a real, over-quota session ─────────────────────
-	mr := miniredis.RunT(t)
-	asynqClient := asynq.NewClient(asynq.RedisClientOpt{Addr: mr.Addr()})
-	defer asynqClient.Close() //nolint:errcheck
-	inspector := asynq.NewInspector(asynq.RedisClientOpt{Addr: mr.Addr()})
-	defer inspector.Close() //nolint:errcheck
+	if _, err := pool.Exec(ctx, `TRUNCATE TABLE jobqueue_tasks RESTART IDENTITY`); err != nil {
+		t.Fatalf("truncate jobqueue_tasks: %v", err)
+	}
+	taskClient := jobqueue.NewClient(pool)
+	defer taskClient.Close() //nolint:errcheck
+	inspector := jobqueue.NewInspector(pool)
 
-	if err := fup.NewScanner(database.FUP(), asynqClient).ScanOnce(ctx); err != nil {
+	if err := fup.NewScanner(database.FUP(), taskClient).ScanOnce(ctx); err != nil {
 		t.Fatalf("FUP scan: %v", err)
 	}
 	if pending := pendingCoATasks(t, inspector); len(pending) != 1 {

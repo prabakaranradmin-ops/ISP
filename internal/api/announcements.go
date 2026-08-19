@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/rs/zerolog/log"
 
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
@@ -192,7 +192,7 @@ func (h *Handler) SendAnnouncement(w http.ResponseWriter, r *http.Request) {
 // fanOutAnnouncement enqueues one task per recipient per channel, returning
 // how many actually landed.
 //
-// One task per message rather than one bulk task: each gets Asynq's retry
+// One task per message rather than one bulk task: each gets the queue's retry
 // and dead-lettering, and a single unreachable subscriber cannot fail the
 // broadcast for everyone else.
 func (h *Handler) fanOutAnnouncement(a *notifications.Announcement, recipients []int) int {
@@ -206,16 +206,16 @@ func (h *Handler) fanOutAnnouncement(a *notifications.Announcement, recipients [
 			if err != nil {
 				continue // a static struct cannot realistically fail to marshal
 			}
-			task := asynq.NewTask(notifications.TaskTypeAnnouncement, payload,
-				asynq.Queue(notifications.QueueAnnouncements),
+			task := jobqueue.NewTask(notifications.TaskTypeAnnouncement, payload,
+				jobqueue.Queue(notifications.QueueAnnouncements),
 				// One delivery per announcement/subscriber/channel, so a
 				// retried send cannot message the same person twice.
-				asynq.TaskID(notifications.AnnouncementTaskID(a.ID, subscriberID, channel)),
-				asynq.MaxRetry(3),
-				asynq.Retention(announcementRetention))
+				jobqueue.TaskID(notifications.AnnouncementTaskID(a.ID, subscriberID, channel)),
+				jobqueue.MaxRetry(3),
+				jobqueue.Retention(announcementRetention))
 
 			if _, err := h.tasks.Enqueue(task); err != nil {
-				if errors.Is(err, asynq.ErrTaskIDConflict) {
+				if errors.Is(err, jobqueue.ErrTaskIDConflict) {
 					continue // already enqueued by an earlier attempt
 				}
 				log.Error().Err(err).

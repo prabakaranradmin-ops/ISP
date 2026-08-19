@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
@@ -25,7 +25,7 @@ import (
 // checksum and a retention date rather than accumulating CSV files nobody owns.
 
 const (
-	// TaskTypeReportExport is the Asynq task type for a scheduled export.
+	// TaskTypeReportExport is the task type for a scheduled export.
 	TaskTypeReportExport = "report:export"
 	// QueueReports keeps long report queries off the queue that carries
 	// network commands: a CoA waiting behind a ten-year aggregate is a
@@ -45,7 +45,7 @@ var (
 	}, []string{"report"})
 )
 
-// ExportPayload is the Asynq task payload.
+// ExportPayload is the task payload.
 type ExportPayload struct {
 	Report string `json:"report"`
 	Months int    `json:"months,omitempty"`
@@ -81,21 +81,21 @@ func NewExportHandler(q Querier, a Archiver) *ExportHandler {
 	return &ExportHandler{db: q, archiver: a}
 }
 
-// ProcessTask implements asynq.Handler.
+// ProcessTask implements jobqueue.Handler.
 //
 // The CSV is built in memory before archival rather than streamed, because the
 // archive needs its length and checksum up front and a report bounded at ten
 // years of monthly aggregates is measured in megabytes. That trade would be
 // wrong for a per-subscriber extract, which is not what this path serves.
-func (h *ExportHandler) ProcessTask(ctx context.Context, t *asynq.Task) error {
+func (h *ExportHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p ExportPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		// Undecodable payloads can never succeed, so retrying only fills the
 		// dead-letter queue more slowly.
-		return fmt.Errorf("reporting: unmarshal export payload: %w, %w", err, asynq.SkipRetry)
+		return fmt.Errorf("reporting: unmarshal export payload: %w, %w", err, jobqueue.SkipRetry)
 	}
 	if !ValidReport(p.Report) {
-		return fmt.Errorf("reporting: unknown report %q: %w", p.Report, asynq.SkipRetry)
+		return fmt.Errorf("reporting: unknown report %q: %w", p.Report, jobqueue.SkipRetry)
 	}
 
 	timer := prometheus.NewTimer(exportDuration.WithLabelValues(p.Report))
@@ -110,7 +110,7 @@ func (h *ExportHandler) ProcessTask(ctx context.Context, t *asynq.Task) error {
 
 	if h.archiver == nil {
 		exportsTotal.WithLabelValues(p.Report, "no_archiver").Inc()
-		return fmt.Errorf("reporting: no archival backend configured: %w", asynq.SkipRetry)
+		return fmt.Errorf("reporting: no archival backend configured: %w", jobqueue.SkipRetry)
 	}
 
 	url, err := h.archiver.ArchiveReport(ctx, p.EntityID,
@@ -127,16 +127,16 @@ func (h *ExportHandler) ProcessTask(ctx context.Context, t *asynq.Task) error {
 	return nil
 }
 
-// NewExportTask builds the Asynq task for an export request.
-func NewExportTask(p ExportPayload) (*asynq.Task, error) {
+// NewExportTask builds the task for an export request.
+func NewExportTask(p ExportPayload) (*jobqueue.Task, error) {
 	payload, err := json.Marshal(p)
 	if err != nil {
 		return nil, fmt.Errorf("reporting: marshal export payload: %w", err)
 	}
-	return asynq.NewTask(TaskTypeReportExport, payload,
-		asynq.Queue(QueueReports),
-		asynq.MaxRetry(3),
-		// Retained so an operator can see a finished export in the Asynq
+	return jobqueue.NewTask(TaskTypeReportExport, payload,
+		jobqueue.Queue(QueueReports),
+		jobqueue.MaxRetry(3),
+		// Retained so an operator can see a finished export in the queue
 		// inspector rather than only its archive row.
-		asynq.Retention(48*time.Hour)), nil
+		jobqueue.Retention(48*time.Hour)), nil
 }

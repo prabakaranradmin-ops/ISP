@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"layeh.com/radius"
@@ -29,7 +29,7 @@ const (
 	controlDialTimeout = 3 * time.Second
 )
 
-// CoAPayload is the Asynq task payload for CoA sends.
+// CoAPayload is the task payload for CoA sends.
 type CoAPayload struct {
 	SubscriberID int    `json:"subscriber_id"`
 	NasIP        string `json:"nas_ip"`
@@ -40,7 +40,7 @@ type CoAQuerier interface {
 	GetSubscriberNASSession(ctx context.Context, subscriberID int) (nasIP, sessionID, rateLimit string, planID int, err error)
 }
 
-// CoAHandler processes CoA send tasks with exponential backoff via Asynq retry.
+// CoAHandler processes CoA send tasks with exponential backoff via queue retry.
 //
 // FR: FR-FUP-002, FR-NAS-001..004 | DDS §5.3 | MDS §4.11
 type CoAHandler struct {
@@ -68,12 +68,12 @@ func (h *CoAHandler) SetNASResolver(r *nas.Resolver) {
 	h.nasResolver = r
 }
 
-// ProcessTask implements asynq.Handler.
+// ProcessTask implements jobqueue.Handler.
 //
 // The NAS session is resolved fresh at execution time rather than trusting the
-// payload's snapshot: Asynq retries with backoff, and a subscriber may have
+// payload's snapshot: the queue retries with backoff, and a subscriber may have
 // reconnected — to a different NAS IP — between enqueue and this run.
-func (h *CoAHandler) ProcessTask(ctx context.Context, t *asynq.Task) error {
+func (h *CoAHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p CoAPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		return fmt.Errorf("coa: unmarshal payload: %w", err)
@@ -96,7 +96,7 @@ func (h *CoAHandler) ProcessTask(ctx context.Context, t *asynq.Task) error {
 	attrs, err := nas.BuildCoAAttrs(vendor, nas.RateProfile{RateLimitString: rateLimit, ProfileName: profileName})
 	if err != nil {
 		// Unlike Access-Accept, a CoA with no bandwidth attribute is a no-op
-		// enforcement action wearing a success — retrying (Asynq backoff,
+		// enforcement action wearing a success — retrying (queue backoff,
 		// eventual dead-letter + alert) is the right failure mode, not a
 		// best-effort send.
 		return fmt.Errorf("coa: build vendor attributes for sub %d (%s): %w", p.SubscriberID, vendor, err)
@@ -113,7 +113,7 @@ func (h *CoAHandler) effectivePort() int {
 }
 
 // SendReliableCoA sends a CoA-Request to the NAS and waits for CoA-ACK.
-// Returns an error on NAK or timeout — Asynq will retry with exponential backoff.
+// Returns an error on NAK or timeout — the queue will retry with exponential backoff.
 //
 // DDS §5.3 | MDS §4.11
 func SendReliableCoA(nasIP string, port int, sessionID string, attrs []nas.Attr, secret []byte) error {
@@ -129,7 +129,7 @@ func SendReliableCoA(nasIP string, port int, sessionID string, attrs []nas.Attr,
 // sendReliableControl sends a pre-built control packet (CoA-Request or
 // Disconnect-Request) to the NAS and waits for the matching ACK code.
 // A non-matching response, an error, or a timeout are all reported as errors so
-// the Asynq caller retries with exponential backoff.
+// the queue retries with exponential backoff.
 func sendReliableControl(nasIP string, port int, secret []byte, pkt *radius.Packet, ackCode radius.Code, result *prometheus.CounterVec) error {
 	addr := &net.UDPAddr{IP: net.ParseIP(nasIP), Port: port}
 	conn, err := net.DialUDP("udp", nil, addr)

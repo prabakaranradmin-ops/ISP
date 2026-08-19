@@ -1,4 +1,4 @@
-// Package tickets carries the Asynq task that tells a subscriber their
+// Package tickets carries the background task that tells a subscriber their
 // support ticket's status changed (FR-NOTIF-007).
 //
 // TMPL-008 (ticket_update) was seeded and fully wired for delivery, but
@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 )
 
 const (
@@ -32,7 +32,7 @@ const (
 	TemplateTicketUpdate = "TMPL-008" //nolint:gosec // template id, not a credential
 )
 
-// UpdatePayload is the Asynq payload for a ticket status-change notification.
+// UpdatePayload is the task payload for a ticket status-change notification.
 type UpdatePayload struct {
 	SubscriberID int    `json:"subscriber_id"`
 	Username     string `json:"username"`
@@ -58,12 +58,12 @@ func NewUpdateHandler(n Notifier) *UpdateHandler {
 	return &UpdateHandler{notifier: n}
 }
 
-// ProcessTask implements asynq.Handler for TaskTypeTicketUpdate.
-func (h *UpdateHandler) ProcessTask(ctx context.Context, t *asynq.Task) error {
+// ProcessTask implements jobqueue.Handler for TaskTypeTicketUpdate.
+func (h *UpdateHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p UpdatePayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		// A malformed payload will never become valid on retry.
-		return fmt.Errorf("ticket update: unmarshal payload: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("ticket update: unmarshal payload: %w: %w", err, jobqueue.SkipRetry)
 	}
 	if h.notifier == nil {
 		return fmt.Errorf("ticket update: notifier not configured")

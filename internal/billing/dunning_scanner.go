@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -84,7 +84,7 @@ type DunningScanQuerier interface {
 	ListDunningCandidates(ctx context.Context) ([]DunningCandidate, error)
 }
 
-// DunningNoticePayload is the Asynq payload for a dunning notification.
+// DunningNoticePayload is the task payload for a dunning notification.
 type DunningNoticePayload struct {
 	SubscriberID int          `json:"subscriber_id"`
 	Username     string       `json:"username"`
@@ -154,12 +154,12 @@ func TemplateForDunningState(s DunningState) (string, bool) {
 // the notification for each stage entered.
 type DunningScanner struct {
 	db     DunningScanQuerier
-	client *asynq.Client
+	client *jobqueue.Client
 	now    func() time.Time // injectable for tests
 }
 
 // NewDunningScanner constructs a DunningScanner.
-func NewDunningScanner(db DunningScanQuerier, client *asynq.Client) *DunningScanner {
+func NewDunningScanner(db DunningScanQuerier, client *jobqueue.Client) *DunningScanner {
 	return &DunningScanner{db: db, client: client, now: time.Now}
 }
 
@@ -268,14 +268,14 @@ func (s *DunningScanner) advance(ctx context.Context, c DunningCandidate, target
 	// The task id makes the notice idempotent per subscriber per stage, so a
 	// scanner restart, an overlapping run or a redelivery cannot send the same
 	// subscriber the same warning twice.
-	task := asynq.NewTask(TaskTypeDunningNotice, payload,
-		asynq.Queue(QueueNotifications),
-		asynq.TaskID(DunningNoticeTaskID(c.SubscriberID, target, c.PlanExpiry)),
-		asynq.MaxRetry(3),
-		asynq.Retention(24*time.Hour))
+	task := jobqueue.NewTask(TaskTypeDunningNotice, payload,
+		jobqueue.Queue(QueueNotifications),
+		jobqueue.TaskID(DunningNoticeTaskID(c.SubscriberID, target, c.PlanExpiry)),
+		jobqueue.MaxRetry(3),
+		jobqueue.Retention(24*time.Hour))
 
 	if _, err := s.client.EnqueueContext(ctx, task); err != nil {
-		if errors.Is(err, asynq.ErrTaskIDConflict) {
+		if errors.Is(err, jobqueue.ErrTaskIDConflict) {
 			return nil // already notified for this stage and billing cycle
 		}
 		return fmt.Errorf("enqueue dunning notice: %w", err)

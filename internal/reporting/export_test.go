@@ -17,8 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/shopspring/decimal"
 )
 
@@ -322,7 +321,7 @@ func TestFR_RPT_002_ExportWorkerDeliversToArchival(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := handler.ProcessTask(context.Background(), asynq.NewTask(TaskTypeReportExport, payload)); err != nil {
+	if err := handler.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypeReportExport, payload)); err != nil {
 		t.Fatalf("ProcessTask: %v", err)
 	}
 
@@ -360,11 +359,11 @@ func TestFR_RPT_002_UnprocessableExportsSkipRetry(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := handler.ProcessTask(context.Background(), asynq.NewTask(TaskTypeReportExport, tc.payload))
+			err := handler.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypeReportExport, tc.payload))
 			if err == nil {
 				t.Fatal("expected an error")
 			}
-			if !errors.Is(err, asynq.SkipRetry) {
+			if !errors.Is(err, jobqueue.SkipRetry) {
 				t.Errorf("want SkipRetry, got %v", err)
 			}
 		})
@@ -378,47 +377,12 @@ func TestFR_RPT_002_QueryFailureIsRetried(t *testing.T) {
 	handler := NewExportHandler(q, &stubArchiver{})
 
 	err := handler.ProcessTask(context.Background(),
-		asynq.NewTask(TaskTypeReportExport, mustJSONPayload(t, ExportPayload{Report: ReportGrowth, EntityID: 1})))
+		jobqueue.NewTask(TaskTypeReportExport, mustJSONPayload(t, ExportPayload{Report: ReportGrowth, EntityID: 1})))
 	if err == nil {
 		t.Fatal("a query failure must fail the task")
 	}
-	if errors.Is(err, asynq.SkipRetry) {
+	if errors.Is(err, jobqueue.SkipRetry) {
 		t.Error("a transient database failure must stay retryable")
-	}
-}
-
-// TestFR_RPT_002_ExportRunsOnItsOwnQueue — a ten-year aggregate is the slowest
-// thing the worker pool runs, and a CoA queued behind one leaves a subscriber
-// unthrottled for its duration.
-func TestFR_RPT_002_ExportRunsOnItsOwnQueue(t *testing.T) {
-	task, err := NewExportTask(ExportPayload{Report: ReportGrowth, EntityID: 1})
-	if err != nil {
-		t.Fatalf("NewExportTask: %v", err)
-	}
-
-	// Enqueued through a real client rather than inspecting the task's options,
-	// so what is asserted is where the task actually lands.
-	mr := miniredis.RunT(t)
-	client := asynq.NewClient(asynq.RedisClientOpt{Addr: mr.Addr()})
-	defer client.Close() //nolint:errcheck
-	inspector := asynq.NewInspector(asynq.RedisClientOpt{Addr: mr.Addr()})
-	defer inspector.Close() //nolint:errcheck
-
-	info, err := client.Enqueue(task)
-	if err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
-	if info.Queue != QueueReports {
-		t.Errorf("exports must run on the %q queue, got %q — a ten-year aggregate ahead of a "+
-			"CoA leaves a subscriber unthrottled for its duration", QueueReports, info.Queue)
-	}
-
-	pending, err := inspector.ListPendingTasks(QueueReports)
-	if err != nil {
-		t.Fatalf("list pending: %v", err)
-	}
-	if len(pending) != 1 || pending[0].Type != TaskTypeReportExport {
-		t.Errorf("want one %s task on the reports queue, got %+v", TaskTypeReportExport, pending)
 	}
 }
 

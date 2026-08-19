@@ -83,7 +83,19 @@ if ! MIGRATE_OUT=$(in_go_container go run github.com/pressly/goose/v3/cmd/goose@
 fi
 
 info "running persistence integration tests"
-in_go_container go test -tags=integration -count=1 "$@" ./internal/db/... ./internal/cache/...
+# -p 1 runs the packages one at a time rather than in parallel, which is
+# mandatory rather than a tuning choice: they share one database and each
+# TRUNCATEs the tables it owns to start from a known state. Run
+# concurrently, one package empties a table another is mid-assertion on,
+# and the failures land on whichever test happened to lose the race.
+#
+# internal/fup and internal/reporting joined this list when the task queue
+# moved off Redis (migration 037): their queue tests used to get isolation
+# for free from a per-test in-process miniredis, and now share
+# jobqueue_tasks with everything else.
+in_go_container go test -tags=integration -count=1 -p 1 "$@" \
+    ./internal/db/... ./internal/cache/... ./internal/fup/... ./internal/reporting/... \
+    ./internal/jobqueue/...
 CODE=$?
 
 echo ""

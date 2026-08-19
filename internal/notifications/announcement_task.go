@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/hibiken/asynq"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 )
 
 // Announcement fan-out task — FR-ANN-001..002 | MDS §4.17.
@@ -13,7 +13,7 @@ import (
 const (
 	// TaskTypeAnnouncement carries one announcement to one subscriber on one
 	// channel. Fan-out enqueues N×M of these rather than one bulk task: a
-	// per-recipient task gets Asynq's existing retry and dead-lettering, and
+	// per-recipient task gets the queue's existing retry and dead-lettering, and
 	// one unreachable subscriber cannot fail the whole broadcast.
 	TaskTypeAnnouncement = "notif:announcement"
 
@@ -24,7 +24,7 @@ const (
 	QueueAnnouncements = "announcements"
 )
 
-// AnnouncementPayload is the Asynq payload for one fanned-out message.
+// AnnouncementPayload is the task payload for one fanned-out message.
 type AnnouncementPayload struct {
 	AnnouncementID int    `json:"announcement_id"`
 	SubscriberID   int    `json:"subscriber_id"`
@@ -44,15 +44,15 @@ func NewAnnouncementHandler(d *Dispatcher) *AnnouncementHandler {
 	return &AnnouncementHandler{dispatcher: d}
 }
 
-// ProcessTask implements asynq.Handler for TaskTypeAnnouncement.
+// ProcessTask implements jobqueue.Handler for TaskTypeAnnouncement.
 //
 // Routes through the ordinary Dispatcher, which is the whole point of
 // FR-ANN-002: DND suppression, channel selection and notification_log all
 // come from the path that already exists rather than a parallel one.
-func (h *AnnouncementHandler) ProcessTask(ctx context.Context, t *asynq.Task) error {
+func (h *AnnouncementHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p AnnouncementPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("announcement: unmarshal payload: %w: %w", err, asynq.SkipRetry)
+		return fmt.Errorf("announcement: unmarshal payload: %w: %w", err, jobqueue.SkipRetry)
 	}
 	if h.dispatcher == nil {
 		return fmt.Errorf("announcement: dispatcher not configured")

@@ -58,7 +58,7 @@ type Alerter interface {
 	Trigger(event string, detail any)
 }
 
-// ReconcileJob runs nightly at 02:00 IST via Asynq cron.
+// ReconcileJob runs nightly at 02:00 IST on a nightly schedule.
 //
 // FR: FR-REV-001..004 | DDS §5.10
 type ReconcileJob struct {

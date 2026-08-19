@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/hibiken/asynq"
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/maaransoft/isp-bss-oss/internal/partner"
 	"github.com/maaransoft/isp-bss-oss/internal/revenue"
@@ -808,10 +808,10 @@ func (h *Handler) enqueuePaymentReceipt(ctx context.Context, subscriberID int, a
 		return
 	}
 
-	task := asynq.NewTask(billing.TaskTypePaymentReceipt, payload,
-		asynq.Queue(billing.QueueNotifications),
-		asynq.MaxRetry(3),
-		asynq.Retention(24*time.Hour))
+	task := jobqueue.NewTask(billing.TaskTypePaymentReceipt, payload,
+		jobqueue.Queue(billing.QueueNotifications),
+		jobqueue.MaxRetry(3),
+		jobqueue.Retention(24*time.Hour))
 	if _, err := h.tasks.Enqueue(task); err != nil {
 		log.Warn().Err(err).Int("subscriber_id", subscriberID).
 			Msg("api: payment receipt enqueue failed")
