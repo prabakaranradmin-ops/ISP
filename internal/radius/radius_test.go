@@ -17,22 +17,31 @@ package radius_test
 
 import (
 	"context"
-	"strconv"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
-
+	"github.com/maaransoft/isp-bss-oss/internal/localcache"
 	"github.com/maaransoft/isp-bss-oss/internal/radius"
 )
 
-func newGuard(t *testing.T) (*radius.BruteForceGuard, *miniredis.Miniredis) {
+// newGuard returns a guard and the counter behind it, so a test can seed a
+// starting count or inspect the lockout TTL directly. Fully in-process since
+// the move off Redis — see internal/localcache's package doc.
+func newGuard(t *testing.T) (*radius.BruteForceGuard, *localcache.Counter) {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rc.Close() })
-	return radius.NewBruteForceGuard(rc), mr
+	counter := localcache.NewCounter(time.Hour) // no sweep during a test
+	t.Cleanup(counter.Close)
+	return radius.NewBruteForceGuard(counter), counter
+}
+
+// seedFailures brings a username's counter up to n recorded failures.
+func seedFailures(t *testing.T, g *radius.BruteForceGuard, username string, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		if err := g.RecordFailure(context.Background(), username); err != nil {
+			t.Fatalf("seed failure %d: %v", i, err)
+		}
+	}
 }
 
 func TestFR_SEC_001_BruteForceKeyFormat(t *testing.T) {
@@ -87,10 +96,8 @@ func TestFR_SEC_001_BruteForceGuard_IsBlockedAtThreshold(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("below the threshold is not blocked", func(t *testing.T) {
-		g, mr := newGuard(t)
-		if err := mr.Set(radius.BruteForceKey("u"), strconv.Itoa(radius.MaxFailedAttempts-1)); err != nil {
-			t.Fatalf("seed counter: %v", err)
-		}
+		g, _ := newGuard(t)
+		seedFailures(t, g, "u", radius.MaxFailedAttempts-1)
 		blocked, err := g.IsBlocked(ctx, "u")
 		if err != nil {
 			t.Fatalf("IsBlocked: %v", err)
@@ -101,10 +108,8 @@ func TestFR_SEC_001_BruteForceGuard_IsBlockedAtThreshold(t *testing.T) {
 	})
 
 	t.Run("at the threshold is blocked", func(t *testing.T) {
-		g, mr := newGuard(t)
-		if err := mr.Set(radius.BruteForceKey("u"), strconv.Itoa(radius.MaxFailedAttempts)); err != nil {
-			t.Fatalf("seed counter: %v", err)
-		}
+		g, _ := newGuard(t)
+		seedFailures(t, g, "u", radius.MaxFailedAttempts)
 		blocked, err := g.IsBlocked(ctx, "u")
 		if err != nil {
 			t.Fatalf("IsBlocked: %v", err)
@@ -156,38 +161,24 @@ func TestFR_SEC_001_BruteForceGuard_CheckReportsHasFailures(t *testing.T) {
 	}
 }
 
-// TestFR_SEC_001_BruteForceGuard_CorruptCounterDoesNotLockOut covers the
-// deliberate choice in Check: a non-numeric counter must not lock a subscriber
-// out permanently, but must still be reported as resettable so the next
-// success clears it.
-func TestFR_SEC_001_BruteForceGuard_CorruptCounterDoesNotLockOut(t *testing.T) {
-	g, mr := newGuard(t)
-	if err := mr.Set(radius.BruteForceKey("u"), "not-a-number"); err != nil {
-		t.Fatalf("seed corrupt counter: %v", err)
-	}
-
-	blocked, hasFailures, err := g.Check(context.Background(), "u")
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if blocked {
-		t.Error("a corrupt counter must not lock a subscriber out")
-	}
-	if !hasFailures {
-		t.Error("a corrupt counter must still be reported so it gets cleared on success")
-	}
-}
+// There was a TestFR_SEC_001_BruteForceGuard_CorruptCounterDoesNotLockOut
+// here, covering Check's handling of a counter Redis held as a non-numeric
+// string ("a corrupt counter must not lock a subscriber out permanently").
+// That failure mode no longer exists to test: the counter is an int64 in
+// localcache.Counter, so there is no parse step that can fail and no way to
+// represent a corrupt value. Removed rather than rewritten into something
+// that asserts nothing.
 
 // TestFR_SEC_001_BruteForceGuard_RecordFailureSetsLockoutTTL verifies the
-// counter is given the lockout TTL. Without it the key would live forever and
-// a subscriber who failed ten times months apart would be locked out.
+// counter is given the lockout TTL. Without it the entry would live forever
+// and a subscriber who failed ten times months apart would be locked out.
 func TestFR_SEC_001_BruteForceGuard_RecordFailureSetsLockoutTTL(t *testing.T) {
-	g, mr := newGuard(t)
+	g, counter := newGuard(t)
 	if err := g.RecordFailure(context.Background(), "u"); err != nil {
 		t.Fatalf("RecordFailure: %v", err)
 	}
 
-	ttl := mr.TTL(radius.BruteForceKey("u"))
+	ttl := counter.TTL(radius.BruteForceKey("u"))
 	if ttl <= 0 {
 		t.Fatal("the failure counter must carry a TTL")
 	}
@@ -201,30 +192,43 @@ func TestFR_SEC_001_BruteForceGuard_RecordFailureSetsLockoutTTL(t *testing.T) {
 // progress.
 func TestFR_SEC_001_BruteForceGuard_TTLRefreshedOnEachFailure(t *testing.T) {
 	ctx := context.Background()
-	g, mr := newGuard(t)
+	g, counter := newGuard(t)
 
 	if err := g.RecordFailure(ctx, "u"); err != nil {
 		t.Fatalf("first failure: %v", err)
 	}
-	mr.FastForward(5 * time.Minute)
+
+	// Real elapsed time, rather than miniredis's FastForward — an in-process
+	// counter has no clock to fast-forward. The window is asserted as
+	// decay-then-refresh rather than by comparing two TTLs taken moments
+	// apart: both would read within microseconds of the full LockoutDuration,
+	// so which is larger would come down to measurement noise.
+	const elapsed = 100 * time.Millisecond
+	time.Sleep(elapsed)
+
+	decayed := counter.TTL(radius.BruteForceKey("u"))
+	if decayed >= radius.LockoutDuration {
+		t.Fatalf("TTL should have decayed below the full window after %s, got %s", elapsed, decayed)
+	}
+
 	if err := g.RecordFailure(ctx, "u"); err != nil {
 		t.Fatalf("second failure: %v", err)
 	}
 
-	if ttl := mr.TTL(radius.BruteForceKey("u")); ttl <= radius.LockoutDuration-5*time.Minute {
-		t.Errorf("TTL should have been refreshed to the full lockout window, got %s", ttl)
+	refreshed := counter.TTL(radius.BruteForceKey("u"))
+	if refreshed <= decayed {
+		t.Errorf("a further failure must push the lockout window back out: %s -> %s", decayed, refreshed)
+	}
+	if refreshed > radius.LockoutDuration {
+		t.Errorf("refreshed TTL %s exceeds LockoutDuration %s", refreshed, radius.LockoutDuration)
 	}
 }
 
 func TestFR_SEC_001_BruteForceGuard_ResetClearsCounter(t *testing.T) {
 	ctx := context.Background()
-	g, mr := newGuard(t)
+	g, counter := newGuard(t)
 
-	for i := 0; i < radius.MaxFailedAttempts; i++ {
-		if err := g.RecordFailure(ctx, "u"); err != nil {
-			t.Fatalf("RecordFailure %d: %v", i, err)
-		}
-	}
+	seedFailures(t, g, "u", radius.MaxFailedAttempts)
 	blocked, err := g.IsBlocked(ctx, "u")
 	if err != nil || !blocked {
 		t.Fatalf("want blocked before reset (blocked=%v err=%v)", blocked, err)
@@ -233,8 +237,8 @@ func TestFR_SEC_001_BruteForceGuard_ResetClearsCounter(t *testing.T) {
 	if err := g.Reset(ctx, "u"); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
-	if mr.Exists(radius.BruteForceKey("u")) {
-		t.Error("Reset must delete the counter key")
+	if _, exists := counter.Get(radius.BruteForceKey("u")); exists {
+		t.Error("Reset must delete the counter entry")
 	}
 	blocked, err = g.IsBlocked(ctx, "u")
 	if err != nil {
@@ -246,15 +250,15 @@ func TestFR_SEC_001_BruteForceGuard_ResetClearsCounter(t *testing.T) {
 }
 
 // TestFR_SEC_001_BruteForceGuard_NilGuardIsInert covers the nil-receiver and
-// nil-client guards. The daemon runs without Redis in some configurations, and
-// in that mode the guard must degrade to "never blocks" rather than panic on
-// the authentication path.
+// nil-counter guards. The daemon can be constructed without a guard, and in
+// that mode it must degrade to "never blocks" rather than panic on the
+// authentication path.
 func TestFR_SEC_001_BruteForceGuard_NilGuardIsInert(t *testing.T) {
 	ctx := context.Background()
 
 	for name, g := range map[string]*radius.BruteForceGuard{
-		"nil guard":        nil,
-		"nil redis client": radius.NewBruteForceGuard(nil),
+		"nil guard":   nil,
+		"nil counter": radius.NewBruteForceGuard(nil),
 	} {
 		t.Run(name, func(t *testing.T) {
 			blocked, hasFailures, err := g.Check(ctx, "u")
@@ -275,20 +279,10 @@ func TestFR_SEC_001_BruteForceGuard_NilGuardIsInert(t *testing.T) {
 	}
 }
 
-// TestFR_SEC_001_BruteForceGuard_RedisDownSurfacesError — unlike the subscriber
-// cache, a brute-force read failure is reported rather than swallowed: silently
-// treating it as "not blocked" would disable the lockout whenever Redis blips.
-func TestFR_SEC_001_BruteForceGuard_RedisDownSurfacesError(t *testing.T) {
-	g, mr := newGuard(t)
-	mr.Close()
-
-	if _, err := g.IsBlocked(context.Background(), "u"); err == nil {
-		t.Error("a Redis failure must surface rather than report 'not blocked'")
-	}
-	if err := g.RecordFailure(context.Background(), "u"); err == nil {
-		t.Error("RecordFailure must surface a Redis failure")
-	}
-	if err := g.Reset(context.Background(), "u"); err == nil {
-		t.Error("Reset must surface a Redis failure")
-	}
-}
+// There was a TestFR_SEC_001_BruteForceGuard_RedisDownSurfacesError here,
+// asserting that a Redis read failure was reported rather than swallowed
+// (silently treating it as "not blocked" would have disabled the lockout
+// whenever Redis blipped). With the counter in process there is no network
+// call that can fail, so the guard's methods no longer have an error path to
+// exercise — they keep returning error only to preserve the interface their
+// callers already handle.

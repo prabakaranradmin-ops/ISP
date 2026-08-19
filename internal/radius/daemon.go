@@ -12,10 +12,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"layeh.com/radius"
 
+	"github.com/maaransoft/isp-bss-oss/internal/localcache"
 	"github.com/maaransoft/isp-bss-oss/internal/nas"
 )
 
@@ -131,7 +131,7 @@ type RadiusDaemon struct {
 	acctAddr      string
 	secret        []byte
 	db            DBQuerier
-	redisClient   redis.UniversalClient
+	acctDedup     *localcache.Store[struct{}]
 	guard         *BruteForceGuard
 	verifierCache *VerifierCache
 	packetQueue   chan radiusJob
@@ -140,6 +140,7 @@ type RadiusDaemon struct {
 	eapSessions   *EAPSessionStore
 	acctDB        AccountingStore
 	grantUsageDB  GrantUsageDB
+	liveSessions  LiveSessionWriter
 }
 
 // DefaultAcctAddr is the RFC 2866 accounting port. Authentication and
@@ -176,19 +177,58 @@ func (d *RadiusDaemon) SetNASResolver(r *nas.Resolver) {
 	d.nasResolver = r
 }
 
+// LiveSessionWriter records the daemon's view of live session state, read by
+// the health endpoint and the subscriber portal's live-usage panel.
+//
+// Satisfied by *cache.SessionStore. A separate interface (rather than
+// depending on the cache package directly) keeps this package's dependency
+// graph one-directional: cache already imports radius for radius.DBQuerier,
+// so radius importing cache back would cycle.
+type LiveSessionWriter interface {
+	Put(ctx context.Context, sess LiveSession) error
+	UpdateOctets(ctx context.Context, sessionID string, inputOctets, outputOctets int64) error
+	DeleteBySessionID(ctx context.Context, sessionID string) error
+}
+
+// LiveSession is what the daemon knows about a session at Accounting-Start,
+// enough for LiveSessionWriter.Put — deliberately a subset of cache.Session,
+// which additionally carries fields (byte counters that accumulate over the
+// session's life) this package has no reason to compute itself.
+type LiveSession struct {
+	SessionID    string
+	SubscriberID int
+	NasIP        string
+	AssignedIP   string
+	SpeedProfile string
+	FUPThrottled bool
+}
+
+// SetLiveSessionStore enables live session tracking for the health endpoint
+// and the subscriber portal's live-usage panel (DDS §5.9, IDD §8.4).
+// Optional: without it, accounting still persists to subscriber_session_history
+// exactly as before, and those two read surfaces simply report "offline".
+func (d *RadiusDaemon) SetLiveSessionStore(s LiveSessionWriter) {
+	d.liveSessions = s
+}
+
 // NewRadiusDaemon constructs a RadiusDaemon. verifierSecret keys the
 // fast-verifier cache (see VerifierCache) that lets repeat authentications
 // skip bcrypt cost-12 to meet NFR-PERF-001's 15ms p99 budget; it must be a
 // separate secret from secret (the RADIUS shared secret used for NAS
 // protocol obfuscation), not the same value reused for a different purpose.
-func NewRadiusDaemon(addr string, secret []byte, db DBQuerier, rc redis.UniversalClient, verifierSecret []byte) *RadiusDaemon {
+//
+// The brute-force guard, verifier cache and accounting dedup store are all
+// in-process caches this daemon owns for its own lifetime — see
+// internal/localcache's package doc — so they are constructed here rather
+// than threaded in from cmd/radiusd.
+func NewRadiusDaemon(addr string, secret []byte, db DBQuerier, verifierSecret []byte) *RadiusDaemon {
 	return &RadiusDaemon{
 		addr:          addr,
 		secret:        secret,
 		db:            db,
-		redisClient:   rc,
-		guard:         NewBruteForceGuard(rc),
-		verifierCache: NewVerifierCache(rc, verifierSecret),
+		acctDedup:     localcache.New[struct{}](0),
+		guard:         NewBruteForceGuard(localcache.NewCounter(0)),
+		verifierCache: NewVerifierCache(localcache.New[[]byte](0), verifierSecret),
 		packetQueue:   make(chan radiusJob, workerCount*4),
 	}
 }

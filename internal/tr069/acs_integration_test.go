@@ -2,11 +2,12 @@
 
 // End-to-end ACS session tests — FR-CPE-001..003 | MDS §4.19.
 //
-// A simulated CPE walks the real handler through a whole CWMP session
-// against a real (in-process) Redis: Inform, drain the queue, close. The
-// device is simulated because the alternative is a physical router on a
-// bench — which is the field test this cannot replace, and which the module
-// notes as still outstanding.
+// A simulated CPE walks the real handler through a whole CWMP session:
+// Inform, drain the queue, close. The device is simulated because the
+// alternative is a physical router on a bench — which is the field test this
+// cannot replace, and which the module notes as still outstanding. Session
+// state used to require a real (in-process) Redis here; it is now held in
+// process by the ACS itself.
 package tr069_test
 
 import (
@@ -17,9 +18,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
 
 	"github.com/maaransoft/isp-bss-oss/internal/tr069"
 )
@@ -133,12 +131,8 @@ func (s *stubStore) EnqueueTask(_ context.Context, deviceID int, rpcType string,
 
 func newACS(t *testing.T) (*tr069.ACS, *stubStore) {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rc.Close() })
-
 	store := newStubStore()
-	return tr069.NewACS(store, rc), store
+	return tr069.NewACS(store), store
 }
 
 // cpe simulates a device holding a session cookie across requests.

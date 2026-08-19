@@ -4,14 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+
+	"github.com/maaransoft/isp-bss-oss/internal/localcache"
 )
 
 // The ACS session engine — FR-CPE-001..003 | MDS §4.19.
@@ -68,14 +68,14 @@ type Store interface {
 
 // ACS is the CWMP HTTP handler.
 type ACS struct {
-	store Store
-	rc    redis.UniversalClient
-	ttl   time.Duration
+	store    Store
+	sessions *localcache.Store[*Session]
+	ttl      time.Duration
 }
 
 // NewACS constructs an ACS.
-func NewACS(store Store, rc redis.UniversalClient) *ACS {
-	return &ACS{store: store, rc: rc, ttl: sessionTTL}
+func NewACS(store Store) *ACS {
+	return &ACS{store: store, sessions: localcache.New[*Session](0), ttl: sessionTTL}
 }
 
 func sessionKey(id string) string { return "tr069_session:" + id }
@@ -346,35 +346,26 @@ func sessionIDFrom(r *http.Request) string {
 	return c.Value
 }
 
-func (a *ACS) saveSession(ctx context.Context, id string, sess *Session) error {
-	payload, err := json.Marshal(sess)
-	if err != nil {
-		return fmt.Errorf("tr069: marshal session: %w", err)
-	}
-	return a.rc.Set(ctx, sessionKey(id), payload, a.ttl).Err()
+func (a *ACS) saveSession(_ context.Context, id string, sess *Session) error {
+	a.sessions.Set(sessionKey(id), sess, a.ttl)
+	return nil
 }
 
-func (a *ACS) loadSession(ctx context.Context, r *http.Request) *Session {
+func (a *ACS) loadSession(_ context.Context, r *http.Request) *Session {
 	id := sessionIDFrom(r)
 	if id == "" {
 		return nil
 	}
-	raw, err := a.rc.Get(ctx, sessionKey(id)).Bytes()
-	if err != nil {
+	sess, ok := a.sessions.Get(sessionKey(id))
+	if !ok {
 		return nil
 	}
-	var sess Session
-	if err := json.Unmarshal(raw, &sess); err != nil {
-		return nil
-	}
-	return &sess
+	return sess
 }
 
-func (a *ACS) clearSession(ctx context.Context, r *http.Request) {
+func (a *ACS) clearSession(_ context.Context, r *http.Request) {
 	if id := sessionIDFrom(r); id != "" {
-		if err := a.rc.Del(ctx, sessionKey(id)).Err(); err != nil {
-			log.Warn().Err(err).Msg("tr069: could not clear the CWMP session")
-		}
+		a.sessions.Delete(sessionKey(id))
 	}
 }
 

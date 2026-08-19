@@ -130,15 +130,11 @@ func (d *RadiusDaemon) handleAccounting(ctx context.Context, w radius.ResponseWr
 	inputOctets, outputOctets := acctOctets(r.Packet)
 	dedupKey := "acct_dedup:" + sessionID + ":" + status + ":" +
 		strconv.FormatInt(inputOctets, 10) + ":" + strconv.FormatInt(outputOctets, 10)
-	if d.redisClient != nil {
-		isNew, err := d.redisClient.SetNX(ctx, dedupKey, "1", 30*time.Second).Result()
-		if err == nil && !isNew {
+	if d.acctDedup != nil {
+		if isNew := d.acctDedup.TrySet(dedupKey, struct{}{}, 30*time.Second); !isNew {
 			radiusDedupSkipped.Inc()
 			return
 		}
-		// A Redis failure falls through to persist. Double-counting one
-		// retransmitted record overwrites a row with the same counters, which is
-		// harmless; dropping the record loses the usage outright.
 	}
 
 	if d.acctDB == nil {
@@ -217,20 +213,38 @@ func (d *RadiusDaemon) meterVoucherSession(ctx context.Context, r *radius.Reques
 }
 
 func (d *RadiusDaemon) acctStart(ctx context.Context, r *radius.Request, sessionID, status string) {
-	subscriberID, ok := d.resolveAccountingSubscriber(ctx, r)
+	sub, ok := d.resolveAccountingSubscriber(ctx, r)
 	if !ok {
 		radiusAcctProcessed.WithLabelValues(status, "unresolved_subscriber").Inc()
 		return
 	}
 
-	if err := d.acctDB.StartSession(ctx, subscriberID, sessionID,
-		accountingNASIP(r), framedIP(r.Packet)); err != nil {
+	nasIP, assignedIP := accountingNASIP(r), framedIP(r.Packet)
+	if err := d.acctDB.StartSession(ctx, sub.ID, sessionID, nasIP, assignedIP); err != nil {
 		radiusAcctProcessed.WithLabelValues(status, "error").Inc()
-		log.Error().Err(err).Str("session_id", sessionID).Int("subscriber_id", subscriberID).
+		log.Error().Err(err).Str("session_id", sessionID).Int("subscriber_id", sub.ID).
 			Msg("radius: accounting start persist failed")
 		return
 	}
 	radiusAcctProcessed.WithLabelValues(status, "persisted").Inc()
+
+	// Live session tracking (DDS §5.9, IDD §8.4) is a read surface for the
+	// health endpoint and the portal's live-usage panel, not the accounting
+	// record of truth — a failure here is logged, not retried or treated as
+	// the accounting request failing.
+	if d.liveSessions != nil {
+		err := d.liveSessions.Put(ctx, LiveSession{
+			SessionID:    sessionID,
+			SubscriberID: sub.ID,
+			NasIP:        nasIP,
+			AssignedIP:   assignedIP,
+			SpeedProfile: sub.RateLimitStr,
+			FUPThrottled: sub.FUPActive,
+		})
+		if err != nil {
+			log.Warn().Err(err).Str("session_id", sessionID).Msg("radius: live session tracking failed")
+		}
+	}
 }
 
 func (d *RadiusDaemon) acctUpdate(ctx context.Context, sessionID, status string, in, out int64) {
@@ -246,6 +260,12 @@ func (d *RadiusDaemon) acctUpdate(ctx context.Context, sessionID, status string,
 		return
 	}
 	radiusAcctProcessed.WithLabelValues(status, "persisted").Inc()
+
+	if d.liveSessions != nil {
+		if err := d.liveSessions.UpdateOctets(ctx, sessionID, in, out); err != nil {
+			log.Warn().Err(err).Str("session_id", sessionID).Msg("radius: live session update failed")
+		}
+	}
 }
 
 func (d *RadiusDaemon) acctStop(ctx context.Context, r *radius.Request, sessionID, status string, in, out int64) {
@@ -262,19 +282,31 @@ func (d *RadiusDaemon) acctStop(ctx context.Context, r *radius.Request, sessionI
 		return
 	}
 	radiusAcctProcessed.WithLabelValues(status, "persisted").Inc()
+
+	if d.liveSessions != nil {
+		if err := d.liveSessions.DeleteBySessionID(ctx, sessionID); err != nil {
+			log.Warn().Err(err).Str("session_id", sessionID).Msg("radius: live session cleanup failed")
+		}
+	}
 }
 
-// resolveAccountingSubscriber maps the record's User-Name to a subscriber id.
+// resolveAccountingSubscriber maps the record's User-Name to the subscriber
+// it belongs to.
 //
 // Two shapes arrive, matching the two ways a session can have been authorised.
 // A MAC-shaped User-Name came from MAC Auth Bypass (FR-HSP-002) and resolves
 // through the same hotspot lookup that authorised it; anything else is an
 // ordinary subscriber username. Checking MAC first mirrors handleAuth, so a
 // session is accounted against the identity that actually authenticated it.
-func (d *RadiusDaemon) resolveAccountingSubscriber(ctx context.Context, r *radius.Request) (int, bool) {
+//
+// Returns the full Subscriber, not just its id: acctStart's live-session
+// write needs RateLimitStr/FUPActive, and this lookup already has them in
+// hand — a second query just to re-fetch fields already read here would be
+// wasted work on every Accounting-Start.
+func (d *RadiusDaemon) resolveAccountingSubscriber(ctx context.Context, r *radius.Request) (*Subscriber, bool) {
 	username := rfc2865.UserName_GetString(r.Packet)
 	if username == "" {
-		return 0, false
+		return nil, false
 	}
 
 	if mac, isMAC := NormaliseMAC(username); isMAC && d.mabDB != nil {
@@ -285,7 +317,7 @@ func (d *RadiusDaemon) resolveAccountingSubscriber(ctx context.Context, r *radiu
 		sub, err := d.mabDB.AuthorizeMAC(ctx, mac, nasID)
 		if err != nil {
 			log.Error().Err(err).Str("mac", mac).Msg("radius: accounting MAC lookup failed")
-			return 0, false
+			return nil, false
 		}
 		// A voucher-backed grant resolves to id 0 by construction: it has no
 		// subscriber row (chk_grant_has_exactly_one_source, migration 034), so
@@ -293,9 +325,9 @@ func (d *RadiusDaemon) resolveAccountingSubscriber(ctx context.Context, r *radiu
 		// sessions are unrecorded, which is also why a voucher's data cap cannot
 		// be enforced yet.
 		if sub == nil || sub.ID == 0 {
-			return 0, false
+			return nil, false
 		}
-		return sub.ID, true
+		return sub, true
 	}
 
 	sub, err := d.db.GetSubscriberByUsername(ctx, username)
@@ -303,9 +335,20 @@ func (d *RadiusDaemon) resolveAccountingSubscriber(ctx context.Context, r *radiu
 		if err != nil {
 			log.Error().Err(err).Str("username", username).Msg("radius: accounting subscriber lookup failed")
 		}
-		return 0, false
+		return nil, false
 	}
-	return sub.ID, true
+	return sub, true
+}
+
+// acctDedupSize reports how many live accounting-dedup entries are held.
+// Test-facing: TestFR_AAA_003_RetransmitIsDedupedPerSession asserts one key
+// per distinct record, which is the property that broke when the key was
+// NAS-Identifier rather than per-session.
+func (d *RadiusDaemon) acctDedupSize() int {
+	if d.acctDedup == nil {
+		return 0
+	}
+	return d.acctDedup.Len()
 }
 
 // acctOctets returns total input and output bytes for the record.

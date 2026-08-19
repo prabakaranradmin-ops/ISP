@@ -21,7 +21,6 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
@@ -78,13 +77,14 @@ func run() error {
 	defer database.Close()
 	log.Info().Msg("radiusd: PostgreSQL connected")
 
-	redisClient := newRedisClient(cfg)
-	defer redisClient.Close() //nolint:errcheck
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		return fmt.Errorf("connect to Redis: %w", err)
-	}
-	log.Info().Msg("radiusd: Redis connected")
-
+	// Asynq (the task queue for CoA/PoD, notifications and webhooks) still
+	// runs on Redis in this phase — see the Phase 2 plan for its
+	// Postgres-backed replacement. It is the only remaining Redis dependency
+	// in radiusd: everything else that used to be Redis-backed (the RADIUS
+	// auth cache, the verifier cache, the brute-force guard, EAP session
+	// state, accounting dedup) is now an in-process cache — see
+	// internal/localcache's package doc for why a single-machine install no
+	// longer needs those to be network-visible.
 	asynqRedis := asynqRedisOpt(cfg)
 	asynqClient := asynq.NewClient(asynqRedis)
 	defer asynqClient.Close() //nolint:errcheck
@@ -142,20 +142,19 @@ func run() error {
 
 	// ── RADIUS daemon ───────────────────────────────────────────────────────
 
-	// Auth reads go through the Redis cache, not straight to PostgreSQL: SAD
-	// requires the hot path to stay off the database, and a direct lookup per
-	// Access-Request misses the NFR-PERF-001 15ms p99 budget by roughly 3x.
-	subscriberCache := cache.NewSubscriberCache(database.Radius(), redisClient, cfg.SubscriberCacheTTL)
+	// Auth reads go through an in-process cache, not straight to PostgreSQL:
+	// SAD requires the hot path to stay off the database, and a direct lookup
+	// per Access-Request misses the NFR-PERF-001 15ms p99 budget by roughly 3x.
+	subscriberCache := cache.NewSubscriberCache(database.Radius(), cfg.SubscriberCacheTTL)
 
-	daemon := radius.NewRadiusDaemon(cfg.RadiusAddr, []byte(cfg.RadiusSecret), subscriberCache, redisClient, []byte(cfg.RadiusVerifierSecret))
+	daemon := radius.NewRadiusDaemon(cfg.RadiusAddr, []byte(cfg.RadiusSecret), subscriberCache, []byte(cfg.RadiusVerifierSecret))
 	if nasResolver != nil {
 		daemon.SetNASResolver(nasResolver)
 	}
-	// EAP-MSCHAPv2 (FR-AAA-006, MDS §4.18). Conversation state lives in
-	// Redis rather than process memory so consecutive packets of one
-	// authentication can land on different radiusd instances — which is
-	// exactly what a NAS load-balancing across servers will do.
-	daemon.SetEAPSessionStore(radius.NewEAPSessionStore(redisClient))
+	// EAP-MSCHAPv2 (FR-AAA-006, MDS §4.18). Conversation state is held in
+	// process memory: a single-machine install runs exactly one radiusd, so
+	// consecutive packets of one authentication always land on it.
+	daemon.SetEAPSessionStore(radius.NewEAPSessionStore())
 	// MAC Auth Bypass for hotspot NAS devices (FR-HSP-002, MDS §4.23). Wiring
 	// the querier does not enable MAB anywhere: nas_devices.allow_mab defaults
 	// FALSE, so it stays unreachable until an operator turns it on for a
@@ -169,6 +168,24 @@ func run() error {
 	// Voucher-backed hotspot sessions have no subscriber row, so they cannot go
 	// in session history; they are metered on their grant instead (FR-HSP-001).
 	daemon.SetGrantUsageDB(database.Hotspot())
+	// Live session state (DDS §5.9, IDD §8.4) — what the health endpoint and
+	// the subscriber portal's live-usage panel read. Nothing wrote this before
+	// the move off Redis: cmd/api constructed the store for reads and
+	// scripts/demo_up.sh seeded it by hand for the demo, so on a real
+	// deployment both surfaces reported "offline" permanently.
+	liveSessions := cache.NewSessionStore(database.Pool())
+	daemon.SetLiveSessionStore(liveSessions)
+	// A session whose Accounting-Stop never arrives (crashed NAS, lost packet)
+	// leaves a row nothing else deletes. Readers already filter on staleness,
+	// so this only bounds table growth.
+	sessionSweeper := cache.NewStalenessSweeper(database.Pool(), 0)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		log.Info().Msg("radiusd: live session staleness sweeper started")
+		sessionSweeper.Run(ctx)
+		log.Info().Msg("radiusd: live session staleness sweeper stopped")
+	}()
 	daemon.SetAcctAddr(cfg.RadiusAcctAddr)
 	wg.Add(1)
 	go func() {
@@ -591,34 +608,13 @@ func dbConfig(cfg *config.Config) db.Config {
 	return c
 }
 
-// redisPoolSize is sized against the RADIUS worker pool, not the CPU count.
-//
-// go-redis defaults to 10 connections per CPU. The daemon runs 128 workers that
-// each make Redis calls on the authentication path, so on a small-CPU container
-// the default pool is smaller than the worker count and workers queue for a
-// connection — which shows up as authentication latency, not as a Redis problem.
-const redisPoolSize = 160
-
-func newRedisClient(cfg *config.Config) redis.UniversalClient {
-	if cfg.UsesSentinel() {
-		return redis.NewFailoverClient(&redis.FailoverOptions{
-			MasterName:    cfg.RedisMasterName,
-			SentinelAddrs: cfg.RedisSentinelAddrs,
-			Password:      cfg.RedisPassword,
-			PoolSize:      redisPoolSize,
-			MinIdleConns:  workerConcurrency,
-		})
-	}
-	return redis.NewClient(&redis.Options{
-		Addr:         cfg.RedisAddr,
-		Password:     cfg.RedisPassword,
-		PoolSize:     redisPoolSize,
-		MinIdleConns: workerConcurrency,
-	})
-}
-
 // asynqRedisOpt mirrors the Redis configuration for Asynq, which takes its own
 // connection options rather than an existing client.
+//
+// Asynq is the only thing left in radiusd that talks to Redis — every cache
+// and session store that used to is now in-process (internal/localcache) or
+// in Postgres. Its own Postgres-backed replacement is Phase 2 of the
+// Docker-free native port; until that lands, a Redis is still required.
 func asynqRedisOpt(cfg *config.Config) asynq.RedisConnOpt {
 	if cfg.UsesSentinel() {
 		return asynq.RedisFailoverClientOpt{

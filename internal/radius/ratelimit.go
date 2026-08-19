@@ -2,14 +2,12 @@ package radius
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/redis/go-redis/v9"
+
+	"github.com/maaransoft/isp-bss-oss/internal/localcache"
 )
 
 // Brute-force rate limiter metrics (FR-SEC-001)
@@ -25,41 +23,33 @@ const (
 	LockoutDuration   = 15 * time.Minute // lockout window
 )
 
-// BruteForceGuard enforces per-username attempt limits via Redis.
+// BruteForceGuard enforces per-username attempt limits via an in-process
+// fixed counter — see internal/localcache's package doc for why this no
+// longer needs to be a shared, network-visible store on a single-machine
+// install.
 //
 // FR: FR-SEC-001 | DDS §5.1
 type BruteForceGuard struct {
-	rc redis.UniversalClient
+	counter *localcache.Counter
 }
 
-// NewBruteForceGuard constructs a BruteForceGuard backed by rc.
-func NewBruteForceGuard(rc redis.UniversalClient) *BruteForceGuard {
-	return &BruteForceGuard{rc: rc}
+// NewBruteForceGuard constructs a BruteForceGuard backed by counter.
+func NewBruteForceGuard(counter *localcache.Counter) *BruteForceGuard {
+	return &BruteForceGuard{counter: counter}
 }
 
 // Check reports whether username is locked out, and whether any failure counter
 // exists at all.
 //
-// hasFailures lets the caller skip the reset DELETE after a successful
-// authentication when there is nothing to reset. On the hot path — a valid login
-// with no prior failures, which is the overwhelming majority — that removes a
-// Redis round-trip per request.
-func (g *BruteForceGuard) Check(ctx context.Context, username string) (blocked, hasFailures bool, err error) {
-	if g == nil || g.rc == nil {
+// hasFailures lets the caller skip the reset on a successful authentication
+// when there is nothing to reset.
+func (g *BruteForceGuard) Check(_ context.Context, username string) (blocked, hasFailures bool, err error) {
+	if g == nil || g.counter == nil {
 		return false, false, nil
 	}
-	val, err := g.rc.Get(ctx, BruteForceKey(username)).Result()
-	if errors.Is(err, redis.Nil) {
+	count, exists := g.counter.Get(BruteForceKey(username))
+	if !exists {
 		return false, false, nil
-	}
-	if err != nil {
-		return false, false, fmt.Errorf("bruteforce: read counter for %q: %w", username, err)
-	}
-	count, convErr := strconv.Atoi(val)
-	if convErr != nil {
-		// A corrupt counter must not lock a subscriber out permanently, but it
-		// should still be cleared on the next success.
-		return false, true, nil
 	}
 	if count >= MaxFailedAttempts {
 		bruteForceBlocked.Inc()
@@ -75,27 +65,21 @@ func (g *BruteForceGuard) IsBlocked(ctx context.Context, username string) (bool,
 }
 
 // RecordFailure increments the failure counter and refreshes its lockout TTL.
-func (g *BruteForceGuard) RecordFailure(ctx context.Context, username string) error {
-	if g == nil || g.rc == nil {
+func (g *BruteForceGuard) RecordFailure(_ context.Context, username string) error {
+	if g == nil || g.counter == nil {
 		return nil
 	}
 	key := BruteForceKey(username)
-	if err := g.rc.Incr(ctx, key).Err(); err != nil {
-		return fmt.Errorf("bruteforce: incr %q: %w", key, err)
-	}
-	if err := g.rc.Expire(ctx, key, LockoutDuration).Err(); err != nil {
-		return fmt.Errorf("bruteforce: expire %q: %w", key, err)
-	}
+	g.counter.Incr(key)
+	g.counter.Expire(key, LockoutDuration)
 	return nil
 }
 
 // Reset clears the failure counter after a successful authentication.
-func (g *BruteForceGuard) Reset(ctx context.Context, username string) error {
-	if g == nil || g.rc == nil {
+func (g *BruteForceGuard) Reset(_ context.Context, username string) error {
+	if g == nil || g.counter == nil {
 		return nil
 	}
-	if err := g.rc.Del(ctx, BruteForceKey(username)).Err(); err != nil {
-		return fmt.Errorf("bruteforce: reset %q: %w", BruteForceKey(username), err)
-	}
+	g.counter.Reset(BruteForceKey(username))
 	return nil
 }

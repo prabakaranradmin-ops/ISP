@@ -1,6 +1,13 @@
 # Binaries
 /bin/
 /dist/
+# `go build ./cmd/...` from the repo root drops the service executables here.
+# Named individually rather than a bare *.exe so a deliberately committed
+# tool would still have to be excluded on purpose, not by a blanket rule.
+/api.exe
+/radiusd.exe
+/radload.exe
+/bootstrap.exe
 
 # Go build cache
 *.test

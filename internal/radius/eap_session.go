@@ -4,13 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/redis/go-redis/v9"
+
+	"github.com/maaransoft/isp-bss-oss/internal/localcache"
 )
 
 // EAP-MSCHAPv2 session state — FR-AAA-006 | MDS §4.18.
@@ -89,18 +89,21 @@ type EAPSession struct {
 
 // EAPSessionStore persists in-flight conversations.
 //
-// Redis rather than process memory because radiusd is designed to run more
-// than one instance behind a NAS that may send consecutive packets of one
-// conversation to different servers — an in-memory map would authenticate
-// only when the round trips happened to land on the same process.
+// Backed by an in-process TTL map. This used to require Redis specifically
+// because radiusd was designed to run more than one instance behind a NAS
+// that may send consecutive packets of one conversation to different
+// servers — an in-memory map would authenticate only when the round trips
+// happened to land on the same process. A single-machine install runs
+// exactly one radiusd process, which retires that requirement — see
+// internal/localcache's package doc.
 type EAPSessionStore struct {
-	rc  redis.UniversalClient
-	ttl time.Duration
+	store *localcache.Store[*EAPSession]
+	ttl   time.Duration
 }
 
 // NewEAPSessionStore constructs an EAPSessionStore.
-func NewEAPSessionStore(rc redis.UniversalClient) *EAPSessionStore {
-	return &EAPSessionStore{rc: rc, ttl: eapSessionTTL}
+func NewEAPSessionStore() *EAPSessionStore {
+	return &EAPSessionStore{store: localcache.New[*EAPSession](0), ttl: eapSessionTTL}
 }
 
 func eapSessionKey(state string) string { return "radius_eap:" + state }
@@ -131,34 +134,21 @@ func NewChallenge() ([]byte, error) {
 }
 
 // Save stores a session against its State, refreshing the TTL.
-func (s *EAPSessionStore) Save(ctx context.Context, state string, sess *EAPSession) error {
-	payload, err := json.Marshal(sess)
-	if err != nil {
-		return fmt.Errorf("radius: marshal EAP session: %w", err)
-	}
-	if err := s.rc.Set(ctx, eapSessionKey(state), payload, s.ttl).Err(); err != nil {
-		return fmt.Errorf("radius: store EAP session: %w", err)
-	}
+func (s *EAPSessionStore) Save(_ context.Context, state string, sess *EAPSession) error {
+	s.store.Set(eapSessionKey(state), sess, s.ttl)
 	return nil
 }
 
 // Load fetches a session. A missing or expired entry returns (nil, nil):
-// the conversation must restart, which is different from an error talking to
-// Redis and is counted separately.
-func (s *EAPSessionStore) Load(ctx context.Context, state string) (*EAPSession, error) {
-	raw, err := s.rc.Get(ctx, eapSessionKey(state)).Bytes()
-	if err == redis.Nil {
+// the conversation must restart, which is different from an error and is
+// counted separately.
+func (s *EAPSessionStore) Load(_ context.Context, state string) (*EAPSession, error) {
+	sess, ok := s.store.Get(eapSessionKey(state))
+	if !ok {
 		eapSessionsLost.Inc()
 		return nil, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("radius: load EAP session: %w", err)
-	}
-	var sess EAPSession
-	if err := json.Unmarshal(raw, &sess); err != nil {
-		return nil, fmt.Errorf("radius: unmarshal EAP session: %w", err)
-	}
-	return &sess, nil
+	return sess, nil
 }
 
 // Delete removes a finished conversation.
@@ -167,9 +157,7 @@ func (s *EAPSessionStore) Load(ctx context.Context, state string) (*EAPSession, 
 // session behind would keep a used challenge alive until its TTL, and a
 // challenge that outlives its single use is exactly what replay protection
 // exists to prevent.
-func (s *EAPSessionStore) Delete(ctx context.Context, state string) error {
-	if err := s.rc.Del(ctx, eapSessionKey(state)).Err(); err != nil {
-		return fmt.Errorf("radius: delete EAP session: %w", err)
-	}
+func (s *EAPSessionStore) Delete(_ context.Context, state string) error {
+	s.store.Delete(eapSessionKey(state))
 	return nil
 }

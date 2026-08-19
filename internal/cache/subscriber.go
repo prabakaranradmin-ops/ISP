@@ -2,30 +2,23 @@ package cache
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/redis/go-redis/v9"
 
+	"github.com/maaransoft/isp-bss-oss/internal/localcache"
 	"github.com/maaransoft/isp-bss-oss/internal/radius"
 )
 
 var (
 	subscriberCacheHits = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "radius_subscriber_cache_hits_total",
-		Help: "Authentication lookups served from Redis",
+		Help: "Authentication lookups served from the in-process cache",
 	})
 	subscriberCacheMisses = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "radius_subscriber_cache_misses_total",
 		Help: "Authentication lookups that fell through to PostgreSQL",
-	})
-	subscriberCacheErrors = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "radius_subscriber_cache_errors_total",
-		Help: "Redis errors on the authentication path (served from PostgreSQL instead)",
 	})
 )
 
@@ -38,99 +31,91 @@ var (
 // re-authentication, not the primary enforcement path.
 const DefaultSubscriberTTL = 60 * time.Second
 
-// SubscriberCacheKey returns the Redis key holding a cached auth record.
+// SubscriberCacheKey returns the cache key holding a cached auth record.
 func SubscriberCacheKey(username string) string {
 	return "subscriber:auth:" + username
 }
 
 // cachedSubscriber is the stored form. A separate type from radius.Subscriber so
-// the wire format is explicit and does not silently change when a field is added
-// to the domain struct.
+// the cached shape is explicit and does not silently change when a field is
+// added to the domain struct.
 type cachedSubscriber struct {
-	ID           int    `json:"id"`
-	Username     string `json:"username"`
-	PasswordHash string `json:"password_hash"`
-	Status       string `json:"status"`
-	RateLimitStr string `json:"rate_limit"`
-	FUPActive    bool   `json:"fup_active"`
-	FUPThrottle  string `json:"fup_throttle"`
-	PlanID       int    `json:"plan_id,omitempty"`
+	ID           int
+	Username     string
+	PasswordHash string
+	Status       string
+	RateLimitStr string
+	FUPActive    bool
+	FUPThrottle  string
+	PlanID       int
 	// NotFound records a negative result, so a flood of requests for a username
 	// that does not exist cannot turn into a flood of database queries.
-	NotFound bool `json:"not_found,omitempty"`
+	NotFound bool
 }
 
-// SubscriberCache is a read-through Redis cache in front of the authentication
-// lookup, implementing SAD's "RADIUS never touches PostgreSQL on the hot path"
-// and the ≤5ms budget FR-AAA-002 sets.
+// SubscriberCache is a read-through, in-process cache in front of the
+// authentication lookup, implementing SAD's "RADIUS never touches PostgreSQL
+// on the hot path" and the ≤5ms budget FR-AAA-002 sets.
 //
 // It satisfies radius.DBQuerier, so the daemon is unaware it is cached.
 //
-// Redis is treated as an optimisation, never a dependency: any Redis failure
-// falls through to PostgreSQL and authentication continues to work.
+// This is a single-process cache: on the native single-machine deployment
+// radiusd runs as exactly one OS process, so there are no other replicas
+// that would need to see an entry this one populates. (The stack ran on
+// Redis when radiusd could be scaled to multiple instances behind a shared
+// NAS; a single-machine install retires that requirement — see
+// internal/localcache's package doc.)
 type SubscriberCache struct {
-	db  radius.DBQuerier
-	rc  redis.UniversalClient
-	ttl time.Duration
+	db    radius.DBQuerier
+	store *localcache.Store[cachedSubscriber]
+	ttl   time.Duration
 }
 
 var _ radius.DBQuerier = (*SubscriberCache)(nil)
 
-// NewSubscriberCache wraps db with a Redis read-through cache.
-func NewSubscriberCache(db radius.DBQuerier, rc redis.UniversalClient, ttl time.Duration) *SubscriberCache {
+// NewSubscriberCache wraps db with an in-process read-through cache.
+func NewSubscriberCache(db radius.DBQuerier, ttl time.Duration) *SubscriberCache {
 	if ttl <= 0 {
 		ttl = DefaultSubscriberTTL
 	}
-	return &SubscriberCache{db: db, rc: rc, ttl: ttl}
+	return &SubscriberCache{db: db, store: localcache.New[cachedSubscriber](0), ttl: ttl}
 }
 
-// GetSubscriberByUsername serves from Redis when possible, falling back to
-// PostgreSQL and populating the cache on a miss.
+// GetSubscriberByUsername serves from the cache when possible, falling back
+// to PostgreSQL and populating the cache on a miss.
 func (c *SubscriberCache) GetSubscriberByUsername(ctx context.Context, username string) (*radius.Subscriber, error) {
 	key := SubscriberCacheKey(username)
 
-	raw, err := c.rc.Get(ctx, key).Bytes()
-	switch {
-	case err == nil:
-		var entry cachedSubscriber
-		if jsonErr := json.Unmarshal(raw, &entry); jsonErr == nil {
-			subscriberCacheHits.Inc()
-			if entry.NotFound {
-				return nil, nil
-			}
-			return &radius.Subscriber{
-				ID:           entry.ID,
-				Username:     entry.Username,
-				PasswordHash: entry.PasswordHash,
-				Status:       entry.Status,
-				RateLimitStr: entry.RateLimitStr,
-				FUPActive:    entry.FUPActive,
-				FUPThrottle:  entry.FUPThrottle,
-				PlanID:       entry.PlanID,
-			}, nil
+	if entry, ok := c.store.Get(key); ok {
+		subscriberCacheHits.Inc()
+		if entry.NotFound {
+			return nil, nil
 		}
-		// A corrupt entry is treated as a miss rather than an error: the
-		// database still holds the truth.
-		subscriberCacheErrors.Inc()
-	case errors.Is(err, redis.Nil):
-		subscriberCacheMisses.Inc()
-	default:
-		// Redis is down or slow. Authentication must not fail with it.
-		subscriberCacheErrors.Inc()
+		return &radius.Subscriber{
+			ID:           entry.ID,
+			Username:     entry.Username,
+			PasswordHash: entry.PasswordHash,
+			Status:       entry.Status,
+			RateLimitStr: entry.RateLimitStr,
+			FUPActive:    entry.FUPActive,
+			FUPThrottle:  entry.FUPThrottle,
+			PlanID:       entry.PlanID,
+		}, nil
 	}
+	subscriberCacheMisses.Inc()
 
 	sub, dbErr := c.db.GetSubscriberByUsername(ctx, username)
 	if dbErr != nil {
 		return nil, dbErr
 	}
 
-	c.store(ctx, key, sub, username)
+	c.cacheResult(key, sub, username)
 	return sub, nil
 }
 
-// store writes the lookup result, including a negative entry for an unknown
-// username. Cache write failures are silent: the caller already has its answer.
-func (c *SubscriberCache) store(ctx context.Context, key string, sub *radius.Subscriber, username string) {
+// cacheResult writes the lookup result, including a negative entry for an
+// unknown username.
+func (c *SubscriberCache) cacheResult(key string, sub *radius.Subscriber, username string) {
 	entry := cachedSubscriber{Username: username, NotFound: true}
 	if sub != nil {
 		entry = cachedSubscriber{
@@ -145,12 +130,6 @@ func (c *SubscriberCache) store(ctx context.Context, key string, sub *radius.Sub
 		}
 	}
 
-	payload, err := json.Marshal(entry)
-	if err != nil {
-		subscriberCacheErrors.Inc()
-		return
-	}
-
 	ttl := c.ttl
 	if entry.NotFound {
 		// Negative entries expire faster: a newly provisioned subscriber should
@@ -161,17 +140,13 @@ func (c *SubscriberCache) store(ctx context.Context, key string, sub *radius.Sub
 		}
 	}
 
-	if err := c.rc.Set(ctx, key, payload, ttl).Err(); err != nil {
-		subscriberCacheErrors.Inc()
-	}
+	c.store.Set(key, entry, ttl)
 }
 
 // InvalidateSubscriber drops a cached record so the next authentication reloads
 // it. Call this whenever status, plan or FUP state changes: without it, a
 // suspension takes up to one TTL to reach the authentication path.
-func (c *SubscriberCache) InvalidateSubscriber(ctx context.Context, username string) error {
-	if err := c.rc.Del(ctx, SubscriberCacheKey(username)).Err(); err != nil {
-		return fmt.Errorf("cache: invalidate subscriber %q: %w", username, err)
-	}
+func (c *SubscriberCache) InvalidateSubscriber(_ context.Context, username string) error {
+	c.store.Delete(SubscriberCacheKey(username))
 	return nil
 }

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	"github.com/maaransoft/isp-bss-oss/internal/localcache"
 )
 
 // Redemption attempt limiting — FR-HSP-001 | MDS §4.23.
@@ -23,27 +23,30 @@ const (
 	// DefaultAttemptWindow is the counting window. Fixed rather than sliding:
 	// the worst case is 2x the limit across a window boundary, which does not
 	// change the order of magnitude of the search this makes infeasible, and a
-	// fixed window costs one INCR instead of a sorted-set round trip.
+	// fixed window costs one increment instead of a sorted-set round trip.
 	DefaultAttemptWindow = 15 * time.Minute
 )
 
-// RedisLimiter counts attempts per client in Redis, so the limit holds across
-// every API replica rather than per process — a per-process counter would
-// multiply the real limit by the replica count, and behind a load balancer
-// that is the same as having no limit.
-type RedisLimiter struct {
-	rc     redis.UniversalClient
-	limit  int
-	window time.Duration
+// Limiter counts attempts per client in an in-process fixed-window counter.
+//
+// On the shared, multi-process deployment this used to run against, the
+// counter had to live in Redis so the limit held across every API replica —
+// a per-process counter would have multiplied the real limit by the replica
+// count. A single-machine install runs exactly one api process, which
+// retires that requirement (see internal/localcache's package doc).
+type Limiter struct {
+	counter *localcache.Counter
+	limit   int
+	window  time.Duration
 }
 
-// NewRedisLimiter constructs a limiter with the default limit and window.
-func NewRedisLimiter(rc redis.UniversalClient) *RedisLimiter {
-	return &RedisLimiter{rc: rc, limit: DefaultAttemptLimit, window: DefaultAttemptWindow}
+// NewLimiter constructs a limiter with the default limit and window.
+func NewLimiter() *Limiter {
+	return &Limiter{counter: localcache.NewCounter(0), limit: DefaultAttemptLimit, window: DefaultAttemptWindow}
 }
 
 // SetLimit overrides the attempts-per-window budget.
-func (l *RedisLimiter) SetLimit(limit int, window time.Duration) {
+func (l *Limiter) SetLimit(limit int, window time.Duration) {
 	l.limit, l.window = limit, window
 }
 
@@ -54,27 +57,22 @@ func (l *RedisLimiter) SetLimit(limit int, window time.Duration) {
 // keep going indefinitely, and the cost of counting a legitimate user's
 // successful redemption is one slot out of ten they will never use again.
 //
-// A Redis failure returns an error and the caller refuses the attempt. That is
-// the deliberate direction to fail: a broken limiter means the portal is
-// unmetered, and an unmetered voucher endpoint is worse than an unavailable
-// one.
-func (l *RedisLimiter) Allow(ctx context.Context, key string) (bool, error) {
-	if l == nil || l.rc == nil {
+// An unconfigured limiter returns an error and the caller refuses the
+// attempt. That is the deliberate direction to fail: a broken limiter means
+// the portal is unmetered, and an unmetered voucher endpoint is worse than
+// an unavailable one.
+func (l *Limiter) Allow(_ context.Context, key string) (bool, error) {
+	if l == nil || l.counter == nil {
 		return false, fmt.Errorf("hotspot: attempt limiter is not configured")
 	}
-	redisKey := "hotspot:attempts:" + key
+	counterKey := "hotspot:attempts:" + key
 
-	count, err := l.rc.Incr(ctx, redisKey).Result()
-	if err != nil {
-		return false, fmt.Errorf("hotspot: count attempt for %q: %w", key, err)
-	}
+	count := l.counter.Incr(counterKey)
 	// Only on the first attempt in a window, so a burst of attempts cannot keep
 	// pushing the expiry out and turn the fixed window into a rolling one that
 	// never resets for a legitimate user.
 	if count == 1 {
-		if err := l.rc.Expire(ctx, redisKey, l.window).Err(); err != nil {
-			return false, fmt.Errorf("hotspot: set attempt window for %q: %w", key, err)
-		}
+		l.counter.Expire(counterKey, l.window)
 	}
 	return count <= int64(l.limit), nil
 }

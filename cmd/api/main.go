@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,7 +20,6 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
@@ -37,6 +37,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/staffui"
 	"github.com/maaransoft/isp-bss-oss/internal/tr069"
 	"github.com/maaransoft/isp-bss-oss/pkg/crypto"
+	"github.com/maaransoft/isp-bss-oss/pkg/tlscert"
 	"github.com/shopspring/decimal"
 )
 
@@ -45,6 +46,11 @@ const (
 	writeTimeout    = 30 * time.Second
 	idleTimeout     = 60 * time.Second
 	shutdownTimeout = 15 * time.Second
+	// tlsValidity is deliberately long. The certificate is self-signed with
+	// no ACME renewal path (see pkg/tlscert), so a short validity would only
+	// force an operator to re-trust it by hand on a schedule nobody asked
+	// for, with no security benefit — nothing is validating this chain.
+	tlsValidity = 10 * 365 * 24 * time.Hour
 )
 
 func main() {
@@ -77,13 +83,6 @@ func run() error {
 	defer database.Close()
 	log.Info().Msg("api: PostgreSQL connected")
 
-	redisClient := newRedisClient(cfg)
-	defer redisClient.Close() //nolint:errcheck
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		return fmt.Errorf("connect to Redis: %w", err)
-	}
-	log.Info().Msg("api: Redis connected")
-
 	keyStore, err := crypto.LoadKeyStore(cfg.AESKeyStoreURL)
 	if err != nil {
 		return fmt.Errorf("load AES key store: %w", err)
@@ -98,10 +97,16 @@ func run() error {
 		return fmt.Errorf("build AES encryptor: %w", err)
 	}
 
-	sessions := cache.NewSessionStore(redisClient)
+	// Live session state, written by radiusd's accounting path and read here
+	// for the health endpoint and the portal's live-usage panel. Postgres
+	// rather than Redis since the move off Docker — see internal/cache's
+	// package doc.
+	sessions := cache.NewSessionStore(database.Pool())
 
 	// The API enqueues session-control (PoD/CoA) tasks for the radiusd worker
-	// pool to execute; it never talks RADIUS itself.
+	// pool to execute; it never talks RADIUS itself. Asynq is the only Redis
+	// dependency left in this process — Phase 2 of the Docker-free native
+	// port replaces it with a Postgres-backed queue.
 	asynqClient := asynq.NewClient(asynqRedisOpt(cfg))
 	defer asynqClient.Close() //nolint:errcheck
 
@@ -158,7 +163,7 @@ func run() error {
 		// (it already owns wallet_ledgers, which payment_refunds references).
 		Lifecycle: database.API(),
 		Refunds:   database.Billing(),
-		SubCache:  &subCacheInvalidator{rc: redisClient},
+		SubCache:  &subCacheInvalidator{},
 		// Task & approval workflows (FR-WFL-001..002). WorkflowStore
 		// satisfies both queriers — approvals and field tasks share a
 		// migration and a store, but nothing else.
@@ -252,12 +257,12 @@ func run() error {
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —
 	// its visitors have no account and no network yet — so the attempt limiter
-	// is not optional: without Redis the portal returns 503 rather than
-	// accepting unmetered guesses at the voucher space.
+	// is not optional: an unconfigured one makes the portal return 503 rather
+	// than accept unmetered guesses at the voucher space.
 	hotspotHandler := hotspot.NewHandler(hotspot.Deps{
 		Grants:      database.Hotspot(),
 		Subscribers: database.Portal(),
-		Limiter:     hotspot.NewRedisLimiter(redisClient),
+		Limiter:     hotspot.NewLimiter(),
 	})
 
 	notificationWebhook := notifications.NewWebhookHandler(
@@ -280,12 +285,26 @@ func run() error {
 	// the endpoint is CPE-initiated by protocol design. It identifies the
 	// device from the Inform's serial number and manages only devices it
 	// already knows or chooses to record.
-	acs := tr069.NewACS(database.TR069(), redisClient)
+	acs := tr069.NewACS(database.TR069())
 	mux.Handle("POST /tr069", acs)
 
-	mux.HandleFunc("GET /readyz", readinessHandler(database, redisClient))
+	mux.HandleFunc("GET /readyz", readinessHandler(database))
 
 	// ── Servers ─────────────────────────────────────────────────────────────
+
+	// TLS is terminated here rather than by a reverse proxy in front. On
+	// Docker Compose that was Caddy's job (config/caddy/Caddyfile, which
+	// pinned `protocols tls1.3` for NFR-SEC-001); a single-machine native
+	// install has no proxy container to run, and net/http serves TLS
+	// directly. MinVersion TLS 1.3 reproduces that pin exactly — Go's
+	// crypto/tls offers nothing newer that this could accidentally allow.
+	cert, err := tlscert.LoadOrGenerate(cfg.TLSCertDir,
+		[]string{cfg.TLSHostname, "localhost", "127.0.0.1"}, tlsValidity)
+	if err != nil {
+		return fmt.Errorf("TLS certificate: %w", err)
+	}
+	log.Info().Str("dir", cfg.TLSCertDir).Str("hostname", cfg.TLSHostname).
+		Msg("api: TLS certificate ready (self-signed)")
 
 	apiServer := &http.Server{
 		Addr:              cfg.APIAddr,
@@ -294,6 +313,10 @@ func run() error {
 		ReadHeaderTimeout: readTimeout,
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
+		TLSConfig: &tls.Config{
+			MinVersion:   tls.VersionTLS13,
+			Certificates: []tls.Certificate{cert},
+		},
 	}
 
 	metricsMux := http.NewServeMux()
@@ -307,8 +330,9 @@ func run() error {
 	errCh := make(chan error, 2)
 
 	go func() {
-		log.Info().Str("addr", cfg.APIAddr).Msg("api: listening")
-		if err := apiServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Info().Str("addr", cfg.APIAddr).Msg("api: listening (HTTPS, TLS 1.3)")
+		// Empty paths: the certificate and key are already in TLSConfig above.
+		if err := apiServer.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("API server: %w", err)
 		}
 	}()
@@ -417,19 +441,25 @@ func createRenewalInvoice(ctx context.Context, inv renewalInvoicer, subscriberID
 	return nil
 }
 
-// subCacheInvalidator invalidates a subscriber's RADIUS auth-cache entry
-// after a lifecycle action (plan change, termination). It talks to Redis
-// directly rather than via cache.SubscriberCache: that type also carries a
-// radius.DBQuerier for cache-miss fallback, which only the AAA daemon needs
-// — the API service has no reason to construct one just to delete a key.
-type subCacheInvalidator struct {
-	rc redis.UniversalClient
-}
+// subCacheInvalidator used to delete a subscriber's RADIUS auth-cache entry
+// from Redis after a lifecycle action (plan change, termination), so radiusd
+// would reload it on the next Access-Request.
+//
+// That cache now lives in radiusd's own process memory (see
+// internal/localcache), which this process cannot reach into — so this is a
+// no-op, and invalidation falls back to what cache.SubscriberCache already
+// documents as the backstop: its 60-second TTL. That is a bounded, already
+// accounted-for delay rather than a regression in enforcement, because
+// suspension does not rely on the cache expiring at all — it issues a
+// Disconnect-Request, which takes effect immediately.
+//
+// Kept as a type rather than deleted so the api.HandlerDeps wiring and its
+// SubCache interface stay intact: Phase 2 of the native port stands up
+// Postgres LISTEN/NOTIFY for the job queue, and this becomes a NOTIFY the
+// daemon subscribes to, closing the window to milliseconds.
+type subCacheInvalidator struct{}
 
-func (s *subCacheInvalidator) InvalidateSubscriber(ctx context.Context, username string) error {
-	if err := s.rc.Del(ctx, cache.SubscriberCacheKey(username)).Err(); err != nil {
-		return fmt.Errorf("invalidate subscriber cache: %w", err)
-	}
+func (s *subCacheInvalidator) InvalidateSubscriber(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -460,19 +490,21 @@ func extendPlanExpiry(ctx context.Context, store portal.PlanExpiryStore, subscri
 	return nil
 }
 
-// readinessHandler reports whether both backing stores are reachable, so an
+// readinessHandler reports whether the backing store is reachable, so an
 // orchestrator can withhold traffic from an instance that cannot serve it.
-func readinessHandler(database *db.DB, redisClient redis.UniversalClient) http.HandlerFunc {
+//
+// Postgres only: Redis used to be checked here too, but the caches and
+// session state that made it load-bearing for serving a request are now
+// in-process or in Postgres. Asynq still uses Redis, and deliberately is not
+// checked — a broken queue delays a CoA or a notification, it does not stop
+// this process answering the API and portal requests readiness gates.
+func readinessHandler(database *db.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 
 		if err := database.Ping(ctx); err != nil {
 			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		if err := redisClient.Ping(ctx).Err(); err != nil {
-			http.Error(w, "redis unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -516,24 +548,13 @@ func dbConfig(cfg *config.Config) db.Config {
 	return c
 }
 
-func newRedisClient(cfg *config.Config) redis.UniversalClient {
-	if cfg.UsesSentinel() {
-		return redis.NewFailoverClient(&redis.FailoverOptions{
-			MasterName:    cfg.RedisMasterName,
-			SentinelAddrs: cfg.RedisSentinelAddrs,
-			Password:      cfg.RedisPassword,
-		})
-	}
-	return redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisAddr,
-		Password: cfg.RedisPassword,
-	})
-}
-
 // asynqRedisOpt mirrors the Redis configuration for Asynq, which takes its own
 // connection options rather than an existing client. Kept in step with
 // cmd/radiusd's copy: both must resolve to the same Redis so a task the API
 // enqueues is visible to the radiusd worker pool that executes it.
+//
+// Asynq is the last thing in this process that needs Redis at all — Phase 2
+// of the Docker-free native port replaces it with a Postgres-backed queue.
 func asynqRedisOpt(cfg *config.Config) asynq.RedisConnOpt {
 	if cfg.UsesSentinel() {
 		return asynq.RedisFailoverClientOpt{

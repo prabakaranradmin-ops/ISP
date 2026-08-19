@@ -30,7 +30,6 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/db"
 	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	ispradius "github.com/maaransoft/isp-bss-oss/internal/radius"
-	"github.com/redis/go-redis/v9"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2866"
@@ -58,14 +57,10 @@ func freeUDPPort(t *testing.T) int {
 func startAccountingDaemon(t *testing.T, database *db.DB) string {
 	t.Helper()
 
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rc.Close() })
-
 	authAddr := fmt.Sprintf("127.0.0.1:%d", freeUDPPort(t))
 	acctAddr := fmt.Sprintf("127.0.0.1:%d", freeUDPPort(t))
 
-	daemon := ispradius.NewRadiusDaemon(authAddr, acctTestSecret, database.Radius(), rc,
+	daemon := ispradius.NewRadiusDaemon(authAddr, acctTestSecret, database.Radius(),
 		[]byte("verifier-secret-32-bytes-minimum-len"))
 	daemon.SetAccountingStore(database.FUP())
 	daemon.SetAcctAddr(acctAddr)

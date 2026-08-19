@@ -42,6 +42,19 @@ type Config struct {
 	// should not have that decided for it by a constant.
 	ArchiveDir string
 
+	// TLSCertDir roots the self-signed certificate pkg/tlscert generates and
+	// persists for the API service to terminate TLS itself (replacing the
+	// Caddy reverse proxy this stack ran on Docker Compose). Unlike
+	// ArchiveDir, this defaults to a real path rather than "": TLS is not an
+	// optional feature api_service can simply run without.
+	TLSCertDir string
+	// TLSHostname is the certificate's primary SAN. "localhost" — matching
+	// the Caddyfile's own default before it — since a LAN-facing on-prem
+	// install has no public FQDN for a real CA to validate anyway; a
+	// deployment with a routable hostname should still trust it explicitly
+	// (self-signed, no ACME path exists here).
+	TLSHostname string
+
 	// PostgreSQL
 	DBDSN         string
 	DBMaxConns    int32
@@ -125,6 +138,8 @@ func Load(service string) (*Config, error) {
 		RadiusAddr:     env("RADIUS_ADDR", ":1812"),
 		RadiusAcctAddr: env("RADIUS_ACCT_ADDR", ":1813"),
 		ArchiveDir:     env("ARCHIVE_DIR", ""),
+		TLSCertDir:     env("TLS_CERT_DIR", "./config/tls"),
+		TLSHostname:    env("TLS_HOSTNAME", "localhost"),
 
 		DBDSN:         env("DB_DSN", ""),
 		DBMaxConns:    int32(envInt("DB_MAX_CONNS", 25)), //nolint:gosec // bounded by envInt
@@ -254,6 +269,8 @@ func (c *Config) Redact() map[string]string {
 		"radius_addr":            c.RadiusAddr,
 		"radius_acct_addr":       c.RadiusAcctAddr,
 		"archive_dir":            c.ArchiveDir,
+		"tls_cert_dir":           c.TLSCertDir,
+		"tls_hostname":           c.TLSHostname,
 		"db_dsn":                 redactDSN(c.DBDSN),
 		"db_max_conns":           strconv.Itoa(int(c.DBMaxConns)),
 		"redis_mode":             redisMode(c),

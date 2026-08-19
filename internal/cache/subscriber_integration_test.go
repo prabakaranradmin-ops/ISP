@@ -8,10 +8,13 @@
 // wrongly-served entry here does not degrade performance, it authenticates
 // somebody it should not.
 //
-// Redis is a real server (miniredis, in-process), so key formats, TTLs, the
-// JSON wire format and the read-through/fallback behaviour are exercised for
-// real rather than mocked.
-package cache_test
+// An internal test package (not cache_test, unlike the session store's tests
+// next door) so the cache's own store can be inspected directly. It used to
+// run against a real in-process Redis (miniredis) and assert on keys and
+// TTLs there; the store is now an in-process map, and reaching it through
+// the unexported field is the equivalent — still the real implementation,
+// with no fake in between.
+package cache
 
 import (
 	"context"
@@ -20,15 +23,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
-
-	"github.com/maaransoft/isp-bss-oss/internal/cache"
 	"github.com/maaransoft/isp-bss-oss/internal/radius"
 )
 
 // fakeAuthDB is a radius.DBQuerier that counts lookups, so a test can prove a
-// second request was served from Redis rather than hitting the database again.
+// second request was served from cache rather than hitting the database again.
 type fakeAuthDB struct {
 	mu    sync.Mutex
 	sub   *radius.Subscriber
@@ -52,12 +51,11 @@ func (f *fakeAuthDB) callCount() int {
 	return f.calls
 }
 
-func newSubscriberCache(t *testing.T, db radius.DBQuerier, ttl time.Duration) (*cache.SubscriberCache, *miniredis.Miniredis) {
+func newSubscriberCache(t *testing.T, db radius.DBQuerier, ttl time.Duration) *SubscriberCache {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rc.Close() })
-	return cache.NewSubscriberCache(db, rc, ttl), mr
+	c := NewSubscriberCache(db, ttl)
+	t.Cleanup(c.store.Close)
+	return c
 }
 
 func sampleAuthSubscriber() *radius.Subscriber {
@@ -72,8 +70,14 @@ func sampleAuthSubscriber() *radius.Subscriber {
 	}
 }
 
+// cached reports whether a live entry exists for username.
+func cached(c *SubscriberCache, username string) bool {
+	_, ok := c.store.Get(SubscriberCacheKey(username))
+	return ok
+}
+
 func TestFR_AAA_002_SubscriberCacheKeyFormat(t *testing.T) {
-	if got := cache.SubscriberCacheKey("sub1"); got != "subscriber:auth:sub1" {
+	if got := SubscriberCacheKey("sub1"); got != "subscriber:auth:sub1" {
 		t.Errorf("key: want subscriber:auth:sub1, got %q", got)
 	}
 }
@@ -82,7 +86,7 @@ func TestFR_AAA_002_SubscriberCacheKeyFormat(t *testing.T) {
 // behaviour: the first lookup reaches PostgreSQL, the second must not.
 func TestFR_AAA_002_SubscriberCache_MissThenHit(t *testing.T) {
 	db := &fakeAuthDB{sub: sampleAuthSubscriber()}
-	c, mr := newSubscriberCache(t, db, time.Minute)
+	c := newSubscriberCache(t, db, time.Minute)
 
 	first, err := c.GetSubscriberByUsername(context.Background(), "sub4242")
 	if err != nil {
@@ -94,8 +98,8 @@ func TestFR_AAA_002_SubscriberCache_MissThenHit(t *testing.T) {
 	if db.callCount() != 1 {
 		t.Fatalf("want 1 DB call after a cold miss, got %d", db.callCount())
 	}
-	if !mr.Exists("subscriber:auth:sub4242") {
-		t.Fatal("the miss should have populated Redis")
+	if !cached(c, "sub4242") {
+		t.Fatal("the miss should have populated the cache")
 	}
 
 	second, err := c.GetSubscriberByUsername(context.Background(), "sub4242")
@@ -103,11 +107,11 @@ func TestFR_AAA_002_SubscriberCache_MissThenHit(t *testing.T) {
 		t.Fatalf("second lookup: %v", err)
 	}
 	if db.callCount() != 1 {
-		t.Errorf("second lookup must be served from Redis; DB calls went to %d", db.callCount())
+		t.Errorf("second lookup must be served from cache; DB calls went to %d", db.callCount())
 	}
 
-	// Every auth-relevant field must survive the JSON round trip. PasswordHash
-	// in particular: a field silently lost here would make the cached record
+	// Every auth-relevant field must survive the round trip. PasswordHash in
+	// particular: a field silently lost here would make the cached record
 	// fail every bcrypt comparison.
 	if second.ID != first.ID || second.Username != first.Username ||
 		second.PasswordHash != first.PasswordHash || second.Status != first.Status ||
@@ -124,7 +128,7 @@ func TestFR_AAA_002_SubscriberCache_ThrottledFieldsRoundTrip(t *testing.T) {
 	sub.FUPActive = true
 	sub.FUPThrottle = "2M/2M"
 	db := &fakeAuthDB{sub: sub}
-	c, _ := newSubscriberCache(t, db, time.Minute)
+	c := newSubscriberCache(t, db, time.Minute)
 
 	if _, err := c.GetSubscriberByUsername(context.Background(), "sub4242"); err != nil {
 		t.Fatalf("prime cache: %v", err)
@@ -138,12 +142,38 @@ func TestFR_AAA_002_SubscriberCache_ThrottledFieldsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFR_AAA_002_SubscriberCache_CachedRecordIsACopy guards a hazard the JSON
+// wire format used to make impossible for free: the cache now stores a Go
+// struct rather than serialised bytes, so a caller mutating what it got back
+// must not be able to reach into the cached entry and change what the next
+// authentication sees.
+func TestFR_AAA_002_SubscriberCache_CachedRecordIsACopy(t *testing.T) {
+	db := &fakeAuthDB{sub: sampleAuthSubscriber()}
+	c := newSubscriberCache(t, db, time.Minute)
+	ctx := context.Background()
+
+	first, err := c.GetSubscriberByUsername(ctx, "sub4242")
+	if err != nil {
+		t.Fatalf("prime: %v", err)
+	}
+	first.Status = "hard_suspended"
+	first.PasswordHash = "tampered"
+
+	second, err := c.GetSubscriberByUsername(ctx, "sub4242")
+	if err != nil {
+		t.Fatalf("second lookup: %v", err)
+	}
+	if second.Status != "active" || second.PasswordHash == "tampered" {
+		t.Errorf("a caller's mutation leaked into the cache: %+v", second)
+	}
+}
+
 // TestFR_AAA_002_SubscriberCache_NegativeEntry verifies an unknown username is
 // cached as a negative result, so a flood of requests for a nonexistent user
 // cannot become a flood of database queries.
 func TestFR_AAA_002_SubscriberCache_NegativeEntry(t *testing.T) {
 	db := &fakeAuthDB{sub: nil}
-	c, mr := newSubscriberCache(t, db, time.Minute)
+	c := newSubscriberCache(t, db, time.Minute)
 
 	got, err := c.GetSubscriberByUsername(context.Background(), "ghost")
 	if err != nil {
@@ -152,7 +182,7 @@ func TestFR_AAA_002_SubscriberCache_NegativeEntry(t *testing.T) {
 	if got != nil {
 		t.Fatalf("want nil for an unknown username, got %+v", got)
 	}
-	if !mr.Exists("subscriber:auth:ghost") {
+	if !cached(c, "ghost") {
 		t.Fatal("a negative result must still be cached")
 	}
 
@@ -174,12 +204,12 @@ func TestFR_AAA_002_SubscriberCache_NegativeEntry(t *testing.T) {
 func TestFR_AAA_002_SubscriberCache_NegativeEntryExpiresFaster(t *testing.T) {
 	const ttl = 60 * time.Second
 	db := &fakeAuthDB{sub: nil}
-	c, mr := newSubscriberCache(t, db, ttl)
+	c := newSubscriberCache(t, db, ttl)
 
 	if _, err := c.GetSubscriberByUsername(context.Background(), "ghost"); err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
-	negTTL := mr.TTL("subscriber:auth:ghost")
+	negTTL := c.store.TTL(SubscriberCacheKey("ghost"))
 	if negTTL <= 0 || negTTL > ttl/2 {
 		t.Errorf("negative entry TTL should be well under the positive TTL (%s), got %s", ttl, negTTL)
 	}
@@ -187,11 +217,11 @@ func TestFR_AAA_002_SubscriberCache_NegativeEntryExpiresFaster(t *testing.T) {
 	// And the positive TTL for comparison, so this test fails if the two are
 	// ever collapsed into one value.
 	dbPos := &fakeAuthDB{sub: sampleAuthSubscriber()}
-	cPos, mrPos := newSubscriberCache(t, dbPos, ttl)
+	cPos := newSubscriberCache(t, dbPos, ttl)
 	if _, err := cPos.GetSubscriberByUsername(context.Background(), "sub4242"); err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
-	if posTTL := mrPos.TTL("subscriber:auth:sub4242"); posTTL <= negTTL {
+	if posTTL := cPos.store.TTL(SubscriberCacheKey("sub4242")); posTTL <= negTTL {
 		t.Errorf("positive TTL (%s) must exceed the negative TTL (%s)", posTTL, negTTL)
 	}
 }
@@ -200,12 +230,14 @@ func TestFR_AAA_002_SubscriberCache_NegativeEntryExpiresFaster(t *testing.T) {
 // the entry is reloaded once it lapses.
 func TestFR_AAA_002_SubscriberCache_TTLExpiryRefetches(t *testing.T) {
 	db := &fakeAuthDB{sub: sampleAuthSubscriber()}
-	c, mr := newSubscriberCache(t, db, 30*time.Second)
+	c := newSubscriberCache(t, db, 30*time.Second)
 
 	if _, err := c.GetSubscriberByUsername(context.Background(), "sub4242"); err != nil {
 		t.Fatalf("prime: %v", err)
 	}
-	mr.FastForward(31 * time.Second)
+	// Stands in for miniredis's FastForward — an in-process store has no
+	// simulated clock, and waiting out a real 30 seconds is not a test.
+	c.store.ExpireNow(SubscriberCacheKey("sub4242"))
 
 	if _, err := c.GetSubscriberByUsername(context.Background(), "sub4242"); err != nil {
 		t.Fatalf("post-expiry lookup: %v", err)
@@ -220,13 +252,13 @@ func TestFR_AAA_002_SubscriberCache_TTLExpiryRefetches(t *testing.T) {
 func TestFR_AAA_002_SubscriberCache_DefaultTTLApplied(t *testing.T) {
 	for _, ttl := range []time.Duration{0, -5 * time.Second} {
 		db := &fakeAuthDB{sub: sampleAuthSubscriber()}
-		c, mr := newSubscriberCache(t, db, ttl)
+		c := newSubscriberCache(t, db, ttl)
 		if _, err := c.GetSubscriberByUsername(context.Background(), "sub4242"); err != nil {
 			t.Fatalf("lookup with ttl=%s: %v", ttl, err)
 		}
-		got := mr.TTL("subscriber:auth:sub4242")
-		if got <= 0 || got > cache.DefaultSubscriberTTL {
-			t.Errorf("ttl=%s should fall back to DefaultSubscriberTTL (%s), got %s", ttl, cache.DefaultSubscriberTTL, got)
+		got := c.store.TTL(SubscriberCacheKey("sub4242"))
+		if got <= 0 || got > DefaultSubscriberTTL {
+			t.Errorf("ttl=%s should fall back to DefaultSubscriberTTL (%s), got %s", ttl, DefaultSubscriberTTL, got)
 		}
 	}
 }
@@ -236,7 +268,7 @@ func TestFR_AAA_002_SubscriberCache_DefaultTTLApplied(t *testing.T) {
 // authenticating until the TTL lapses.
 func TestFR_AAA_002_SubscriberCache_InvalidateForcesReload(t *testing.T) {
 	db := &fakeAuthDB{sub: sampleAuthSubscriber()}
-	c, mr := newSubscriberCache(t, db, time.Minute)
+	c := newSubscriberCache(t, db, time.Minute)
 
 	if _, err := c.GetSubscriberByUsername(context.Background(), "sub4242"); err != nil {
 		t.Fatalf("prime: %v", err)
@@ -244,8 +276,8 @@ func TestFR_AAA_002_SubscriberCache_InvalidateForcesReload(t *testing.T) {
 	if err := c.InvalidateSubscriber(context.Background(), "sub4242"); err != nil {
 		t.Fatalf("invalidate: %v", err)
 	}
-	if mr.Exists("subscriber:auth:sub4242") {
-		t.Fatal("invalidate must remove the key")
+	if cached(c, "sub4242") {
+		t.Fatal("invalidate must remove the entry")
 	}
 
 	// The reload must observe the *new* status, which is the entire point.
@@ -264,71 +296,32 @@ func TestFR_AAA_002_SubscriberCache_InvalidateForcesReload(t *testing.T) {
 	}
 }
 
-// TestFR_AAA_002_SubscriberCache_InvalidateUnknownIsNotAnError — Redis DEL on a
-// missing key is a no-op, and invalidating a subscriber who was never cached
-// must not fail the caller that is suspending them.
+// TestFR_AAA_002_SubscriberCache_InvalidateUnknownIsNotAnError — deleting a
+// missing entry is a no-op, and invalidating a subscriber who was never
+// cached must not fail the caller that is suspending them.
 func TestFR_AAA_002_SubscriberCache_InvalidateUnknownIsNotAnError(t *testing.T) {
-	c, _ := newSubscriberCache(t, &fakeAuthDB{sub: sampleAuthSubscriber()}, time.Minute)
+	c := newSubscriberCache(t, &fakeAuthDB{sub: sampleAuthSubscriber()}, time.Minute)
 	if err := c.InvalidateSubscriber(context.Background(), "never-cached"); err != nil {
 		t.Errorf("invalidating an uncached username should succeed, got %v", err)
 	}
 }
 
-// TestFR_AAA_002_SubscriberCache_RedisDownFallsThrough is the availability
-// guarantee in subscriber.go's doc comment: Redis is an optimisation, never a
-// dependency. With Redis unreachable, authentication must still work.
-func TestFR_AAA_002_SubscriberCache_RedisDownFallsThrough(t *testing.T) {
-	db := &fakeAuthDB{sub: sampleAuthSubscriber()}
-	c, mr := newSubscriberCache(t, db, time.Minute)
-	mr.Close() // every subsequent Redis call now errors
-
-	got, err := c.GetSubscriberByUsername(context.Background(), "sub4242")
-	if err != nil {
-		t.Fatalf("auth must survive Redis being down, got error: %v", err)
-	}
-	if got == nil || got.ID != 4242 {
-		t.Fatalf("want the record from PostgreSQL, got %+v", got)
-	}
-	if db.callCount() != 1 {
-		t.Errorf("want the DB to have been consulted once, got %d", db.callCount())
-	}
-}
-
-// TestFR_AAA_002_SubscriberCache_InvalidateReportsRedisFailure is the
-// counterpart: a *read* tolerates Redis being down, but invalidation cannot
-// silently succeed when it did not happen — the caller suspending a subscriber
-// needs to know the stale entry may still be live.
-func TestFR_AAA_002_SubscriberCache_InvalidateReportsRedisFailure(t *testing.T) {
-	c, mr := newSubscriberCache(t, &fakeAuthDB{sub: sampleAuthSubscriber()}, time.Minute)
-	mr.Close()
-
-	if err := c.InvalidateSubscriber(context.Background(), "sub4242"); err == nil {
-		t.Error("invalidation must report a Redis failure rather than silently succeed")
-	}
-}
-
-// TestFR_AAA_002_SubscriberCache_CorruptEntryFallsThrough covers the
-// treat-corrupt-as-miss path. A garbage cache entry must never fail an
-// authentication that PostgreSQL can still answer.
-func TestFR_AAA_002_SubscriberCache_CorruptEntryFallsThrough(t *testing.T) {
-	db := &fakeAuthDB{sub: sampleAuthSubscriber()}
-	c, mr := newSubscriberCache(t, db, time.Minute)
-
-	if err := mr.Set("subscriber:auth:sub4242", "{not json"); err != nil {
-		t.Fatalf("seed corrupt entry: %v", err)
-	}
-
-	got, err := c.GetSubscriberByUsername(context.Background(), "sub4242")
-	if err != nil {
-		t.Fatalf("a corrupt entry must not fail the lookup, got: %v", err)
-	}
-	if got == nil || got.ID != 4242 {
-		t.Fatalf("want the record from PostgreSQL, got %+v", got)
-	}
-	if db.callCount() != 1 {
-		t.Errorf("want a DB fallback on a corrupt entry, DB calls = %d", db.callCount())
-	}
-}
+// There were three more tests here, all covering Redis failure modes that no
+// longer exist now the cache is in-process:
+//
+//   - RedisDownFallsThrough: authentication surviving an unreachable Redis.
+//     There is no longer a cache backend that can be unreachable; the
+//     equivalent guarantee (a cache miss falls through to PostgreSQL) is
+//     covered by MissThenHit and TTLExpiryRefetches above.
+//   - InvalidateReportsRedisFailure: invalidation reporting rather than
+//     swallowing a Redis error. InvalidateSubscriber cannot fail any more —
+//     it deletes a map key — and still returns error only to satisfy the
+//     interface cmd/api's SubCache wiring expects.
+//   - CorruptEntryFallsThrough: a garbage cache entry treated as a miss.
+//     Entries are typed structs rather than JSON bytes, so there is no
+//     decode step that can fail and no way to store a corrupt one. The
+//     hazard that replaced it — a caller mutating a struct the cache still
+//     holds — is covered by CachedRecordIsACopy above.
 
 // TestFR_AAA_002_SubscriberCache_DBErrorPropagates — a cache miss plus a real
 // database error is a genuine failure and must not be swallowed into a nil
@@ -336,7 +329,7 @@ func TestFR_AAA_002_SubscriberCache_CorruptEntryFallsThrough(t *testing.T) {
 func TestFR_AAA_002_SubscriberCache_DBErrorPropagates(t *testing.T) {
 	wantErr := errors.New("connection refused")
 	db := &fakeAuthDB{err: wantErr}
-	c, mr := newSubscriberCache(t, db, time.Minute)
+	c := newSubscriberCache(t, db, time.Minute)
 
 	got, err := c.GetSubscriberByUsername(context.Background(), "sub4242")
 	if !errors.Is(err, wantErr) {
@@ -345,7 +338,7 @@ func TestFR_AAA_002_SubscriberCache_DBErrorPropagates(t *testing.T) {
 	if got != nil {
 		t.Errorf("want nil subscriber alongside the error, got %+v", got)
 	}
-	if mr.Exists("subscriber:auth:sub4242") {
+	if cached(c, "sub4242") {
 		t.Error("a failed DB lookup must not be cached")
 	}
 }

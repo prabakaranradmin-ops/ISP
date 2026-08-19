@@ -63,7 +63,7 @@ COMPONENTS=(
     # Not merely a dependency of the above: with no limiter constructed, every
     # redemption answers 503 by design, so an unwired limiter is a silently
     # dead captive portal rather than an unmetered one.
-    "hotspot.NewRedisLimiter:captive-portal attempt limiter (bounds voucher guessing)"
+    "hotspot.NewLimiter:captive-portal attempt limiter (bounds voucher guessing)"
     # The canonical instance of what this script is for. StartSession,
     # UpdateSessionOctets and StopSession were written, tested and correct, and
     # nothing called them — so subscriber_session_history stayed empty and FUP

@@ -1,10 +1,11 @@
 // RADIUS accounting tests — FR-AAA-003 | DDS §5.2.
 //
 // Deliberately not behind the `integration` build tag, unlike this package's
-// other internal tests. Everything here runs in-process against miniredis, and
-// the defect these cover — accounting acknowledged and thrown away — survived
-// precisely because the checks that would have caught it were not in the
-// default `go test ./...` run.
+// other internal tests. Everything here runs fully in-process — no external
+// store at all since the move off Redis — and the defect these cover
+// (accounting acknowledged and thrown away) survived precisely because the
+// checks that would have caught it were not in the default `go test ./...`
+// run.
 package radius
 
 import (
@@ -13,10 +14,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
-	"github.com/redis/go-redis/v9"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2866"
@@ -145,17 +144,14 @@ func (w *acctWriter) last() *radius.Packet {
 
 // ── Harness ─────────────────────────────────────────────────────────────────
 
-func acctDaemon(t *testing.T, store AccountingStore) (*RadiusDaemon, *miniredis.Miniredis) {
+func acctDaemon(t *testing.T, store AccountingStore) *RadiusDaemon {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rc.Close() })
 
 	d := NewRadiusDaemon(":0", acctSecret, &acctSubscriberDB{
 		subs: map[string]*Subscriber{
 			"pppoe@isp": {ID: 42, Username: "pppoe@isp", Status: "active"},
 		},
-	}, rc, []byte("verifier-secret-32-bytes-minimum-len"))
+	}, []byte("verifier-secret-32-bytes-minimum-len"))
 	d.SetAccountingStore(store)
 	d.SetMABQuerier(&acctMABDB{byMAC: map[string]*Subscriber{
 		"AA:BB:CC:DD:EE:FF": {ID: 77, Username: "hotspot@isp", Status: "active"},
@@ -163,7 +159,7 @@ func acctDaemon(t *testing.T, store AccountingStore) (*RadiusDaemon, *miniredis.
 		// it, which AuthorizeMAC reports as id 0.
 		"11:22:33:44:55:66": {ID: 0, Username: "voucher:9", Status: "active"},
 	}})
-	return d, mr
+	return d
 }
 
 // acctOpts describes one accounting packet.
@@ -266,7 +262,7 @@ func acctCounter(t *testing.T, c prometheus.Counter) float64 {
 // enforcement, CoA targeting, LEA lookups, portal usage — silently had no data.
 func TestFR_AAA_003_SessionLifecycleIsPersisted(t *testing.T) {
 	store := &acctRecorder{matched: true}
-	d, _ := acctDaemon(t, store)
+	d := acctDaemon(t, store)
 	ctx := context.Background()
 
 	d.handleAccounting(ctx, &acctWriter{}, acctRequest(t, acctOpts{
@@ -325,7 +321,7 @@ func TestFR_AAA_003_SessionLifecycleIsPersisted(t *testing.T) {
 // the heavy users it exists to catch, and in the direction that never throttles.
 func TestFR_AAA_003_GigawordsAreCombined(t *testing.T) {
 	store := &acctRecorder{matched: true}
-	d, _ := acctDaemon(t, store)
+	d := acctDaemon(t, store)
 
 	// 3 gigawords + 1000 bytes ≈ 12 GiB.
 	d.handleAccounting(context.Background(), &acctWriter{}, acctRequest(t, acctOpts{
@@ -359,7 +355,7 @@ func TestFR_AAA_003_GigawordsAreCombined(t *testing.T) {
 // is the enforcement FR-HSP-003 promises.
 func TestFR_AAA_003_HotspotSessionIsAttributedViaMAC(t *testing.T) {
 	store := &acctRecorder{matched: true}
-	d, _ := acctDaemon(t, store)
+	d := acctDaemon(t, store)
 
 	d.handleAccounting(context.Background(), &acctWriter{}, acctRequest(t, acctOpts{
 		SessionID: "sess-hs", Username: "aa-bb-cc-dd-ee-ff", // NAS spelling
@@ -414,7 +410,7 @@ func (m *acctGrantMeter) snapshot() []acctGrantCall {
 func TestFR_HSP_001_VoucherSessionIsMeteredOnItsGrant(t *testing.T) {
 	store := &acctRecorder{matched: true}
 	meter := &acctGrantMeter{matched: true}
-	d, _ := acctDaemon(t, store)
+	d := acctDaemon(t, store)
 	d.SetGrantUsageDB(meter)
 	w := &acctWriter{}
 
@@ -459,7 +455,7 @@ func TestFR_HSP_001_VoucherSessionIsMeteredOnItsGrant(t *testing.T) {
 func TestFR_HSP_001_SubscriberMABSessionIsNotMeteredAsAVoucher(t *testing.T) {
 	store := &acctRecorder{matched: true}
 	meter := &acctGrantMeter{matched: true}
-	d, _ := acctDaemon(t, store)
+	d := acctDaemon(t, store)
 	d.SetGrantUsageDB(meter)
 
 	// AA:BB:CC:DD:EE:FF resolves to subscriber 77 in the harness.
@@ -483,7 +479,7 @@ func TestFR_HSP_001_SubscriberMABSessionIsNotMeteredAsAVoucher(t *testing.T) {
 // number means sessions are outliving their authorisation.
 func TestFR_HSP_001_VoucherSessionWithNoLiveGrantIsCounted(t *testing.T) {
 	meter := &acctGrantMeter{matched: false}
-	d, _ := acctDaemon(t, &acctRecorder{matched: true})
+	d := acctDaemon(t, &acctRecorder{matched: true})
 	d.SetGrantUsageDB(meter)
 
 	before := acctCounter(t, radiusAcctUnmatched)
@@ -501,7 +497,7 @@ func TestFR_HSP_001_VoucherSessionWithNoLiveGrantIsCounted(t *testing.T) {
 // wired, a voucher session is simply unrecorded, as before migration 035.
 func TestFR_HSP_001_NoGrantMeterFallsBackToTheOldBehaviour(t *testing.T) {
 	store := &acctRecorder{matched: true}
-	d, _ := acctDaemon(t, store)
+	d := acctDaemon(t, store)
 	w := &acctWriter{}
 
 	d.handleAccounting(context.Background(), w, acctRequest(t, acctOpts{
@@ -543,7 +539,7 @@ func TestFR_AAA_003_NASIsAlwaysAcknowledged(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			d, _ := acctDaemon(t, tc.store)
+			d := acctDaemon(t, tc.store)
 			w := &acctWriter{}
 			d.handleAccounting(context.Background(), w, acctRequest(t, tc.opts))
 
@@ -568,7 +564,7 @@ func (e *acctError) Error() string { return e.msg }
 // silent no-op. This is the shape of a daemon restart mid-session.
 func TestFR_AAA_003_UnmatchedRecordsAreCounted(t *testing.T) {
 	store := &acctRecorder{matched: false}
-	d, _ := acctDaemon(t, store)
+	d := acctDaemon(t, store)
 
 	before := acctCounter(t, radiusAcctUnmatched)
 	d.handleAccounting(context.Background(), &acctWriter{}, acctRequest(t, acctOpts{
@@ -593,7 +589,7 @@ func TestFR_AAA_003_UnmatchedRecordsAreCounted(t *testing.T) {
 // records.
 func TestFR_AAA_003_RetransmitIsDedupedPerSession(t *testing.T) {
 	store := &acctRecorder{matched: true}
-	d, mr := acctDaemon(t, store)
+	d := acctDaemon(t, store)
 	ctx := context.Background()
 
 	rec := func() *radius.Request {
@@ -636,8 +632,8 @@ func TestFR_AAA_003_RetransmitIsDedupedPerSession(t *testing.T) {
 		t.Errorf("an advanced counter must not be deduped, got %d updates", len(updates))
 	}
 
-	if len(mr.Keys()) != 3 {
-		t.Errorf("want one dedup key per distinct record, got %d: %v", len(mr.Keys()), mr.Keys())
+	if got := d.acctDedupSize(); got != 3 {
+		t.Errorf("want one dedup key per distinct record, got %d", got)
 	}
 }
 
@@ -647,7 +643,7 @@ func TestFR_AAA_003_RetransmitIsDedupedPerSession(t *testing.T) {
 // duplicate of the Start and the session would never close.
 func TestFR_AAA_003_StartAndStopAreDistinctRecords(t *testing.T) {
 	store := &acctRecorder{matched: true}
-	d, _ := acctDaemon(t, store)
+	d := acctDaemon(t, store)
 	ctx := context.Background()
 
 	d.handleAccounting(ctx, &acctWriter{}, acctRequest(t, acctOpts{
@@ -672,7 +668,7 @@ func TestFR_AAA_003_StartAndStopAreDistinctRecords(t *testing.T) {
 // TestFR_AAA_003_NoStoreStillAcknowledges — a deployment that has not wired a
 // store must not leave its NAS retransmitting forever.
 func TestFR_AAA_003_NoStoreStillAcknowledges(t *testing.T) {
-	d, _ := acctDaemon(t, nil)
+	d := acctDaemon(t, nil)
 	d.SetAccountingStore(nil)
 
 	w := &acctWriter{}
@@ -703,7 +699,7 @@ func TestFR_AAA_003_StatusLabelsAreBounded(t *testing.T) {
 // cannot dial.
 func TestFR_AAA_003_NASAddressFallsBackToPacketSource(t *testing.T) {
 	store := &acctRecorder{matched: true}
-	d, _ := acctDaemon(t, store)
+	d := acctDaemon(t, store)
 
 	d.handleAccounting(context.Background(), &acctWriter{}, acctRequest(t, acctOpts{
 		SessionID: "sess-nonas", Username: "pppoe@isp",

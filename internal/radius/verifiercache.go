@@ -4,16 +4,14 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
-	"errors"
-	"fmt"
 	"hash"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/redis/go-redis/v9"
+
+	"github.com/maaransoft/isp-bss-oss/internal/localcache"
 )
 
 // verifierCacheTTL bounds how long a fast-path verifier stays valid after a
@@ -55,7 +53,7 @@ var radiusVerifierCacheHit = promauto.NewCounter(prometheus.CounterOpts{
 //
 // FR: NFR-PERF-001, NFR-SCAL-001 | DDS §5.1
 type VerifierCache struct {
-	rc     redis.UniversalClient
+	store  *localcache.Store[[]byte]
 	secret []byte
 }
 
@@ -64,8 +62,8 @@ type VerifierCache struct {
 // RADIUS_VERIFIER_SECRET for the radiusd service. It is deliberately a
 // separate secret from the RADIUS shared secret (used for NAS protocol
 // obfuscation, a different threat model entirely) rather than reusing it.
-func NewVerifierCache(rc redis.UniversalClient, secret []byte) *VerifierCache {
-	return &VerifierCache{rc: rc, secret: secret}
+func NewVerifierCache(store *localcache.Store[[]byte], secret []byte) *VerifierCache {
+	return &VerifierCache{store: store, secret: secret}
 }
 
 func verifierKey(username string) string {
@@ -96,20 +94,12 @@ func writeLengthPrefixed(mac hash.Hash, s string) {
 // authoritative bcrypt comparison in either case; treating a cache mismatch
 // as an outright rejection would reject a legitimate subscriber whose
 // password was recently changed.
-func (c *VerifierCache) Check(ctx context.Context, username, password, passwordHash string) (bool, error) {
-	if c == nil || c.rc == nil {
+func (c *VerifierCache) Check(_ context.Context, username, password, passwordHash string) (bool, error) {
+	if c == nil || c.store == nil {
 		return false, nil
 	}
-	stored, err := c.rc.Get(ctx, verifierKey(username)).Result()
-	if errors.Is(err, redis.Nil) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("verifiercache: read %q: %w", username, err)
-	}
-	cachedMAC, err := base64.StdEncoding.DecodeString(stored)
-	if err != nil {
-		// A corrupt cache entry must not authenticate anyone; treat as a miss.
+	cachedMAC, ok := c.store.Get(verifierKey(username))
+	if !ok {
 		return false, nil
 	}
 	if hmac.Equal(c.verifier(password, passwordHash), cachedMAC) {
@@ -122,13 +112,10 @@ func (c *VerifierCache) Check(ctx context.Context, username, password, passwordH
 // Store caches password's verifier for username, bound to the passwordHash
 // it was just bcrypt-verified against, so the next request with the same
 // password (and no intervening password change) can skip bcrypt entirely.
-func (c *VerifierCache) Store(ctx context.Context, username, password, passwordHash string) error {
-	if c == nil || c.rc == nil {
+func (c *VerifierCache) Store(_ context.Context, username, password, passwordHash string) error {
+	if c == nil || c.store == nil {
 		return nil
 	}
-	encoded := base64.StdEncoding.EncodeToString(c.verifier(password, passwordHash))
-	if err := c.rc.Set(ctx, verifierKey(username), encoded, verifierCacheTTL).Err(); err != nil {
-		return fmt.Errorf("verifiercache: store %q: %w", username, err)
-	}
+	c.store.Set(verifierKey(username), c.verifier(password, passwordHash), verifierCacheTTL)
 	return nil
 }

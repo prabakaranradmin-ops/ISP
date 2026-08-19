@@ -3,8 +3,12 @@
 // Integration tests for the RADIUS AAA module.
 //
 // Covers INT-AAA-001 .. INT-AAA-005 from the Integration Tests tracker sheet.
-// Redis is a real server (miniredis, in-process) rather than a mock, so key
-// formats, TTLs and SetNX semantics are exercised for real.
+// The caches these exercise (brute-force counter, fast-verifier cache,
+// accounting dedup) used to live in Redis and were tested against a real
+// in-process server (miniredis) so key formats, TTLs and SetNX semantics
+// were exercised rather than mocked. They are now in-process maps
+// (internal/localcache) reached directly through the daemon's own fields —
+// still the real implementation, with no fake in between.
 //
 // Run: ./scripts/run_tests.ps1 -Pkg ./internal/radius -Tags integration
 package radius
@@ -17,10 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
-	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
@@ -69,12 +71,16 @@ func (db *itSubscriberDB) GetSubscriberByUsername(_ context.Context, username st
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-func itNewDaemon(t *testing.T, subs map[string]*Subscriber) (*RadiusDaemon, *miniredis.Miniredis) {
+func itNewDaemon(t *testing.T, subs map[string]*Subscriber) *RadiusDaemon {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rc.Close() })
-	return NewRadiusDaemon(":0", itSecret, &itSubscriberDB{subs: subs}, rc, itVerifierSecret), mr
+	return NewRadiusDaemon(":0", itSecret, &itSubscriberDB{subs: subs}, itVerifierSecret)
+}
+
+// itCachedEntries counts everything the daemon currently holds across its
+// three in-process caches. Replaces the old miniredis Keys() assertions,
+// which could see every key in one place because they all shared one Redis.
+func itCachedEntries(d *RadiusDaemon) int {
+	return d.acctDedup.Len() + d.verifierCache.store.Len() + d.guard.counter.Len()
 }
 
 func itHashPassword(t *testing.T, password string) string {
@@ -155,7 +161,7 @@ func itHistogramCount(t *testing.T, h prometheus.Histogram) uint64 {
 //
 // INT-AAA-001 | FR-AAA-002
 func TestFR_AAA_002_HandleAuth_ActiveSubscriberAccepted(t *testing.T) {
-	d, _ := itNewDaemon(t, map[string]*Subscriber{
+	d := itNewDaemon(t, map[string]*Subscriber{
 		"alice@isp": {
 			ID:           1,
 			Username:     "alice@isp",
@@ -197,7 +203,7 @@ func TestFR_AAA_002_HandleAuth_ActiveSubscriberAccepted(t *testing.T) {
 //
 // INT-AAA-002 | FR-AAA-002
 func TestFR_AAA_002_HandleAuth_InvalidPassword(t *testing.T) {
-	d, _ := itNewDaemon(t, map[string]*Subscriber{
+	d := itNewDaemon(t, map[string]*Subscriber{
 		"bob@isp": {
 			ID:           2,
 			Username:     "bob@isp",
@@ -234,7 +240,7 @@ func TestFR_AAA_002_HandleAuth_InvalidPassword(t *testing.T) {
 func TestFR_AAA_002_HandleAuth_SuspendedSubscriber(t *testing.T) {
 	for _, status := range []string{"hard_suspended", "terminated"} {
 		t.Run(status, func(t *testing.T) {
-			d, mr := itNewDaemon(t, map[string]*Subscriber{
+			d := itNewDaemon(t, map[string]*Subscriber{
 				"carol@isp": {
 					ID:           3,
 					Username:     "carol@isp",
@@ -254,9 +260,11 @@ func TestFR_AAA_002_HandleAuth_SuspendedSubscriber(t *testing.T) {
 			if resp.Code != radius.CodeAccessReject {
 				t.Errorf("status=%s: want Access-Reject, got %v", status, resp.Code)
 			}
-			// No session may be cached for a rejected subscriber.
-			if keys := mr.Keys(); len(keys) != 0 {
-				t.Errorf("status=%s: expected no Redis keys after reject, got %v", status, keys)
+			// Nothing may be cached for a rejected subscriber — no verifier
+			// entry in particular, which would let the next attempt skip
+			// bcrypt for an account that is not allowed to authenticate.
+			if n := itCachedEntries(d); n != 0 {
+				t.Errorf("status=%s: expected no cached entries after reject, got %d", status, n)
 			}
 		})
 	}
@@ -270,7 +278,7 @@ func TestFR_AAA_002_HandleAuth_SuspendedSubscriber(t *testing.T) {
 //
 // INT-AAA-004 | FR-SEC-001
 func TestFR_SEC_001_BruteForce_BlocksAt10Failures(t *testing.T) {
-	d, mr := itNewDaemon(t, map[string]*Subscriber{
+	d := itNewDaemon(t, map[string]*Subscriber{
 		"dave@isp": {
 			ID:           4,
 			Username:     "dave@isp",
@@ -291,17 +299,20 @@ func TestFR_SEC_001_BruteForce_BlocksAt10Failures(t *testing.T) {
 	}
 
 	key := BruteForceKey("dave@isp")
-	if !mr.Exists(key) {
+	count, exists := d.guard.counter.Get(key)
+	if !exists {
 		t.Fatalf("expected brute-force counter at key %q", key)
 	}
-	if got := mr.HGet(key, ""); got != "" { // key must be a string, not a hash
-		t.Fatalf("key %q has unexpected hash type", key)
+	if count != MaxFailedAttempts {
+		t.Errorf("counter: want %d, got %d", MaxFailedAttempts, count)
 	}
-	if got, err := mr.Get(key); err != nil || got != "10" {
-		t.Errorf("counter: want \"10\", got %q (err=%v)", got, err)
-	}
-	if ttl := mr.TTL(key); ttl != LockoutDuration {
-		t.Errorf("lockout TTL: want %v, got %v", LockoutDuration, ttl)
+	// The TTL is armed on every failure, so it reads just under the full
+	// window rather than exactly equal to it — the elapsed time since the
+	// tenth failure. An exact equality check was possible against
+	// miniredis's simulated clock; against a real one it would be flaky.
+	ttl := d.guard.counter.TTL(key)
+	if ttl <= 0 || ttl > LockoutDuration {
+		t.Errorf("lockout TTL: want (0, %v], got %v", LockoutDuration, ttl)
 	}
 
 	// The 11th attempt is blocked even though the password is now correct.
@@ -320,8 +331,11 @@ func TestFR_SEC_001_BruteForce_BlocksAt10Failures(t *testing.T) {
 		t.Errorf("radius_bruteforce_blocked_total: want +1, got %v", got-beforeBlocked)
 	}
 
-	// Once the lockout expires the correct password works again.
-	mr.FastForward(LockoutDuration + time.Second)
+	// Once the lockout expires the correct password works again. Forcing the
+	// entry expired stands in for miniredis's FastForward — an in-process
+	// counter has no simulated clock, and sleeping out a real 15 minutes is
+	// not a test.
+	d.guard.counter.ExpireNow(key)
 	w2 := &itResponseWriter{}
 	d.handleAuth(ctx, w2, itAccessRequest(t, "dave@isp", "the-real-password"))
 	if got := w2.last(); got == nil || got.Code != radius.CodeAccessAccept {
@@ -334,7 +348,7 @@ func TestFR_SEC_001_BruteForce_BlocksAt10Failures(t *testing.T) {
 //
 // INT-AAA-004 (supporting) | FR-SEC-001
 func TestFR_SEC_001_BruteForce_ResetOnSuccessfulAuth(t *testing.T) {
-	d, mr := itNewDaemon(t, map[string]*Subscriber{
+	d := itNewDaemon(t, map[string]*Subscriber{
 		"erin@isp": {
 			ID:           5,
 			Username:     "erin@isp",
@@ -348,13 +362,13 @@ func TestFR_SEC_001_BruteForce_ResetOnSuccessfulAuth(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		d.handleAuth(ctx, &itResponseWriter{}, itAccessRequest(t, "erin@isp", "nope"))
 	}
-	if got, _ := mr.Get(BruteForceKey("erin@isp")); got != "3" {
-		t.Fatalf("counter before success: want \"3\", got %q", got)
+	if got, _ := d.guard.counter.Get(BruteForceKey("erin@isp")); got != 3 {
+		t.Fatalf("counter before success: want 3, got %d", got)
 	}
 
 	d.handleAuth(ctx, &itResponseWriter{}, itAccessRequest(t, "erin@isp", "s3cret"))
 
-	if mr.Exists(BruteForceKey("erin@isp")) {
+	if _, exists := d.guard.counter.Get(BruteForceKey("erin@isp")); exists {
 		t.Error("expected brute-force counter to be cleared after successful auth")
 	}
 }
@@ -369,7 +383,7 @@ func TestFR_SEC_001_BruteForce_ResetOnSuccessfulAuth(t *testing.T) {
 //
 // INT-AAA-005 | FR-AAA-003
 func TestFR_AAA_003_Dedup_DuplicateInterimSkipped(t *testing.T) {
-	d, mr := itNewDaemon(t, nil)
+	d := itNewDaemon(t, nil)
 	ctx := context.Background()
 
 	const sessionID = "sess-abc123"
@@ -398,7 +412,7 @@ func TestFR_AAA_003_Dedup_DuplicateInterimSkipped(t *testing.T) {
 	}
 
 	// Exactly one dedup key exists for this session/octet pair.
-	keys := mr.Keys()
+	keys := d.acctDedup.Keys()
 	if len(keys) != 1 {
 		t.Fatalf("want exactly 1 dedup key, got %d: %v", len(keys), keys)
 	}
@@ -415,8 +429,8 @@ func TestFR_AAA_003_Dedup_DuplicateInterimSkipped(t *testing.T) {
 	if got := itCounterValue(t, radiusDedupSkipped); got != beforeSkipped+1 {
 		t.Errorf("advanced counter must not be deduped (delta %v)", got-beforeSkipped)
 	}
-	if len(mr.Keys()) != 2 {
-		t.Errorf("want 2 dedup keys after counter advance, got %d", len(mr.Keys()))
+	if n := d.acctDedup.Len(); n != 2 {
+		t.Errorf("want 2 dedup keys after counter advance, got %d", n)
 	}
 }
 
@@ -427,7 +441,7 @@ func TestFR_AAA_003_Dedup_DuplicateInterimSkipped(t *testing.T) {
 // (radius_verifier_cache_hit_total increments) rather than bcrypt, while
 // still producing an ordinary Access-Accept.
 func TestVerifierCache_SecondAuthUsesFastPath(t *testing.T) {
-	d, _ := itNewDaemon(t, map[string]*Subscriber{
+	d := itNewDaemon(t, map[string]*Subscriber{
 		"carol@isp": {
 			ID:           3,
 			Username:     "carol@isp",
@@ -464,7 +478,7 @@ func TestVerifierCache_SecondAuthUsesFastPath(t *testing.T) {
 // is still rejected — a cache miss/mismatch must never be treated as a
 // rejection on its own.
 func TestVerifierCache_WrongPasswordAfterCachedEntry_StillRejected(t *testing.T) {
-	d, _ := itNewDaemon(t, map[string]*Subscriber{
+	d := itNewDaemon(t, map[string]*Subscriber{
 		"dave@isp": {
 			ID:           4,
 			Username:     "dave@isp",
@@ -494,7 +508,7 @@ func TestVerifierCache_WrongPasswordAfterCachedEntry_StillRejected(t *testing.T)
 // TTL is treated as a miss (falls through to bcrypt) rather than as a
 // rejection or a stale accept.
 func TestVerifierCache_ExpiredEntryFallsBackToBcrypt(t *testing.T) {
-	d, mr := itNewDaemon(t, map[string]*Subscriber{
+	d := itNewDaemon(t, map[string]*Subscriber{
 		"erin@isp": {
 			ID:           5,
 			Username:     "erin@isp",
@@ -511,7 +525,9 @@ func TestVerifierCache_ExpiredEntryFallsBackToBcrypt(t *testing.T) {
 		t.Fatalf("setup auth: want Access-Accept, got %v", got)
 	}
 
-	mr.FastForward(verifierCacheTTL + time.Second)
+	// Stands in for miniredis's FastForward — see the note in
+	// TestFR_SEC_001_BruteForce_BlocksAt10Failures.
+	d.verifierCache.store.ExpireNow(verifierKey("erin@isp"))
 
 	beforeHits := itCounterValue(t, radiusVerifierCacheHit)
 	w2 := &itResponseWriter{}
@@ -536,7 +552,7 @@ func TestVerifierCache_PasswordChange_OldRejectedNewAccepted(t *testing.T) {
 		Status:       "active",
 		RateLimitStr: "100M/100M",
 	}
-	d, _ := itNewDaemon(t, map[string]*Subscriber{"frank@isp": sub})
+	d := itNewDaemon(t, map[string]*Subscriber{"frank@isp": sub})
 	ctx := context.Background()
 
 	// Cache a verifier under the old password.
@@ -583,7 +599,7 @@ func TestHandleAuth_RepeatAuthMeetsP99Budget(t *testing.T) {
 		t.Fatalf("bcrypt hash at cost=12: %v", err)
 	}
 
-	d, _ := itNewDaemon(t, map[string]*Subscriber{
+	d := itNewDaemon(t, map[string]*Subscriber{
 		"p99@isp": {
 			ID:           7,
 			Username:     "p99@isp",

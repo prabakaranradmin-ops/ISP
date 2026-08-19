@@ -2,8 +2,8 @@
 
 // End-to-end EAP-MSCHAPv2 conversation tests — FR-AAA-006 | MDS §4.18.
 //
-// These drive the real handler through all three round trips against a real
-// (in-process) Redis, so the State attribute, the stored challenge and the
+// These drive the real handler through all three round trips against the
+// real session store, so the State attribute, the stored challenge and the
 // stage transitions are exercised the way a supplicant would exercise them.
 // The crypto itself is pinned separately against RFC 2759's published
 // vectors in mschapv2_test.go.
@@ -14,20 +14,16 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/redis/go-redis/v9"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2869"
 )
 
-// itEAPDaemon builds a daemon with EAP enabled, sharing the same in-process
-// Redis the daemon's other caches use.
+// itEAPDaemon builds a daemon with EAP enabled.
 func itEAPDaemon(t *testing.T, subs map[string]*Subscriber) *RadiusDaemon {
 	t.Helper()
-	d, mr := itNewDaemon(t, subs)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rc.Close() })
-	d.SetEAPSessionStore(NewEAPSessionStore(rc))
+	d := itNewDaemon(t, subs)
+	d.SetEAPSessionStore(NewEAPSessionStore())
 	return d
 }
 
@@ -443,7 +439,7 @@ func TestFR_AAA_002_PAPStillWorksWithEAPEnabled(t *testing.T) {
 // misleading reason.
 func TestFR_AAA_006_EAPRequestWithoutAStoreIsRejected(t *testing.T) {
 	const username = "eapuser"
-	d, _ := itNewDaemon(t, map[string]*Subscriber{
+	d := itNewDaemon(t, map[string]*Subscriber{
 		username: {ID: 1, Username: username, PasswordHash: itHashPassword(t, "x"), Status: "active"},
 	})
 	// Deliberately no SetEAPSessionStore.
