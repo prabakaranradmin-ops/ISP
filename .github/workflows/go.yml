@@ -12,7 +12,20 @@ on:
 jobs:
 
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-latest exists specifically so the Windows-only
+        # build-tagged code (internal/winservice/winservice_windows.go and
+        # its test — see cmd/api and cmd/radiusd's Windows service
+        # entrypoints) actually gets compiled and run somewhere. Every
+        # other job in this repo's history ran on ubuntu-latest alone, so
+        # that file — and any bug in it — would only ever have surfaced on
+        # a real Windows machine, which is exactly the gap that made the
+        # native Windows install's own service registration impossible to
+        # verify from this sandboxed environment in the first place.
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
 
