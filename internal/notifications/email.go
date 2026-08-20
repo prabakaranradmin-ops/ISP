@@ -20,7 +20,7 @@ import (
 
 // ErrEmailNotConfigured is returned when SMTP settings are absent. Callers
 // treat it as "this channel is unavailable", not as a delivery failure —
-// the same graceful degradation Gotenberg and Razorpay already get.
+// the same graceful degradation the API's PDF renderer and Razorpay already get.
 var ErrEmailNotConfigured = errors.New("notifications: SMTP is not configured")
 
 // EmailSender is the interface the dispatcher depends on, so a test can

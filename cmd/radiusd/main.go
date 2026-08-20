@@ -123,7 +123,7 @@ func run(ctx context.Context) error {
 
 	// ── NAS multi-vendor attribute engine ────────────────────────────────────
 	//
-	// Optional, same as Gotenberg/Razorpay below: with AES_KEY_STORE_URL
+	// Optional, same as the API's PDF renderer/Razorpay: with AES_KEY_STORE_URL
 	// unset, no resolver is built and every component that would use it
 	// falls back to exactly today's behavior — one global RADIUS secret,
 	// every Access-Accept/CoA gets the MikroTik VSA unconditionally. A

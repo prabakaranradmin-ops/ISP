@@ -97,7 +97,7 @@ type Config struct {
 
 	// Email (FR-NOTIF-012). An unset SMTPHost leaves the channel
 	// unconfigured, which Dispatcher reports per-send rather than failing
-	// startup — the same rule Gotenberg and Razorpay follow.
+	// startup — the same rule ChromiumPath and Razorpay follow.
 	SMTPHost     string
 	SMTPPort     int
 	SMTPUsername string
@@ -109,7 +109,15 @@ type Config struct {
 	OneSignalAPIKey string
 
 	// Integrations
-	GotenbergURL        string
+	//
+	// ChromiumPath is the executable pkg/chromium.Locate should treat as
+	// the answer rather than auto-detecting one — set when an operator
+	// needs a specific browser, e.g. a machine with more than one
+	// Chromium-based browser installed. Empty (the default) lets Locate
+	// find Microsoft Edge or Google Chrome itself; see that package's docs
+	// for why this replaced what was GOTENBERG_URL; invoice PDF generation
+	// no longer talks to a Gotenberg container at all.
+	ChromiumPath        string
 	PagerDutyRoutingKey string
 }
 
@@ -178,7 +186,7 @@ func Load(service string) (*Config, error) {
 		OneSignalAppID:  env("ONESIGNAL_APP_ID", ""),
 		OneSignalAPIKey: env("ONESIGNAL_API_KEY", ""),
 
-		GotenbergURL:        env("GOTENBERG_URL", ""),
+		ChromiumPath:        env("CHROMIUM_PATH", ""),
 		PagerDutyRoutingKey: env("PAGERDUTY_ROUTING_KEY", ""),
 	}
 
@@ -278,7 +286,7 @@ func (c *Config) Redact() map[string]string {
 		"smtp_password":          setOrUnset(c.SMTPPassword),
 		"onesignal_api_key":      setOrUnset(c.OneSignalAPIKey),
 		"pagerduty_key":          setOrUnset(c.PagerDutyRoutingKey),
-		"gotenberg_url":          c.GotenbergURL,
+		"chromium_path":          chromiumPathOrAutoDetect(c.ChromiumPath),
 	}
 }
 
@@ -289,6 +297,16 @@ func (c *Config) Redact() map[string]string {
 func logFileOrStdout(v string) string {
 	if v == "" {
 		return "stdout"
+	}
+	return v
+}
+
+// chromiumPathOrAutoDetect names what Redact should show for ChromiumPath:
+// the configured path when one is set, "auto-detect" (what an empty one
+// really means — see pkg/chromium.Locate) when it is not.
+func chromiumPathOrAutoDetect(v string) string {
+	if v == "" {
+		return "auto-detect"
 	}
 	return v
 }

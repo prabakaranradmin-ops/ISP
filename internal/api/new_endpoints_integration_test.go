@@ -495,7 +495,7 @@ func TestGetInvoicePDF_UnknownInvoiceReturns404(t *testing.T) {
 	}
 }
 
-func TestGetInvoicePDF_NoGotenbergReturns503(t *testing.T) {
+func TestGetInvoicePDF_NoPDFRendererReturns503(t *testing.T) {
 	invoices := &stubInvoices{detail: &api.InvoiceDetail{}}
 	h := api.NewHandler(api.HandlerDeps{
 		DB: &stubDB{}, KYC: &stubKYC{}, Wallet: billing.NewWalletService(&stubWallet{}), Invoices: invoices,
@@ -509,7 +509,7 @@ func TestGetInvoicePDF_NoGotenbergReturns503(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("want 503 when Gotenberg is not configured, got %d", rec.Code)
+		t.Errorf("want 503 when no PDF renderer is configured, got %d", rec.Code)
 	}
 }
 

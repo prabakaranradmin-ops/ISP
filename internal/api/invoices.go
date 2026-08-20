@@ -196,7 +196,7 @@ func (h *Handler) GetInvoicePDF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.pdfGen == nil {
-		writeError(w, http.StatusServiceUnavailable, "ERR_UNAVAILABLE", "PDF generation requires Gotenberg")
+		writeError(w, http.StatusServiceUnavailable, "ERR_UNAVAILABLE", "PDF generation is not available (no Chromium-based browser found)")
 		return
 	}
 

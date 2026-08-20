@@ -39,6 +39,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/staffui"
 	"github.com/maaransoft/isp-bss-oss/internal/svclog"
 	"github.com/maaransoft/isp-bss-oss/internal/tr069"
+	"github.com/maaransoft/isp-bss-oss/pkg/chromium"
 	"github.com/maaransoft/isp-bss-oss/pkg/crypto"
 	"github.com/maaransoft/isp-bss-oss/pkg/tlscert"
 	"github.com/shopspring/decimal"
@@ -140,14 +141,17 @@ func run(ctx context.Context) error {
 	taskClient := jobqueue.NewClient(database.Pool())
 	defer taskClient.Close() //nolint:errcheck
 
-	// Gotenberg is optional: GetInvoicePDF reports 503 rather than the process
-	// refusing to start when it is not configured.
+	// PDF generation is optional, the same rule Razorpay below follows:
+	// GetInvoicePDF reports 503 rather than the process refusing to start
+	// when no browser is found. pkg/chromium.Locate auto-detects Microsoft
+	// Edge or Google Chrome when CHROMIUM_PATH is unset — invoice PDFs no
+	// longer go to a Gotenberg container, there is nowhere left to run one.
 	var pdfGen api.PDFGenerator
-	if cfg.GotenbergURL != "" {
-		pdfGen = billing.NewInvoicePDFClient(cfg.GotenbergURL)
-		log.Info().Str("url", cfg.GotenbergURL).Msg("api: Gotenberg PDF client configured")
+	if chromiumPath, err := chromium.Locate(cfg.ChromiumPath); err != nil {
+		log.Warn().Err(err).Msg("api: no Chromium-based browser found — invoice PDF downloads will return 503")
 	} else {
-		log.Warn().Msg("api: GOTENBERG_URL unset — invoice PDF downloads will return 503")
+		pdfGen = billing.NewInvoicePDFClient(chromiumPath)
+		log.Info().Str("path", chromiumPath).Msg("api: invoice PDF renderer configured")
 	}
 
 	// Razorpay order creation is optional: /portal/renew reports 503 rather

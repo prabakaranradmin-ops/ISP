@@ -125,7 +125,7 @@ type Handler struct {
 //
 // A nil optional dependency is not a startup error: each handler that needs it
 // checks and returns 503 rather than panicking, so a deployment that has not
-// configured (say) Gotenberg still serves every other route.
+// found (say) a Chromium-based browser still serves every other route.
 type HandlerDeps struct {
 	DB       SubscriberQuerier
 	KYC      KYCQuerier
