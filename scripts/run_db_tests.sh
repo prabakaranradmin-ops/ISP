@@ -93,7 +93,12 @@ info "running persistence integration tests"
 # moved off Redis (migration 037): their queue tests used to get isolation
 # for free from a per-test in-process miniredis, and now share
 # jobqueue_tasks with everything else.
-in_go_container go test -tags=integration -count=1 -p 1 "$@" \
+# -timeout 20m, well above go test's 600s default. ./internal/db alone runs
+# 430-470s against a real PostgreSQL on an unloaded machine, which is close
+# enough to the default that a busy one tips over it — and a timeout is
+# reported as a bare package FAIL with no failing test named, which reads as
+# a mystery rather than as "this needed longer".
+in_go_container go test -tags=integration -count=1 -p 1 -timeout 20m "$@" \
     ./internal/db/... ./internal/cache/... ./internal/fup/... ./internal/reporting/... \
     ./internal/jobqueue/...
 CODE=$?
