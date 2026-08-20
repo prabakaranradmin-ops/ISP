@@ -36,7 +36,7 @@ param(
     [Parameter(Mandatory = $true)][string]$PgsqlSource,
 
     [string]$Version = '1.0.0',
-    [string]$OutDir = (Join-Path $PSScriptRoot 'dist'),
+    [string]$OutDir = '',
 
     # Overridable for a wix.exe not on PATH - the same reasoning
     # -PgsqlSource takes a path rather than assuming a fixed location.
@@ -46,6 +46,18 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $stageDir = Join-Path $PSScriptRoot 'stage'
+
+# Not defaulted directly in the param block above: $PSScriptRoot is only
+# reliably populated once the script body starts running, not yet during
+# parameter default-value evaluation - a real, invocation-method-dependent
+# difference, not a hypothetical one. `& build.ps1 ...` (the call operator,
+# how this script was run for every earlier build in this project) happens
+# to populate it early enough; `powershell.exe -File build.ps1 ...` (what
+# build.bat uses, since it starts a fresh process rather than reusing an
+# existing session) does not, and Join-Path against an empty $PSScriptRoot
+# in the param block failed outright. Resolved here instead, after
+# $PSScriptRoot is guaranteed set.
+if ($OutDir -eq '') { $OutDir = Join-Path $PSScriptRoot 'dist' }
 
 # MSI package versions are strictly major.minor.build, each numeric,
 # nothing else - no semver-style pre-release/build-metadata suffixes.
