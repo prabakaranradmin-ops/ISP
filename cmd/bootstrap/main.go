@@ -84,8 +84,30 @@ func run() error {
 	if *superuserDSN == "" {
 		return fmt.Errorf("-superuser-dsn is required")
 	}
+
+	// Resolved to absolute paths immediately, before anything below uses
+	// them: keyPath ends up embedded verbatim into app.env's
+	// AES_KEY_STORE_URL, and that file is read by a process that may start
+	// from a completely different working directory than this one — a
+	// Windows service's default working directory is
+	// %SystemRoot%\System32, not the install directory. A relative path
+	// recorded here would resolve against wherever bootstrap.exe happened
+	// to run from today, not wherever a service reads app.env from
+	// tomorrow. Found by actually running api_service.exe from an
+	// unrelated directory with the app.env this used to produce: it failed
+	// to start, unable to find its own key store.
+	absConfigDir, err := filepath.Abs(*configDir)
+	if err != nil {
+		return fmt.Errorf("resolve -config-dir: %w", err)
+	}
+	*configDir = absConfigDir
+
 	if *keysDir == "" {
 		*keysDir = filepath.Join(*configDir, "keys")
+	} else if absKeysDir, err := filepath.Abs(*keysDir); err != nil {
+		return fmt.Errorf("resolve -keys-dir: %w", err)
+	} else {
+		*keysDir = absKeysDir
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)

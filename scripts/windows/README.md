@@ -83,6 +83,34 @@ under one of the names `register_services.ps1` registers; running either
 binary from a console — by hand, or under `-SkipService`-style manual
 testing — takes the same interactive path (Ctrl+C / SIGTERM) it always did.
 
+### Why every path a service touches has to be absolute
+
+A Windows service's working directory is always `%SystemRoot%\System32`,
+never the install directory — the SCM does not offer a per-service "start
+in" folder the way Scheduled Tasks do. Anything read from a relative path
+resolves against System32 instead of wherever an operator actually expects
+it, which is invisible in ordinary interactive testing (running a binary
+from its own directory makes the two indistinguishable) and only shows up
+once something registers it as a real service.
+
+Two things this system generates were caught doing exactly that:
+
+- `cmd/bootstrap`'s `-config-dir`/`-keys-dir` are resolved to absolute paths
+  before anything is written, specifically because `AES_KEY_STORE_URL`
+  embeds one of them verbatim into `app.env`. A relative `-config-dir` used
+  to produce a relative `AES_KEY_STORE_URL` that only happened to work when
+  `bootstrap.exe` and the service were run from the same directory —
+  confirmed broken by running `api_service.exe` from an unrelated directory
+  with the app.env this used to produce: it failed to start, unable to find
+  its own key store.
+- `TLS_CERT_DIR` (`internal/config`) defaults to the relative `./config/tls`
+  — fine for a developer running the binary from its own directory, not for
+  a service. `register_services.ps1` sets it explicitly, absolute, through
+  the API service's registry `Environment` value (`aaa_core_daemon` never
+  reads it, so it gets none). Confirmed broken the same way: without it, the
+  self-signed certificate got written under a `config\tls` next to whatever
+  directory the process happened to be started from.
+
 ## Upgrades
 
 Re-running all three steps is safe and is what the MSI does:

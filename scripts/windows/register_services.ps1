@@ -60,12 +60,25 @@ $services = @(
         DisplayName = 'ISP BSS API'
         Description = 'ISP BSS/OSS HTTPS API, subscriber portal, staff console and TR-069 ACS.'
         Exe         = Join-Path $InstallDir 'api_service.exe'
+        # TLS_CERT_DIR's own default (internal/config: "./config/tls") is
+        # relative, which resolves fine for a developer running the binary
+        # from its own directory but not for a service: the SCM always
+        # starts a service with %SystemRoot%\System32 as the working
+        # directory, never the install directory, so an unset TLS_CERT_DIR
+        # here would have pkg/tlscert try to read and write a cert under
+        # System32 instead. Found the same way the AES_KEY_STORE_URL fix in
+        # cmd/bootstrap was: running api_service.exe from a directory that
+        # is not its install directory and watching where it looked.
+        ExtraEnv    = @{ TLS_CERT_DIR = Join-Path $InstallDir 'tls' }
     },
     @{
         Name        = $AaaServiceName
         DisplayName = 'ISP BSS AAA Core'
         Description = 'ISP BSS RADIUS AAA daemon, FUP scanner and background task workers.'
         Exe         = Join-Path $InstallDir 'aaa_core_daemon.exe'
+        # aaa_core_daemon never reads TLSCertDir (radiusd does not terminate
+        # TLS), so it has no ExtraEnv of its own.
+        ExtraEnv    = @{}
     }
 )
 
@@ -182,14 +195,19 @@ foreach ($svc in $services) {
         }
     }
 
-    # LOG_FILE set through the service's own registry Environment value
-    # (REG_MULTI_SZ), the one way the SCM actually injects environment
-    # variables into a service process - a per-service value here rather
-    # than a shared one, since each service must write its own log file,
-    # not race the other one for the same handle.
+    # LOG_FILE, plus each service's own ExtraEnv (TLS_CERT_DIR for the API),
+    # set through the service's registry Environment value (REG_MULTI_SZ) -
+    # the one way the SCM actually injects environment variables into a
+    # service process. Per-service, not shared: each service must write its
+    # own log file, not race the other one for the same handle, and only
+    # the API needs TLS_CERT_DIR at all.
     if (-not $DryRun) {
+        $envLines = @("LOG_FILE=$logFile")
+        foreach ($key in $svc.ExtraEnv.Keys) {
+            $envLines += "$key=$($svc.ExtraEnv[$key])"
+        }
         $envKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$($svc.Name)"
-        Set-ItemProperty -Path $envKey -Name Environment -Value @("LOG_FILE=$logFile") -Type MultiString
+        Set-ItemProperty -Path $envKey -Name Environment -Value $envLines -Type MultiString
     }
 
     if (-not $DryRun) {

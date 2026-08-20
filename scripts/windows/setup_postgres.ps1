@@ -181,9 +181,20 @@ try {
     # stderr into a terminating NativeCommandError - so the ordinary
     # upgrade case would abort the installer. Querying first keeps the
     # error path meaning something went wrong.
-    $exists = (& $Psql -h 127.0.0.1 -p $Port -U postgres -d postgres -tAc `
-        "SELECT 1 FROM pg_database WHERE datname = '$DatabaseName'").Trim()
+    #
+    # Not chained straight into .Trim(): on a fresh install the database
+    # does not exist yet, the query returns zero rows, and psql then prints
+    # nothing at all - which PowerShell captures as $null, not "". $null
+    # has no .Trim() method, so the fresh-install branch (the common case)
+    # threw "You cannot call a method on a null-valued expression" every
+    # time, unconditionally. Missed the first time this existence check was
+    # written because the follow-up test only re-ran the upgrade path
+    # (database already exists, so $exists really is the string "1"),
+    # never the first-install path this exact line breaks.
+    $exists = & $Psql -h 127.0.0.1 -p $Port -U postgres -d postgres -tAc `
+        "SELECT 1 FROM pg_database WHERE datname = '$DatabaseName'"
     if ($LASTEXITCODE -ne 0) { throw "could not query for database $DatabaseName" }
+    if ($null -ne $exists) { $exists = $exists.Trim() }
 
     if ($exists -eq '1') {
         Write-Host "setup_postgres: database $DatabaseName already exists"
