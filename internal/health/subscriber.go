@@ -1,6 +1,6 @@
 // Package health implements the single-call subscriber diagnostic endpoint.
 //
-// FR: FR-OBS-004 | DDS Â§5.9
+// FR: FR-OBS-004 | DDS §5.9
 package health
 
 import (

@@ -93,7 +93,7 @@ func TestPortalLogin_ValidCredentials(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("login: want 200, got %d â€” %s", rec.Code, rec.Body.String())
+		t.Fatalf("login: want 200, got %d — %s", rec.Code, rec.Body.String())
 	}
 	var resp map[string]string
 	json.NewDecoder(rec.Body).Decode(&resp) //nolint:errcheck,gosec
@@ -148,6 +148,6 @@ func TestPortalRenew_NoGateway(t *testing.T) {
 
 	// razorpay is nil, expect 503
 	if renewRec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("want 503 without gateway, got %d â€” %s", renewRec.Code, renewRec.Body.String())
+		t.Fatalf("want 503 without gateway, got %d — %s", renewRec.Code, renewRec.Body.String())
 	}
 }

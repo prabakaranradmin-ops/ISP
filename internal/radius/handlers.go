@@ -34,7 +34,7 @@ func (d *RadiusDaemon) handleRequest(parent context.Context, w radius.ResponseWr
 
 // handleAuth validates username/password and checks subscriber status.
 //
-// FR: FR-AAA-001..002 | DDS Ã‚Â§5.1
+// FR: FR-AAA-001..002 | DDS §5.1
 func (d *RadiusDaemon) handleAuth(ctx context.Context, w radius.ResponseWriter, r *radius.Request) {
 	// Timed here rather than in the worker loop so radius_auth_duration_seconds
 	// measures only Access-Request handling, as its name promises.

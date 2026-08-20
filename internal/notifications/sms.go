@@ -12,7 +12,7 @@ import (
 
 // MSG91Client implements SMSSender for the MSG91 SMS gateway.
 //
-// FR: FR-NOTIF-009 (SMS channel) | DDS Â§5.8
+// FR: FR-NOTIF-009 (SMS channel) | DDS §5.8
 type MSG91Client struct {
 	apiKey   string
 	senderID string

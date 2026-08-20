@@ -1,7 +1,7 @@
 // Package notifications implements DND-aware multi-channel dispatching and
 // the WhatsApp Business API template sender.
 //
-// FR: FR-NOTIF-001..011 | DDS Â§5.8
+// FR: FR-NOTIF-001..011 | DDS §5.8
 package notifications
 
 import (
@@ -120,7 +120,7 @@ type TemplateMessage struct {
 
 // WhatsAppClient sends templates via the Meta Cloud API.
 //
-// FR: FR-NOTIF-001..007 | DDS Â§5.8
+// FR: FR-NOTIF-001..007 | DDS §5.8
 type WhatsAppClient struct {
 	phoneNumberID string
 	accessToken   string

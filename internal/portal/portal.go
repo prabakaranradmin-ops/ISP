@@ -3,7 +3,7 @@
 // Provides subscriber-facing JWT auth, usage dashboard, plan renewal, and
 // notification + ticket history.
 //
-// FR: FR-SUB-001..005 | DDS Â§5.8 | API Â§7 (portal endpoints)
+// FR: FR-SUB-001..005 | DDS §5.8 | API §7 (portal endpoints)
 package portal
 
 import (
@@ -287,7 +287,7 @@ func issueSubscriberJWT(subscriberID int, username, secret string) (string, erro
 	return token.SignedString([]byte(secret))
 }
 
-// Me handles GET /portal/me â€” returns the subscriber's own profile.
+// Me handles GET /portal/me — returns the subscriber's own profile.
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	subID := subscriberIDFromCtx(r)
 	if subID == 0 {
