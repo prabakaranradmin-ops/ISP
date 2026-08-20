@@ -1,8 +1,9 @@
 # Native Windows install
 
 Scripts and binaries for running this system on a single Windows machine with
-no Docker. The MSI (Phase 6) drives these in order; they are documented and
-runnable by hand so an install can be reproduced or debugged without one.
+no Docker. `ISP-BSS-Setup.msi` (built from [../installer/](../installer/README.md))
+drives these in order; they are documented and runnable by hand so an install
+can be reproduced or debugged without one, or without building the MSI at all.
 
 ## What a native install consists of
 

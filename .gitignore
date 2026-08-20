@@ -66,3 +66,12 @@ e2e/demo-frames/
 # otherwise linger as clutter in every git status after every run.
 .soak_users.csv
 soak_metrics_*.tsv
+
+# installer/build.ps1 output. stage/ holds the cross-compiled binaries and
+# the copied-in PostgreSQL tree, obj/ is wix build's own intermediate
+# folder, dist/ is the final .msi — regenerated from the committed
+# Product.wxs and build.ps1 on demand, never committed itself (the
+# PostgreSQL binaries alone put dist/*.msi well past what belongs in git).
+installer/stage/
+installer/obj/
+installer/dist/

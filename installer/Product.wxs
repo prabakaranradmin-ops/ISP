@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Product.wxs - the native Windows install for ISP BSS/OSS.
+
+  Lays down two Go binaries, a bundled PostgreSQL, and the PowerShell
+  scripts from scripts/windows/, then hands off to install.ps1 (a single
+  deferred custom action, elevated by virtue of running inside msiexec's
+  own SYSTEM-context service) to provision the database, migrate the
+  schema, generate secrets, and register both Windows services. The MSI's
+  own job stops at "the files exist and install.ps1 has been invoked
+  once" — everything after that is the already-tested PowerShell in
+  scripts/windows, not fragile custom-action plumbing reimplementing it in
+  WiX.
+
+  UpgradeCode is fixed and must never change across versions — it is what
+  lets MajorUpgrade recognise "this is the same product, a newer version"
+  rather than installing side by side. ProductVersion is passed in at
+  build time (installer/build.ps1) rather than hardcoded here.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="ISP BSS/OSS"
+           Manufacturer="Maaran Soft"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="82ebce31-918d-45b3-894d-9e8ace893456"
+           Language="1033"
+           Compressed="yes"
+           Scope="perMachine">
+
+    <SummaryInformation Description="ISP BSS/OSS native Windows install" Manufacturer="Maaran Soft" />
+
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version of ISP BSS/OSS is already installed. Uninstall it first to reinstall an older version." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- ── Directory layout ──────────────────────────────────────────── -->
+    <!--
+      INSTALLFOLDER holds the binaries, the bundled PostgreSQL and the
+      scripts — everything setup_postgres.ps1 and register_services.ps1
+      already expect under one -InstallDir. CONFIGFOLDER is separate and
+      lives under ProgramData rather than Program Files: it holds
+      generated secrets (app.env, the AES key store) that change after
+      install and must survive a reinstall or repair of the read-only
+      program files, which is exactly the distinction ProgramData vs
+      Program Files exists to draw.
+    -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="ISP BSS">
+        <Directory Id="SCRIPTSFOLDER" Name="scripts" />
+        <Directory Id="PGSQLFOLDER" Name="pgsql" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="APPDATAROOTFOLDER" Name="ISP BSS">
+        <Directory Id="CONFIGFOLDER" Name="config" />
+      </Directory>
+    </StandardDirectory>
+
+    <!-- ── Files ─────────────────────────────────────────────────────── -->
+
+    <ComponentGroup Id="AppBinaries" Directory="INSTALLFOLDER">
+      <Component Id="ApiServiceExe">
+        <File Id="ApiServiceExe" Source="$(var.StageDir)\api_service.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="AaaCoreDaemonExe">
+        <File Id="AaaCoreDaemonExe" Source="$(var.StageDir)\aaa_core_daemon.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="BootstrapExe">
+        <File Id="BootstrapExe" Source="$(var.StageDir)\bootstrap.exe" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="Scripts" Directory="SCRIPTSFOLDER">
+      <Component Id="InstallPs1">
+        <File Id="InstallPs1" Source="$(var.StageDir)\scripts\install.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="UninstallPs1">
+        <File Id="UninstallPs1" Source="$(var.StageDir)\scripts\uninstall.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="SetupPostgresPs1">
+        <File Id="SetupPostgresPs1" Source="$(var.StageDir)\scripts\setup_postgres.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="RegisterServicesPs1">
+        <File Id="RegisterServicesPs1" Source="$(var.StageDir)\scripts\register_services.ps1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!--
+      The bundled PostgreSQL tree: several hundred files under pgsql\bin,
+      lib and share. Harvested by glob rather than listed by hand — the
+      exact file set is whatever the upstream PostgreSQL Windows binaries
+      zip contains, which is not this project's to enumerate or keep in
+      sync by hand across a PostgreSQL point release.
+    -->
+    <ComponentGroup Id="PgsqlFiles">
+      <Files Include="$(var.StageDir)\pgsql\**" Directory="PGSQLFOLDER" />
+    </ComponentGroup>
+
+    <!--
+      CONFIGFOLDER needs to exist before install.ps1's first run (it
+      creates the directory itself too, but an MSI component owning it
+      is what makes uninstall able to consider removing it later if it
+      is ever left empty — data files inside are never touched, see
+      uninstall.ps1's own reasoning for why).
+    -->
+    <ComponentGroup Id="ConfigDir" Directory="CONFIGFOLDER">
+      <Component Id="ConfigDirPlaceholder">
+        <CreateFolder />
+        <RegistryValue Root="HKLM" Key="Software\ISP BSS" Name="ConfigDirInstalled"
+                        Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="ISP BSS/OSS" Level="1">
+      <ComponentGroupRef Id="AppBinaries" />
+      <ComponentGroupRef Id="Scripts" />
+      <ComponentGroupRef Id="PgsqlFiles" />
+      <ComponentGroupRef Id="ConfigDir" />
+    </Feature>
+
+    <!-- ── Install / uninstall orchestration ────────────────────────── -->
+    <!--
+      Both custom actions run install.ps1/uninstall.ps1 directly rather
+      than going through WiX's own ServiceInstall element: the services
+      need LOG_FILE and TLS_CERT_DIR set through their own registry
+      Environment value, an Event Log source, a dependency on the
+      PostgreSQL service and a restart-on-crash recovery action — all of
+      which register_services.ps1 already does and ServiceInstall does
+      not expose cleanly. Impersonate="no" runs them as the SYSTEM account
+      msiexec's own service uses for a per-machine install's deferred
+      actions, which is what makes registering a Windows service or
+      writing under Program Files/HKLM work with no separate elevation
+      step of its own.
+    -->
+    <CustomAction Id="RunInstall"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]scripts\install.ps1&quot; -InstallDir &quot;[INSTALLFOLDER]&quot; -ConfigDir &quot;[CONFIGFOLDER]&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <CustomAction Id="RunUninstall"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]scripts\uninstall.ps1&quot; -InstallDir &quot;[INSTALLFOLDER]&quot; -ConfigDir &quot;[CONFIGFOLDER]&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <InstallExecuteSequence>
+      <!--
+        NOT Installed is true both for a genuine first install and for a
+        new version's install step during a major upgrade (Installed
+        reflects whether THIS ProductCode was already present, and a new
+        version always has a new ProductCode) — exactly the two cases
+        that need install.ps1 to run. It stays false on a same-version
+        repair, where re-running it would be harmless but pointless.
+      -->
+      <Custom Action="RunInstall" After="InstallFiles" Condition="NOT Installed" />
+      <!--
+        REMOVE="ALL" is true both for a genuine uninstall and for the old
+        version being removed mid-upgrade (RemoveExistingProducts) — the
+        same "install.ps1/uninstall.ps1 are both idempotent, so a brief
+        stop-then-reregister during an upgrade is fine" reasoning the
+        scripts themselves already document.
+      -->
+      <Custom Action="RunUninstall" Before="RemoveFiles" Condition='REMOVE="ALL"' />
+    </InstallExecuteSequence>
+
+  </Package>
+</Wix>
