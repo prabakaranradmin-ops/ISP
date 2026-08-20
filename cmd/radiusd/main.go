@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -19,9 +20,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/envfile"
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
+	"github.com/maaransoft/isp-bss-oss/internal/winservice"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/maaransoft/isp-bss-oss/internal/archive"
@@ -37,6 +39,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/radius"
 	"github.com/maaransoft/isp-bss-oss/internal/reporting"
 	"github.com/maaransoft/isp-bss-oss/internal/revenue"
+	"github.com/maaransoft/isp-bss-oss/internal/svclog"
 	"github.com/maaransoft/isp-bss-oss/internal/tickets"
 	"github.com/maaransoft/isp-bss-oss/pkg/crypto"
 	"github.com/prometheus/client_golang/prometheus"
@@ -47,25 +50,55 @@ const (
 	metricsReadTimeout = 15 * time.Second
 	shutdownTimeout    = 15 * time.Second
 	workerConcurrency  = 20
+
+	// serviceName is the Windows service name register_services.ps1
+	// registers this binary under — see cmd/api's identical constant for
+	// why it doubles as the Event Log source name.
+	serviceName = "ISPBSSAaaCore"
 )
 
 func main() {
-	if err := run(); err != nil {
+	envFile := flag.String("env-file", os.Getenv("ISP_ENV_FILE"),
+		"dotenv file to load before reading configuration (for Windows services, which start with no shell to source app.env)")
+	flag.Parse()
+
+	if err := envfile.Load(*envFile); err != nil {
+		fmt.Fprintf(os.Stderr, "radiusd: %v\n", err)
+		os.Exit(1)
+	}
+
+	if winservice.IsWindowsService() {
+		if err := winservice.Run(serviceName, run); err != nil {
+			winservice.Fatal(serviceName, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "radiusd: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(ctx context.Context) error {
 	cfg, err := config.Load("radiusd")
 	if err != nil {
 		return err
 	}
-	configureLogging(cfg)
+	svclog.Configure(cfg, "radiusd")
 
 	log.Info().Interface("config", cfg.Redact()).Msg("radiusd: starting")
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// A child of the ctx main() (or winservice, under a Windows service)
+	// handed in, not that ctx directly: the errCh branch below calls
+	// cancel() to stop every background worker as soon as one server fails
+	// to start, and that must only ever reach into this process's own
+	// workers — never back up into the caller's shutdown signal, which
+	// main()/winservice still owns.
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// ── Dependencies ────────────────────────────────────────────────────────
@@ -606,14 +639,4 @@ func dbConfig(cfg *config.Config) db.Config {
 	c.MinConns = cfg.DBMinConns
 	c.ConnectTimeout = cfg.DBConnTimeout
 	return c
-}
-
-func configureLogging(cfg *config.Config) {
-	zerolog.TimeFieldFormat = time.RFC3339
-	if level, err := zerolog.ParseLevel(cfg.LogLevel); err == nil {
-		zerolog.SetGlobalLevel(level)
-	}
-	if cfg.LogFormat != "json" {
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
-	}
 }

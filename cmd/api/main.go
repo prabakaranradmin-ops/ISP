@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -18,9 +19,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/envfile"
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
+	"github.com/maaransoft/isp-bss-oss/internal/winservice"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
@@ -35,6 +37,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
 	"github.com/maaransoft/isp-bss-oss/internal/portalui"
 	"github.com/maaransoft/isp-bss-oss/internal/staffui"
+	"github.com/maaransoft/isp-bss-oss/internal/svclog"
 	"github.com/maaransoft/isp-bss-oss/internal/tr069"
 	"github.com/maaransoft/isp-bss-oss/pkg/crypto"
 	"github.com/maaransoft/isp-bss-oss/pkg/tlscert"
@@ -51,10 +54,40 @@ const (
 	// force an operator to re-trust it by hand on a schedule nobody asked
 	// for, with no security benefit — nothing is validating this chain.
 	tlsValidity = 10 * 365 * 24 * time.Hour
+
+	// serviceName is the Windows service name register_services.ps1
+	// registers this binary under. It doubles as the Event Log source
+	// winservice.Fatal writes a startup failure to when there is no
+	// console to print one to.
+	serviceName = "ISPBSSApi"
 )
 
 func main() {
-	if err := run(); err != nil {
+	envFile := flag.String("env-file", os.Getenv("ISP_ENV_FILE"),
+		"dotenv file to load before reading configuration (for Windows services, which start with no shell to source app.env)")
+	flag.Parse()
+
+	if err := envfile.Load(*envFile); err != nil {
+		fmt.Fprintf(os.Stderr, "api: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Under the Service Control Manager there is no SIGTERM and no console
+	// — the SCM sends stop requests on its own channel and winservice.Run
+	// bridges that to the same ctx cancellation run() already expected.
+	// Interactively, ctx is cancelled by Ctrl+C or SIGTERM exactly as
+	// before; the two paths converge back into the one run(ctx) below.
+	if winservice.IsWindowsService() {
+		if err := winservice.Run(serviceName, run); err != nil {
+			winservice.Fatal(serviceName, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := run(ctx); err != nil {
 		// zerolog is configured inside run(); if it failed before that, stderr
 		// is the only channel guaranteed to work.
 		fmt.Fprintf(os.Stderr, "api: %v\n", err)
@@ -62,17 +95,14 @@ func main() {
 	}
 }
 
-func run() error {
+func run(ctx context.Context) error {
 	cfg, err := config.Load("api")
 	if err != nil {
 		return err
 	}
-	configureLogging(cfg)
+	svclog.Configure(cfg, "api")
 
 	log.Info().Interface("config", cfg.Redact()).Msg("api: starting")
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 
 	// ── Dependencies ────────────────────────────────────────────────────────
 
@@ -545,16 +575,6 @@ func dbConfig(cfg *config.Config) db.Config {
 	c.MinConns = cfg.DBMinConns
 	c.ConnectTimeout = cfg.DBConnTimeout
 	return c
-}
-
-func configureLogging(cfg *config.Config) {
-	zerolog.TimeFieldFormat = time.RFC3339
-	if level, err := zerolog.ParseLevel(cfg.LogLevel); err == nil {
-		zerolog.SetGlobalLevel(level)
-	}
-	if cfg.LogFormat != "json" {
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
-	}
 }
 
 // staffTicketStore joins the two halves of ticket access the console needs:

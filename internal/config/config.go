@@ -28,6 +28,14 @@ type Config struct {
 	Environment string
 	LogFormat   string
 	LogLevel    string
+	// LogFile redirects log output to a file instead of stdout. Empty
+	// keeps the historical behaviour (stdout), which is what every
+	// container and interactive run wants. A Windows service has no
+	// console for stdout to reach at all, so
+	// scripts/windows/register_services.ps1 sets this for both services —
+	// without it, a service that failed at startup would have logged its
+	// reason nowhere.
+	LogFile     string
 	APIAddr     string
 	MetricsAddr string
 	RadiusAddr  string
@@ -127,6 +135,7 @@ func Load(service string) (*Config, error) {
 		Environment:    env("ENVIRONMENT", "development"),
 		LogFormat:      env("LOG_FORMAT", "console"),
 		LogLevel:       env("LOG_LEVEL", "info"),
+		LogFile:        env("LOG_FILE", ""),
 		APIAddr:        env("API_ADDR", ":8080"),
 		MetricsAddr:    env("METRICS_ADDR", ":9101"),
 		RadiusAddr:     env("RADIUS_ADDR", ":1812"),
@@ -247,6 +256,7 @@ func Load(service string) (*Config, error) {
 func (c *Config) Redact() map[string]string {
 	return map[string]string{
 		"environment":            c.Environment,
+		"log_file":               logFileOrStdout(c.LogFile),
 		"api_addr":               c.APIAddr,
 		"metrics_addr":           c.MetricsAddr,
 		"radius_addr":            c.RadiusAddr,
@@ -270,6 +280,17 @@ func (c *Config) Redact() map[string]string {
 		"pagerduty_key":          setOrUnset(c.PagerDutyRoutingKey),
 		"gotenberg_url":          c.GotenbergURL,
 	}
+}
+
+// logFileOrStdout names what Redact should show for LogFile: the actual
+// path when one is set, "stdout" (what an empty LogFile really means) when
+// it is not — printing "" there would read as a blank left by a bug rather
+// than as the deliberate default.
+func logFileOrStdout(v string) string {
+	if v == "" {
+		return "stdout"
+	}
+	return v
 }
 
 func setOrUnset(v string) string {
