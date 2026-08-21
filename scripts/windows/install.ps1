@@ -33,6 +33,28 @@ param(
 $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# Trailing backslashes stripped immediately, before either path is used
+# for anything. MSI Directory properties always resolve WITH one
+# ("C:\ProgramData\ISP BSS\config\"), and PowerShell auto-quotes any
+# argument containing a space when invoking a *native* executable - which
+# turns that into `"C:\ProgramData\ISP BSS\config\"`, where the trailing
+# \" is consumed as an escaped literal quote rather than closing the
+# argument. bootstrap.exe (Go, standard Windows command-line parsing)
+# then read its -config-dir value as everything up to the *next* quote,
+# swallowing `-db-port 5432 -db-name isp_bss_oss` into the path and
+# failing on `C:\ProgramData\ISP BSS\config" -db-port 5432 -db-name
+# isp_bss_oss\app.env`.
+#
+# This is the same escaped-quote trap Product.wxs's ExeCommand already
+# documents, one layer further down: there it was MSI -> powershell.exe,
+# here it is powershell.exe -> bootstrap.exe. Normalising once here fixes
+# every native-exe call below rather than needing each to remember, and
+# costs nothing for the PowerShell-to-PowerShell calls, which were never
+# affected (they bypass command-line parsing entirely) nor for Join-Path,
+# which is happy either way.
+$InstallDir = $InstallDir.TrimEnd('\')
+$ConfigDir = $ConfigDir.TrimEnd('\')
+
 # A durable log of this script's own run, independent of anything msiexec
 # itself logs. msiexec's own /l*v log records only that the RunInstall
 # custom action's process exited non-zero - it does not, and cannot,

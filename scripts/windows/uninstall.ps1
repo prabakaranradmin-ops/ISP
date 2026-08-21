@@ -25,6 +25,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# Normalised for the same reason install.ps1 does it - see the fuller
+# explanation there. Nothing below currently passes either path to a
+# native executable (the trap only springs there, not on PowerShell-to-
+# PowerShell calls), but these arrive from the same MSI Directory
+# properties with the same trailing backslash, and the next thing added
+# here should not have to rediscover that.
+$InstallDir = $InstallDir.TrimEnd('\')
+$ConfigDir = $ConfigDir.TrimEnd('\')
+
 # Both app services first, then PostgreSQL - the reverse of install.ps1's
 # order, so nothing is ever left trying to depend on a service that already
 # stopped.
