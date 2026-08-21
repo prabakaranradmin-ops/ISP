@@ -28,7 +28,22 @@
 
     <SummaryInformation Description="ISP BSS/OSS native Windows install" Manufacturer="Maaran Soft" />
 
+    <!--
+      AllowSameVersionUpgrades: ProductCode is auto-generated per build
+      (there is no explicit ProductCode above, which is what lets
+      MajorUpgrade treat each build as a distinct product to replace).
+      Without this, rebuilding at an unchanged Version produces an MSI
+      that MSI itself will not treat as an upgrade of the installed one -
+      so `msiexec /x` with the freshly built file silently uninstalls
+      nothing (its ProductCode is not the installed product's), and
+      installing over the top leaves the previous registration in place.
+      Hit exactly that during install debugging: an uninstall reported
+      success having removed nothing, and the follow-up install then found
+      its own services still registered. Real releases bump Version and
+      would not need this; iterating on a fixed version does.
+    -->
     <MajorUpgrade
+      AllowSameVersionUpgrades="yes"
       DowngradeErrorMessage="A newer version of ISP BSS/OSS is already installed. Uninstall it first to reinstall an older version." />
 
     <MediaTemplate EmbedCab="yes" />

@@ -183,15 +183,16 @@ foreach ($svc in $services) {
     # path and the -env-file value both need their own quotes because
     # either can contain spaces ("C:\Program Files\..."), and the embedded
     # quotes must be literal characters in this one PowerShell string, not
-    # something PowerShell's own parser sees. When this string is later
-    # passed as a single argument to sc.exe (both at creation via
-    # New-Service and at update via `sc.exe config`), PowerShell's own
-    # native-argument encoding adds one more layer of escaping around it
-    # for the trip to sc.exe's process - and standard Windows command-line
-    # parsing removes exactly that one layer again on the other end, which
-    # is what makes the round trip land on this literal string rather than
-    # something mangled. Do not "simplify" this by removing the inner
-    # quotes: it works because of that round trip, not despite it.
+    # something PowerShell's own parser sees. Do not "simplify" this by
+    # removing the inner quotes - the SCM splits ImagePath on whitespace
+    # exactly like any other command line, so without them the executable
+    # path alone would be read as three separate arguments.
+    #
+    # Both consumers below are cmdlets (New-Service, Set-ItemProperty)
+    # rather than native executables, which is what keeps these quotes
+    # intact: PowerShell 5.1 cannot pass an argument containing double
+    # quotes to a native .exe without adding a layer of its own, and doing
+    # exactly that is what broke the reconfigure path - see the note there.
     $binPath = '"{0}" -env-file "{1}"' -f $svc.Exe, $envFile
 
     $existing = Get-Service -Name $svc.Name -ErrorAction SilentlyContinue
@@ -210,13 +211,33 @@ foreach ($svc in $services) {
                 Stop-Service -Name $svc.Name -Force
                 $existing.WaitForStatus('Stopped', (New-TimeSpan -Seconds 30))
             }
-            # Set-Service in Windows PowerShell 5.1 has no -BinaryPathName
-            # parameter (that arrived later, in PowerShell 7+) - sc.exe
-            # config is the only way available here to change an existing
-            # service's ImagePath, which is why an upgrade needs it even
-            # though creation above uses New-Service.
-            & sc.exe config $svc.Name binPath= $binPath start= auto depend= $PostgresServiceName | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "sc.exe config failed for $($svc.Name) with exit code $LASTEXITCODE" }
+            # Written straight to the registry rather than through
+            # `sc.exe config`. Set-Service in Windows PowerShell 5.1 has no
+            # -BinaryPathName (that arrived in PowerShell 7+), which leaves
+            # sc.exe as the only *command-line* route - and $binPath
+            # contains embedded double quotes, which PowerShell 5.1 cannot
+            # hand to a native executable intact. It wraps the whole value
+            # in one more quote layer, so sc.exe receives
+            # `binPath= ""C:\...\api_service.exe" -env-file "..."" ` and
+            # rejects it outright with 1639 (ERROR_INVALID_COMMAND_LINE).
+            # Confirmed by reproducing that exact mangled command line
+            # standalone, and by the real install: creation via New-Service
+            # (a cmdlet - a direct API call with no command-line parsing in
+            # between) succeeded, and only this reconfigure path failed.
+            #
+            # These three values are exactly what New-Service itself sets
+            # above, and what `sc.exe config binPath=/start=/depend=` would
+            # have set: the SCM reads the service's configuration from this
+            # key, so writing it here is the same operation without a
+            # command line in the middle. Set-ItemProperty is a cmdlet too,
+            # so the quotes in $binPath survive untouched. The value kinds
+            # match what the SCM expects and what New-Service produced on
+            # the first install: ImagePath REG_EXPAND_SZ, DependOnService
+            # REG_MULTI_SZ, Start REG_DWORD 2 (= Automatic).
+            $svcKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$($svc.Name)"
+            Set-ItemProperty -Path $svcKey -Name ImagePath -Value $binPath -Type ExpandString
+            Set-ItemProperty -Path $svcKey -Name DependOnService -Value @($PostgresServiceName) -Type MultiString
+            Set-ItemProperty -Path $svcKey -Name Start -Value 2 -Type DWord
         }
     }
 
