@@ -8,6 +8,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -582,32 +583,69 @@ func (h *Handler) CreateSubscriber(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", err.Error())
 		return
 	}
-	if err := validateCreateSubscriber(req); err != nil {
+
+	created, err := h.ProvisionSubscriber(r.Context(), req)
+	switch {
+	case errors.Is(err, ErrSubscriberInvalid):
 		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", err.Error())
 		return
+	case errors.Is(err, ErrSubscriberExists):
+		writeError(w, http.StatusConflict, "ERR_CONFLICT", "CAF number or username already exists")
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "create subscriber failed")
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+// Sentinel errors so a caller that is not an HTTP handler - the operations
+// console (internal/staffui) - can tell a rejected input from a conflict
+// from a genuine failure without parsing message text.
+var (
+	// ErrSubscriberInvalid wraps a validation failure; its message is safe
+	// to show an operator, since validateCreateSubscriber writes it for
+	// exactly that purpose.
+	ErrSubscriberInvalid = errors.New("subscriber details are not valid")
+	// ErrSubscriberExists reports a duplicate CAF number or username.
+	ErrSubscriberExists = errors.New("subscriber already exists")
+)
+
+// ProvisionSubscriber validates, creates and KYC-encrypts one subscriber,
+// returning the stored record.
+//
+// Exported and shared rather than left inline in the HTTP handler because
+// the console needs the identical path: this is where a password is hashed
+// and Aadhaar/PAN are encrypted, and the note below on the extracted
+// helpers applies with more force to a second *entry point* than to a
+// second helper - a console that grew its own creation path is precisely
+// how one of them ends up quietly skipping the encryption step
+// (FR-SEC-002, MDS §4.16). The audit entry and partner webhook fire here
+// too, so an operator-created subscriber is as traceable as an
+// API-created one.
+func (h *Handler) ProvisionSubscriber(ctx context.Context, req CreateSubscriberRequest) (*SubscriberRecord, error) {
+	if err := validateCreateSubscriber(req); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrSubscriberInvalid, err.Error())
 	}
 
 	hash, err := hashSubscriberPassword(req.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "password hash failed")
-		return
+		return nil, fmt.Errorf("hash subscriber password: %w", err)
 	}
 
-	created, err := h.db.CreateSubscriber(r.Context(), subscriberRecordFrom(req), hash)
+	created, err := h.db.CreateSubscriber(ctx, subscriberRecordFrom(req), hash)
 	if err != nil {
 		if isUniqueViolation(err) {
-			writeError(w, http.StatusConflict, "ERR_CONFLICT", "CAF number or username already exists")
-			return
+			return nil, ErrSubscriberExists
 		}
-		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "create subscriber failed")
-		return
+		return nil, fmt.Errorf("create subscriber: %w", err)
 	}
 
-	h.persistKYC(r.Context(), created.ID, req.Aadhaar, req.PAN)
+	h.persistKYC(ctx, created.ID, req.Aadhaar, req.PAN)
 
-	middleware.Audit(r.Context(), "subscriber.create", strconv.Itoa(created.ID), nil)
-	h.emit(r.Context(), partner.EventSubscriberCreated, created.ID)
-	writeJSON(w, http.StatusCreated, created)
+	middleware.Audit(ctx, "subscriber.create", strconv.Itoa(created.ID), nil)
+	h.emit(ctx, partner.EventSubscriberCreated, created.ID)
+	return created, nil
 }
 
 // ── Shared subscriber-creation steps ─────────────────────────────────────────

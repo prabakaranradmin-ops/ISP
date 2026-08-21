@@ -61,8 +61,8 @@ func gbytes(b int64) string {
 // pages can define their own "content" block without colliding — html/template
 // has no inheritance and this is the standard workaround.
 var pageNames = []string{
-	"login", "subscribers", "subscriber_detail", "billing",
-	"tickets", "revenue", "lea", "error",
+	"login", "subscribers", "subscriber_detail", "subscriber_new",
+	"billing", "tickets", "revenue", "catalogue", "lea", "error",
 }
 
 var pages = func() map[string]*template.Template {

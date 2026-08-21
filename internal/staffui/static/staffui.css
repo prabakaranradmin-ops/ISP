@@ -109,3 +109,13 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .login form { display: flex; flex-direction: column; gap: 6px; }
 .login label { font-weight: 600; font-size: 13px; }
 .login button { margin-top: 14px; }
+
+/* Two-column form layout for the create screens (new subscriber, catalogue).
+   The existing .stack is a single narrow column, which suits a login box but
+   turns a nine-field subscriber form into a long scroll. */
+.formgrid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px 18px; margin-bottom: 16px;
+}
+.formgrid label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 13px; }
+.formgrid input, .formgrid select { font-weight: 400; }

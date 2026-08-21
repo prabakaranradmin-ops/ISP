@@ -18,9 +18,13 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 		leaAccess bool
 		want      []string
 	}{
-		{"isp_owner", true, []string{"subscribers", "billing", "tickets", "revenue", "lea"}},
+		{"isp_owner", true, []string{"subscribers", "billing", "tickets", "revenue", "catalogue", "lea"}},
 		{"noc_engineer", true, []string{"subscribers", "lea"}},
-		{"billing_admin", false, []string{"subscribers", "billing"}},
+		{"billing_admin", false, []string{"subscribers", "billing", "catalogue"}},
+		// Catalogue is deliberately absent for csr and technician: editing a
+		// tariff re-prices every subscriber on it and a GST change alters
+		// every invoice raised afterwards, which is not reach either role
+		// needs to answer a call or fix a line.
 		{"csr", false, []string{"subscribers", "billing", "tickets"}},
 		{"technician", false, []string{"subscribers", "tickets"}},
 		// An unknown role gets nothing. Defaulting to any access would make a

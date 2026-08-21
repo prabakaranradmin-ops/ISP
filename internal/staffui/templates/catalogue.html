@@ -1,0 +1,101 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Catalogue</h1>
+<p class="muted">Tariffs subscribers can be placed on, and the GST slabs invoices are raised under.</p>
+
+<div class="card">
+  <h3>Plans</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Name</th><th>Speed</th><th>Included</th><th>FUP</th><th>Price</th><th>Validity</th></tr></thead>
+    <tbody>
+    {{range $d.Plans}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td>{{.Name}}</td>
+        <td>{{.RateLimitString}}</td>
+        <td class="num">{{.VolumeGB}} GB</td>
+        <td>{{if gt .FUPThresholdBytes 0}}{{gbytes .FUPThresholdBytes}} &rarr; {{.FUPThrottleString}}{{else}}<span class="muted">unlimited</span>{{end}}</td>
+        <td class="num">&#8377;{{money .Price}}</td>
+        <td class="num">{{.ValidityDays}} days</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">No plans yet. Add one below before creating subscribers.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Add a plan</h3>
+  <form method="post" action="/staff/catalogue/plans">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="formgrid">
+      <label>Name
+        <input name="name" required placeholder="Home_100M_Unlimited">
+      </label>
+      <label>Speed (up/down)
+        <input name="rate_limit_string" required placeholder="100M/100M">
+      </label>
+      <label>Included data (GB)
+        <input name="volume_gb" required inputmode="numeric" placeholder="3300">
+      </label>
+      <label>Price (&#8377;)
+        <input name="price" required inputmode="decimal" placeholder="799.00">
+      </label>
+      <label>Validity (days)
+        <input name="validity_days" required inputmode="numeric" placeholder="30">
+      </label>
+      <label>FUP threshold (GB, blank = unlimited)
+        <input name="fup_threshold_gb" inputmode="numeric" placeholder="3300">
+      </label>
+      <label>FUP throttle speed
+        <input name="fup_throttle_string" placeholder="10M/10M">
+      </label>
+    </div>
+    <button class="primary" type="submit">Create plan</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>GST rates</h3>
+  <p class="muted">Rates are never edited. A change is a new row taking effect from its own date, so invoices already raised keep the rate they were billed under.</p>
+  <table>
+    <thead><tr><th>ID</th><th>CGST</th><th>SGST</th><th>IGST</th><th>Effective from</th></tr></thead>
+    <tbody>
+    {{range $d.GSTRates}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td class="num">{{money .CGSTRate}}%</td>
+        <td class="num">{{money .SGSTRate}}%</td>
+        <td class="num">{{money .IGSTRate}}%</td>
+        <td>{{date .EffectiveFrom}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="5" class="empty">No GST rates yet. Invoices cannot be raised until one exists.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Add a GST rate</h3>
+  <form method="post" action="/staff/catalogue/gst">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="formgrid">
+      <label>CGST %
+        <input name="cgst_rate" required inputmode="decimal" placeholder="9.00">
+      </label>
+      <label>SGST %
+        <input name="sgst_rate" required inputmode="decimal" placeholder="9.00">
+      </label>
+      <label>IGST %
+        <input name="igst_rate" required inputmode="decimal" placeholder="18.00">
+      </label>
+      <label>Effective from (blank = now)
+        <input name="effective_from" placeholder="2026-04-01">
+      </label>
+    </div>
+    <button class="primary" type="submit">Create GST rate</button>
+  </form>
+</div>
+{{end}}

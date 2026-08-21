@@ -104,45 +104,51 @@ type RevenueQuerier interface {
 // screen whose store is absent reports itself unavailable rather than
 // panicking, so a partially-configured deployment still serves the rest.
 type HandlerDeps struct {
-	Staff       StaffQuerier
-	Subscribers SubscriberQuerier
-	Health      HealthQuerier
-	Sessions    SessionReader
-	Billing     BillingQuerier
-	Tickets     TicketQuerier
-	LEA         LEAQuerier
-	Revenue     RevenueQuerier
-	Tasks       TaskEnqueuer
-	JWTSecret   string
+	Staff             StaffQuerier
+	Subscribers       SubscriberQuerier
+	Health            HealthQuerier
+	Sessions          SessionReader
+	Billing           BillingQuerier
+	Tickets           TicketQuerier
+	LEA               LEAQuerier
+	Revenue           RevenueQuerier
+	Catalogue         CatalogueStore
+	SubscriberCreator SubscriberCreator
+	Tasks             TaskEnqueuer
+	JWTSecret         string
 }
 
 // Handler serves the console.
 type Handler struct {
-	staff       StaffQuerier
-	subscribers SubscriberQuerier
-	health      HealthQuerier
-	sessions    SessionReader
-	billing     BillingQuerier
-	tickets     TicketQuerier
-	lea         LEAQuerier
-	revenue     RevenueQuerier
-	tasks       TaskEnqueuer
-	jwtSecret   string
+	staff             StaffQuerier
+	subscribers       SubscriberQuerier
+	health            HealthQuerier
+	sessions          SessionReader
+	billing           BillingQuerier
+	tickets           TicketQuerier
+	lea               LEAQuerier
+	revenue           RevenueQuerier
+	catalogue         CatalogueStore
+	subscriberCreator SubscriberCreator
+	tasks             TaskEnqueuer
+	jwtSecret         string
 }
 
 // NewHandler constructs the console handler.
 func NewHandler(deps HandlerDeps) *Handler {
 	return &Handler{
-		staff:       deps.Staff,
-		subscribers: deps.Subscribers,
-		health:      deps.Health,
-		sessions:    deps.Sessions,
-		billing:     deps.Billing,
-		tickets:     deps.Tickets,
-		lea:         deps.LEA,
-		revenue:     deps.Revenue,
-		tasks:       deps.Tasks,
-		jwtSecret:   deps.JWTSecret,
+		staff:             deps.Staff,
+		subscribers:       deps.Subscribers,
+		health:            deps.Health,
+		sessions:          deps.Sessions,
+		billing:           deps.Billing,
+		tickets:           deps.Tickets,
+		lea:               deps.LEA,
+		revenue:           deps.Revenue,
+		catalogue:         deps.Catalogue,
+		subscriberCreator: deps.SubscriberCreator,
+		tasks:             deps.Tasks,
+		jwtSecret:         deps.JWTSecret,
 	}
 }
 
@@ -173,6 +179,12 @@ var sections = []Section{
 		[]string{"isp_owner", "csr", "technician"}, false},
 	{"revenue", "Revenue", "/staff/revenue",
 		[]string{"isp_owner"}, false},
+	// Catalogue is owner/billing only: a tariff change re-prices every
+	// subscriber on that plan and a GST change alters every invoice raised
+	// after it, which is not reach a CSR or technician needs to do their
+	// job.
+	{"catalogue", "Catalogue", "/staff/catalogue",
+		[]string{"isp_owner", "billing_admin"}, false},
 	{"lea", "LEA Lookup", "/staff/lea",
 		[]string{"isp_owner", "noc_engineer"}, true},
 }
@@ -213,7 +225,16 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	mux.Handle("GET /staff/", h.authed(h.Home))
 	mux.Handle("GET /staff/subscribers", h.authed(h.Subscribers))
+	// Registered before the {id} pattern's sibling so "new" is never read
+	// as a subscriber id. Go 1.22's mux scores a literal segment above a
+	// wildcard regardless of registration order, so this is for the reader
+	// rather than the router.
+	mux.Handle("GET /staff/subscribers/new", h.authed(h.NewSubscriber))
+	mux.Handle("POST /staff/subscribers/new", h.authed(h.requireCSRF(h.CreateSubscriber)))
 	mux.Handle("GET /staff/subscribers/{id}", h.authed(h.SubscriberDetail))
+	mux.Handle("GET /staff/catalogue", h.authed(h.Catalogue))
+	mux.Handle("POST /staff/catalogue/plans", h.authed(h.requireCSRF(h.CreatePlan)))
+	mux.Handle("POST /staff/catalogue/gst", h.authed(h.requireCSRF(h.CreateGSTRate)))
 	mux.Handle("GET /staff/billing", h.authed(h.Billing))
 	mux.Handle("GET /staff/tickets", h.authed(h.Tickets))
 	mux.Handle("POST /staff/tickets/{id}/status", h.authed(h.requireCSRF(h.UpdateTicketStatus)))

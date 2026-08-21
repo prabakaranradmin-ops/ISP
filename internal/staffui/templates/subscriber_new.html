@@ -1,0 +1,61 @@
+{{define "content"}}
+{{$d := .Data}}
+{{$f := $d.Form}}
+<h1>New subscriber</h1>
+<p class="muted"><a href="/staff/subscribers">&larr; Back to subscribers</a></p>
+
+{{if not $d.Plans}}
+<div class="card">
+  <p class="empty">There are no plans yet, and a subscriber must be placed on one.
+     Add a tariff under <a href="/staff/catalogue">Catalogue</a> first.</p>
+</div>
+{{else}}
+<div class="card">
+  <form method="post" action="/staff/subscribers/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="formgrid">
+      <label>CAF number
+        <input name="caf_number" required value="{{$f.CAFNumber}}" placeholder="CAF-2026-0001">
+      </label>
+      <label>Username
+        <input name="username" required value="{{$f.Username}}" placeholder="ramesh.k">
+      </label>
+      <label>Password
+        <input name="password" type="password" required autocomplete="new-password">
+      </label>
+      <label>Mobile number
+        <input name="mobile_number" required value="{{$f.MobileNumber}}" placeholder="+919876543210">
+      </label>
+      <label>Email
+        <input name="email" type="email" value="{{$f.Email}}" placeholder="ramesh@example.com">
+      </label>
+      <label>Plan
+        <select name="plan_id" required>
+          {{range $d.Plans}}
+            <option value="{{.ID}}" {{if eq .ID $f.PlanID}}selected{{end}}>
+              {{.Name}} &mdash; {{.RateLimitString}}, &#8377;{{money .Price}} / {{.ValidityDays}} days
+            </option>
+          {{end}}
+        </select>
+      </label>
+      <label>Registered state (for GST)
+        <input name="registered_state" required value="{{$f.RegisteredState}}" placeholder="Tamil Nadu">
+      </label>
+    </div>
+
+    <h3>KYC (optional)</h3>
+    <p class="muted">Stored encrypted at rest. Can be submitted later instead.</p>
+    <div class="formgrid">
+      <label>Aadhaar
+        <input name="aadhaar" value="{{$f.Aadhaar}}" autocomplete="off">
+      </label>
+      <label>PAN
+        <input name="pan" value="{{$f.PAN}}" autocomplete="off">
+      </label>
+    </div>
+
+    <button class="primary" type="submit">Create subscriber</button>
+  </form>
+</div>
+{{end}}
+{{end}}

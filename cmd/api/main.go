@@ -285,8 +285,14 @@ func run(ctx context.Context) error {
 		Tickets:     staffTicketStore{portal: database.Portal(), admin: database.Tickets()},
 		LEA:         database.FUP(),
 		Revenue:     database.Revenue(),
-		Tasks:       taskClient,
-		JWTSecret:   cfg.JWTSecret,
+		Catalogue:   database.Catalogue(),
+		// The API handler itself, not a store: creating a subscriber from
+		// the console has to hash the password, encrypt KYC and write the
+		// audit entry exactly as the API route does, and apiHandler owns
+		// that path (api.ProvisionSubscriber).
+		SubscriberCreator: apiHandler,
+		Tasks:             taskClient,
+		JWTSecret:         cfg.JWTSecret,
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —

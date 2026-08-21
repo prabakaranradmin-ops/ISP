@@ -4,6 +4,7 @@
 <form class="searchbar" method="get" action="/staff/subscribers">
   <input name="q" value="{{$d.Query}}" placeholder="Username or subscriber id" aria-label="Search subscribers">
   <button class="primary" type="submit">Search</button>
+  <a class="btn" href="/staff/subscribers/new">New subscriber</a>
 </form>
 <p class="muted">{{len $d.Results}} shown of {{$d.Total}} total</p>
 <div class="card">
