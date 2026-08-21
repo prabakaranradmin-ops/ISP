@@ -69,16 +69,41 @@ $services = @(
         # System32 instead. Found the same way the AES_KEY_STORE_URL fix in
         # cmd/bootstrap was: running api_service.exe from a directory that
         # is not its install directory and watching where it looked.
-        ExtraEnv    = @{ TLS_CERT_DIR = Join-Path $InstallDir 'tls' }
+        #
+        # API_ADDR: :8080 (internal/config's default) was the right answer
+        # only while Caddy fronted this service and terminated TLS on 443
+        # for it. That reverse proxy is gone - api_service terminates TLS
+        # itself now - so on a native install nothing sits in front of it
+        # and it should own the standard HTTPS port directly. Without this
+        # the subscriber portal, staff console and captive portal are all
+        # reachable only on an explicit :8080, which is not what an
+        # operator (or this repo's own documented
+        # `curl -k https://127.0.0.1/readyz` check) expects.
+        #
+        # METRICS_ADDR: both binaries default to :9101, which was fine
+        # under Docker Compose - each container had its own network
+        # namespace, so both could bind :9101 internally and the host-side
+        # mapping kept them apart. Natively they share one namespace and
+        # cannot both have it: whichever service the SCM started second
+        # died on startup. Split explicitly here, API keeping the
+        # historical :9101 so existing Prometheus scrape configs pointed at
+        # it still work.
+        ExtraEnv    = @{
+            TLS_CERT_DIR = Join-Path $InstallDir 'tls'
+            API_ADDR     = ':443'
+            METRICS_ADDR = ':9101'
+        }
     },
     @{
         Name        = $AaaServiceName
         DisplayName = 'ISP BSS AAA Core'
         Description = 'ISP BSS RADIUS AAA daemon, FUP scanner and background task workers.'
         Exe         = Join-Path $InstallDir 'aaa_core_daemon.exe'
-        # aaa_core_daemon never reads TLSCertDir (radiusd does not terminate
-        # TLS), so it has no ExtraEnv of its own.
-        ExtraEnv    = @{}
+        # No TLS_CERT_DIR: aaa_core_daemon never reads it (radiusd does not
+        # terminate TLS). METRICS_ADDR is the other half of the :9101
+        # collision described above - :9102 rather than the shared default,
+        # so both services can expose metrics at once.
+        ExtraEnv    = @{ METRICS_ADDR = ':9102' }
     }
 )
 
