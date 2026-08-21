@@ -133,16 +133,37 @@
       writing under Program Files/HKLM work with no separate elevation
       step of its own.
     -->
+    <!--
+      -InstallDir and -ConfigDir each end the quoted argument with a
+      literal backslash right before the closing &quot; ([INSTALLFOLDER]
+      and [CONFIGFOLDER] are MSI Directory properties, which always
+      resolve WITH a trailing backslash - "C:\Program Files\ISP BSS\",
+      never "...ISP BSS"). That is not decorative: in Windows command-line
+      argument parsing, a backslash immediately before a closing quote is
+      an *escaped literal quote*, not a string terminator, so
+      "[INSTALLFOLDER]" alone expands to a quote that never actually
+      closes - the parser keeps consuming characters until it hits the
+      *next* quote in the command line (in practice, -ConfigDir's own
+      closing quote), merging both arguments into one garbled,
+      illegal-character path and taking install.ps1 down at its very
+      first New-Item call. Two backslashes before a quote parse as one
+      literal backslash plus a real terminator, which is what the extra
+      backslash written here achieves once combined with the property's
+      own trailing one. Found by reading the transcript log
+      install.ps1 itself now writes (see that script's own Start-Transcript
+      addition) - msiexec's own log only ever showed "exit code 1", never
+      the corrupted command line that caused it.
+    -->
     <CustomAction Id="RunInstall"
                   Directory="INSTALLFOLDER"
-                  ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]scripts\install.ps1&quot; -InstallDir &quot;[INSTALLFOLDER]&quot; -ConfigDir &quot;[CONFIGFOLDER]&quot;"
+                  ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]scripts\install.ps1&quot; -InstallDir &quot;[INSTALLFOLDER]\&quot; -ConfigDir &quot;[CONFIGFOLDER]\&quot;"
                   Execute="deferred"
                   Impersonate="no"
                   Return="check" />
 
     <CustomAction Id="RunUninstall"
                   Directory="INSTALLFOLDER"
-                  ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]scripts\uninstall.ps1&quot; -InstallDir &quot;[INSTALLFOLDER]&quot; -ConfigDir &quot;[CONFIGFOLDER]&quot;"
+                  ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]scripts\uninstall.ps1&quot; -InstallDir &quot;[INSTALLFOLDER]\&quot; -ConfigDir &quot;[CONFIGFOLDER]\&quot;"
                   Execute="deferred"
                   Impersonate="no"
                   Return="check" />
