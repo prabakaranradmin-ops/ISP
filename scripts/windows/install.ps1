@@ -33,6 +33,25 @@ param(
 $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# A durable log of this script's own run, independent of anything msiexec
+# itself logs. msiexec's own /l*v log records only that the RunInstall
+# custom action's process exited non-zero - it does not, and cannot,
+# capture that process's own console output, so without this a failure
+# here is a dead end: "exit code 1" and nothing else to go on. Written one
+# directory above $ConfigDir rather than inside it, since that parent
+# (C:\ProgramData\ISP BSS, not the config\ subfolder underneath it) is not
+# itself an MSI-tracked component - config\ can in principle be touched by
+# install rollback, this cannot.
+#
+# -Append: an upgrade re-running this script should not erase the record
+# of what a previous run did, the same reasoning svclog.Configure opens
+# LOG_FILE append-only for the services themselves.
+$logFile = Join-Path (Split-Path -Parent $ConfigDir) 'install.log'
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logFile) | Out-Null
+Start-Transcript -Path $logFile -Append | Out-Null
+
+try {
+
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
 
 # The PostgreSQL superuser password. Generated once and kept in a file
@@ -86,16 +105,36 @@ if (Test-Path $pwFile) {
 # down, is the one call here that does need it).
 
 # 1. Provision PostgreSQL: initdb, loopback-only config, service, createdb.
+Write-Host "install: step 1/3 - setup_postgres.ps1"
 & (Join-Path $scriptDir 'setup_postgres.ps1') `
     -InstallDir $InstallDir -SuperuserPassword $superuserPassword `
     -Port $DBPort -DatabaseName $DatabaseName
 
 # 2. Migrate the schema and generate the application's own secrets.
+Write-Host "install: step 2/3 - bootstrap.exe"
 $dsn = "postgres://postgres:$superuserPassword@127.0.0.1:$DBPort/${DatabaseName}?sslmode=disable"
 & (Join-Path $InstallDir 'bootstrap.exe') -superuser-dsn $dsn -config-dir $ConfigDir -db-port $DBPort -db-name $DatabaseName
 if ($LASTEXITCODE -ne 0) { throw "bootstrap.exe failed with exit code $LASTEXITCODE" }
 
 # 3. Register and start both Windows services.
+Write-Host "install: step 3/3 - register_services.ps1"
 & (Join-Path $scriptDir 'register_services.ps1') -InstallDir $InstallDir -ConfigDir $ConfigDir
 
 Write-Host "install: complete"
+
+} catch {
+    # Both branches re-throw: the transcript is this script's whole
+    # purpose here, but MSI still needs to see a non-zero exit to know
+    # RunInstall failed - swallowing the error to finish writing the log
+    # cleanly would trade one blind spot for a worse one.
+    Write-Host "install: FAILED - $($_.Exception.Message)"
+    Write-Host ($_.ScriptStackTrace)
+    Stop-Transcript | Out-Null
+    throw
+} finally {
+    # Stop-Transcript throws if called on a session that was never
+    # started or was already stopped (e.g. by the catch block above) -
+    # exactly the kind of secondary error that would otherwise mask
+    # whatever the real failure was.
+    try { Stop-Transcript | Out-Null } catch { }
+}
