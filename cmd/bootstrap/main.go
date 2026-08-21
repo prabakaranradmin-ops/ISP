@@ -39,6 +39,7 @@ import (
 	// takes a *sql.DB rather than the pgxpool the services use.
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/maaransoft/isp-bss-oss/migrations"
 )
@@ -50,6 +51,10 @@ const (
 	credentialsFile = "app.env"
 	// keyStoreFile is the AES key store (pkg/crypto's "local:" scheme).
 	keyStoreFile = "aes_keys.json"
+	// adminCredentialsFile carries the initial staff console login. Kept
+	// out of app.env because it is meant to be read once by a person and
+	// then deleted, not loaded by a service at every start.
+	adminCredentialsFile = "initial_admin.txt"
 
 	// secretLength is comfortably above config.minSecretLength (32), which
 	// several secrets are validated against at service startup.
@@ -78,6 +83,9 @@ func run() error {
 		dbName = flag.String("db-name", "isp_bss_oss", "application database name")
 		dbHost = flag.String("db-host", "127.0.0.1", "host the services will use to reach PostgreSQL")
 		dbPort = flag.Int("db-port", 5432, "port the services will use to reach PostgreSQL")
+
+		adminUser = flag.String("admin-user", "admin",
+			"username for the initial staff console account, created only when no staff accounts exist yet")
 	)
 	flag.Parse()
 
@@ -143,8 +151,90 @@ func run() error {
 		fmt.Println("bootstrap: existing credentials left untouched")
 	}
 
+	createdAdmin, err := provisionAdmin(ctx, db, *configDir, *adminUser)
+	if err != nil {
+		return err
+	}
+	if createdAdmin {
+		// The path only - never the credential itself. The repo's
+		// pre-commit secret scanner flags "password" near a log call on
+		// sight, which is the right default: this line is a false positive
+		// but the next one like it might not be.
+		fmt.Printf("bootstrap: staff account %q created, sign-in details written to %s\n",
+			*adminUser, filepath.Join(*configDir, adminCredentialsFile))
+	} else {
+		fmt.Println("bootstrap: staff accounts already exist, none created")
+	}
+
 	fmt.Println("bootstrap: complete")
 	return nil
+}
+
+// provisionAdmin creates the first staff account on an otherwise empty
+// install, reporting whether it did anything.
+//
+// Without this a fresh install has a working staff console and nothing to
+// log into it with: migration 021 creates staff_users empty, and
+// scripts/seed_local.sql (which does insert accounts) is a development
+// fixture - five fictional operators sharing one password hash that is
+// committed to this repository - so seeding it into a real install would
+// hand every deployment the same published credentials.
+//
+// The gate is "no staff accounts exist at all" rather than "this username
+// is missing", so an operator who renames or replaces the initial account
+// does not find it recreated behind them on the next upgrade. That is the
+// same reasoning provisionSecrets uses for not regenerating credentials
+// that already exist.
+func provisionAdmin(ctx context.Context, db *sql.DB, configDir, username string) (bool, error) {
+	var existing int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM staff_users`).Scan(&existing); err != nil {
+		return false, fmt.Errorf("count staff accounts: %w", err)
+	}
+	if existing > 0 {
+		return false, nil
+	}
+
+	password, err := randomSecret()
+	if err != nil {
+		return false, err
+	}
+	// The same cost the application's own login path verifies against
+	// (internal/staffui/auth.go uses bcrypt.CompareHashAndPassword, which
+	// reads the cost from the stored hash) - stated explicitly rather than
+	// left to bcrypt.DefaultCost so a future change to that default cannot
+	// silently weaken accounts created here.
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	if err != nil {
+		return false, fmt.Errorf("hash admin password: %w", err)
+	}
+
+	// lea_access FALSE deliberately, even for isp_owner: SecD 9.3 requires
+	// that reach over law-enforcement lookups is never granted as a side
+	// effect of a job title, so the first account gets the ability to
+	// administer the system but not to read LEA records until somebody
+	// grants that explicitly.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO staff_users (username, password_hash, full_name, role, lea_access)
+		 VALUES ($1, $2, $3, 'isp_owner', FALSE)`,
+		username, string(hash), "Initial Administrator",
+	); err != nil {
+		return false, fmt.Errorf("create staff account %q: %w", username, err)
+	}
+
+	// Written to its own file rather than into app.env: app.env is read by
+	// the services at every start, while this is read once by a human and
+	// should be deleted afterwards. Same reasoning, and same 0600, as the
+	// installer's postgres_superuser.txt.
+	credPath := filepath.Join(configDir, adminCredentialsFile)
+	body := fmt.Sprintf(
+		"# Initial staff console account, created by bootstrap.exe on first run.\n"+
+			"# Sign in at https://<this-host>/staff/login, change this password,\n"+
+			"# then delete this file - it is the only copy.\n"+
+			"username=%s\npassword=%s\n", username, password)
+	if err := os.WriteFile(credPath, []byte(body), 0o600); err != nil {
+		return false, fmt.Errorf("write %s: %w", credPath, err)
+	}
+	return true, nil
 }
 
 // waitForDatabase retries until PostgreSQL answers or ctx expires. The
