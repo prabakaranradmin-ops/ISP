@@ -16,6 +16,10 @@ import (
 	"context"
 	"fmt"
 	"html/template"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/page"
@@ -89,8 +93,30 @@ func (c *InvoicePDFClient) GeneratePDF(ctx context.Context, data InvoiceData) ([
 	ctx, cancel := context.WithTimeout(ctx, invoicePDFTimeout)
 	defer cancel()
 
-	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(c.execPath))
-	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, allocOpts...)
+	// The browser is launched here and connected to by URL, rather than
+	// handed to chromedp.NewExecAllocator to launch itself.
+	//
+	// NewExecAllocator decides the browser is ready by reading its stderr
+	// until a "DevTools listening on ws://..." line appears. Microsoft Edge
+	// only writes that line when it has a console attached: launched from a
+	// Go process (no console, stderr on a pipe) it prints nothing at all,
+	// the pipe closes, and chromedp reports "chrome failed to start:" with
+	// no further detail while the browser is in fact running perfectly.
+	// Confirmed by reproducing it outside chromedp entirely - a bare
+	// os/exec launch reading StderrPipe gets zero bytes, while the same
+	// flags under a console print the line - and by watching the browser
+	// write a valid DevToolsActivePort within half a second of the launch
+	// chromedp had already given up on.
+	//
+	// launchBrowser waits on that file instead, which the browser writes on
+	// every platform whether or not anyone is listening to stderr.
+	wsURL, stop, err := launchBrowser(ctx, c.execPath)
+	if err != nil {
+		return nil, fmt.Errorf("billing: start browser: %w", err)
+	}
+	defer stop()
+
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, wsURL)
 	defer allocCancel()
 
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
@@ -124,6 +150,73 @@ func (c *InvoicePDFClient) GeneratePDF(ctx context.Context, data InvoiceData) ([
 		return nil, fmt.Errorf("billing: render PDF: %w", err)
 	}
 	return pdf, nil
+}
+
+// launchBrowser starts a headless browser and returns the DevTools
+// WebSocket URL to drive it through, plus a stop function that kills the
+// process and removes its profile directory.
+//
+// Readiness is taken from the DevToolsActivePort file the browser writes
+// into its own profile directory - two lines, the port and the browser's
+// WebSocket path - rather than from its stderr. See GeneratePDF's own note
+// for why stderr is not dependable here.
+func launchBrowser(ctx context.Context, execPath string) (wsURL string, stop func(), err error) {
+	// A fresh profile per launch. It doubles as the location of the
+	// DevToolsActivePort file read below, so it must be unique or two
+	// concurrent renders would read each other's port.
+	userDataDir, err := os.MkdirTemp("", "isp-invoice-pdf-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create browser profile dir: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(userDataDir) }
+
+	// Port 0 asks the browser to pick a free one and report it back in
+	// DevToolsActivePort, which avoids racing another process for a fixed
+	// port. The rest mirror chromedp's own defaults for a headless render:
+	// no first-run UI, no background chatter, no GPU.
+	cmd := exec.CommandContext(ctx, execPath,
+		"--headless",
+		"--no-first-run",
+		"--no-default-browser-check",
+		"--disable-gpu",
+		"--disable-extensions",
+		"--disable-background-networking",
+		"--disable-dev-shm-usage",
+		"--mute-audio",
+		"--remote-debugging-port=0",
+		"--user-data-dir="+userDataDir,
+	)
+	if err := cmd.Start(); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("start %s: %w", execPath, err)
+	}
+
+	stop = func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+		cleanup()
+	}
+
+	portFile := filepath.Join(userDataDir, "DevToolsActivePort")
+	for {
+		if body, readErr := os.ReadFile(portFile); readErr == nil {
+			// Two lines: the port, then the browser's own WebSocket path.
+			// Anything else means the browser is still mid-write, so keep
+			// waiting rather than parsing a half-written file.
+			if lines := strings.SplitN(strings.TrimSpace(string(body)), "\n", 2); len(lines) == 2 {
+				return fmt.Sprintf("ws://127.0.0.1:%s%s",
+					strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])), stop, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			stop()
+			return "", nil, fmt.Errorf("browser did not report a DevTools port: %w", ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // invoiceHTMLTemplate is the GST-compliant plain-language invoice layout.
