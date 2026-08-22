@@ -255,3 +255,6 @@ func (d *DB) Hotspot() *HotspotStore { return &HotspotStore{pool: d.pool} }
 // Archive returns the store backing document archival and the retention purge
 // sweep (FR-DOC-001).
 func (d *DB) Archive() *ArchiveStore { return &ArchiveStore{pool: d.pool} }
+
+// Demo returns the store backing the console's "Demo Data" panel.
+func (d *DB) Demo() *DemoStore { return NewDemoStore(d.pool) }

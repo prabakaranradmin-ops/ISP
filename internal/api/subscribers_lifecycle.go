@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -31,6 +32,11 @@ import (
 // ErrInvalidPlan is returned by LifecycleQuerier.GetPlanChangeInfo when the
 // requested new_plan_id does not exist.
 var ErrInvalidPlan = errors.New("api: unknown plan id")
+
+// ErrSubscriberNotFound is returned by changeSubscriberPlan (and reused by
+// the bulk plan-change loop in subscribers_bulk.go) when the subscriber id
+// does not exist.
+var ErrSubscriberNotFound = errors.New("api: subscriber not found")
 
 // PlanChangeInfo carries what plan-change proration needs: both plans'
 // price/validity and the subscriber's current plan_expiry.
@@ -100,44 +106,61 @@ func (h *Handler) ChangeSubscriberPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := h.lifecycle.GetPlanChangeInfo(r.Context(), id, req.NewPlanID)
-	if errors.Is(err, ErrInvalidPlan) {
+	updated, err := h.changeSubscriberPlan(r.Context(), id, req.NewPlanID)
+	switch {
+	case errors.Is(err, ErrInvalidPlan):
 		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "new_plan_id does not exist")
 		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "plan change lookup failed")
-		return
-	}
-	if info == nil {
+	case errors.Is(err, ErrSubscriberNotFound):
 		writeError(w, http.StatusNotFound, "ERR_SUBSCRIBER_NOT_FOUND", "subscriber not found")
 		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "plan change failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// changeSubscriberPlan runs the actual plan-change logic — proration, cache
+// invalidation, CoA push, metric and audit — shared by ChangeSubscriberPlan
+// (one subscriber, over HTTP) and BulkChangeSubscriberPlan (many, looped).
+// Extracted so a bulk change is exactly N single changes rather than a
+// second implementation that could drift from what proration and CoA-push
+// actually do for one subscriber.
+func (h *Handler) changeSubscriberPlan(ctx context.Context, id, newPlanID int) (*SubscriberRecord, error) {
+	info, err := h.lifecycle.GetPlanChangeInfo(ctx, id, newPlanID)
+	if errors.Is(err, ErrInvalidPlan) {
+		return nil, ErrInvalidPlan
+	}
+	if err != nil {
+		return nil, fmt.Errorf("plan change lookup: %w", err)
+	}
+	if info == nil {
+		return nil, ErrSubscriberNotFound
 	}
 
 	newExpiry := computePlanChangeExpiry(info, time.Now())
 
-	updated, err := h.lifecycle.SetSubscriberPlan(r.Context(), id, req.NewPlanID, newExpiry)
+	updated, err := h.lifecycle.SetSubscriberPlan(ctx, id, newPlanID, newExpiry)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "plan change failed")
-		return
+		return nil, fmt.Errorf("set subscriber plan: %w", err)
 	}
 	if updated == nil {
-		writeError(w, http.StatusNotFound, "ERR_SUBSCRIBER_NOT_FOUND", "subscriber not found")
-		return
+		return nil, ErrSubscriberNotFound
 	}
 
 	if h.subCache != nil {
-		if err := h.subCache.InvalidateSubscriber(r.Context(), info.Username); err != nil {
+		if err := h.subCache.InvalidateSubscriber(ctx, info.Username); err != nil {
 			log.Error().Err(err).Int("subscriber_id", id).Msg("api: auth-cache invalidation failed after plan change")
 		}
 	}
-	enqueueCoAIfSessionActive(r.Context(), h, id)
+	enqueueCoAIfSessionActive(ctx, h, id)
 
 	billing.LifecycleActionsTotal.WithLabelValues("plan_change").Inc()
-	middleware.Audit(r.Context(), "subscriber.plan_change", strconv.Itoa(id), map[string]any{
-		"new_plan_id": req.NewPlanID, "new_plan_expiry": newExpiry,
+	middleware.Audit(ctx, "subscriber.plan_change", strconv.Itoa(id), map[string]any{
+		"new_plan_id": newPlanID, "new_plan_expiry": newExpiry,
 	})
-	writeJSON(w, http.StatusOK, updated)
+	return updated, nil
 }
 
 // computePlanChangeExpiry applies the proration rule from MDS §4.14: the

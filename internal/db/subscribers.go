@@ -31,7 +31,8 @@ func (s *RadiusStore) GetSubscriberByUsername(ctx context.Context, username stri
 	const q = `
 		SELECT s.id, s.username, s.password_hash, s.status,
 		       p.rate_limit_string, COALESCE(p.fup_throttle_string, ''),
-		       COALESCE(s.fup_active, FALSE), s.plan_id, s.nt_hash
+		       COALESCE(s.fup_active, FALSE), s.plan_id, s.nt_hash,
+		       COALESCE(s.speed_override_rate_limit, ''), s.speed_override_expires_at
 		FROM subscribers s
 		JOIN plans p ON p.id = s.plan_id
 		WHERE s.username = $1`
@@ -40,6 +41,7 @@ func (s *RadiusStore) GetSubscriberByUsername(ctx context.Context, username stri
 	err := s.pool.QueryRow(ctx, q, username).Scan(
 		&sub.ID, &sub.Username, &sub.PasswordHash, &sub.Status,
 		&sub.RateLimitStr, &sub.FUPThrottle, &sub.FUPActive, &sub.PlanID, &sub.NTHash,
+		&sub.SpeedOverrideRateLimit, &sub.SpeedOverrideExpiresAt,
 	)
 	if isNoRows(err) {
 		// A missing subscriber is a normal reject, not a failure: handleAuth
@@ -69,7 +71,8 @@ const apiSubscriberColumns = `
 	s.id, s.caf_number, s.username, s.mobile_number, COALESCE(s.email, ''),
 	s.plan_id, s.franchise_id, s.status, s.dunning_state,
 	s.wallet_balance::text, s.registered_state, s.kyc_status,
-	s.plan_expiry, s.created_at`
+	s.plan_expiry, s.created_at,
+	COALESCE(s.speed_override_rate_limit, ''), s.speed_override_expires_at`
 
 func scanAPISubscriber(row interface {
 	Scan(dest ...any) error
@@ -83,6 +86,7 @@ func scanAPISubscriber(row interface {
 		&rec.PlanID, &rec.FranchiseID, &rec.Status, &rec.DunningState,
 		&balance, &rec.RegisteredState, &rec.KYCStatus,
 		&rec.PlanExpiry, &rec.CreatedAt,
+		&rec.SpeedOverrideRateLimit, &rec.SpeedOverrideExpiresAt,
 	)
 	if err != nil {
 		return nil, err

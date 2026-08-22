@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -29,7 +30,10 @@ type AnnouncementQuerier interface {
 	// what stops a double-click broadcasting twice.
 	ClaimAnnouncementForSending(ctx context.Context, id int) (*notifications.Announcement, error)
 	FinishAnnouncement(ctx context.Context, id int, status string, recipientCount int) error
-	ListSegmentSubscriberIDs(ctx context.Context, franchiseID, planID *int, status *string) ([]int, error)
+	// ListSegmentSubscriberIDs resolves an announcement's recipients: its
+	// explicit list (announcement_recipients) if one was given at creation,
+	// otherwise the franchise/plan/status segment filters.
+	ListSegmentSubscriberIDs(ctx context.Context, announcementID int, franchiseID, planID *int, status *string) ([]int, error)
 }
 
 type createAnnouncementRequest struct {
@@ -41,6 +45,12 @@ type createAnnouncementRequest struct {
 	SegmentPlanID      *int     `json:"segment_plan_id"`
 	SegmentStatus      *string  `json:"segment_status"`
 	ShowInPortal       bool     `json:"show_in_portal"`
+	// SubscriberIDs targets exactly these subscribers — the console's
+	// multi-select bulk notification — instead of the segment filters
+	// above. Mutually exclusive with them: mixing "these specific people"
+	// with "everyone matching a filter" in one request is exactly the kind
+	// of ambiguity that sends a broadcast to the wrong reach.
+	SubscriberIDs []int `json:"subscriber_ids"`
 }
 
 // CreateAnnouncement handles POST /api/v1/announcements — composing a draft.
@@ -79,6 +89,18 @@ func (h *Handler) CreateAnnouncement(w http.ResponseWriter, r *http.Request) {
 			"an announcement needs at least one channel or show_in_portal")
 		return
 	}
+	if len(req.SubscriberIDs) > 0 {
+		if req.SegmentFranchiseID != nil || req.SegmentPlanID != nil || req.SegmentStatus != nil {
+			writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION",
+				"subscriber_ids cannot be combined with segment_franchise_id/segment_plan_id/segment_status")
+			return
+		}
+		if len(req.SubscriberIDs) > maxBulkSubscribers {
+			writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION",
+				fmt.Sprintf("subscriber_ids must not exceed %d per announcement", maxBulkSubscribers))
+			return
+		}
+	}
 	class := req.Class
 	if class == "" {
 		class = "marketing" // so DND opt-out is honoured by default
@@ -92,7 +114,8 @@ func (h *Handler) CreateAnnouncement(w http.ResponseWriter, r *http.Request) {
 		Title: req.Title, Body: req.Body, Channels: req.Channels, Class: class,
 		SegmentFranchiseID: req.SegmentFranchiseID, SegmentPlanID: req.SegmentPlanID,
 		SegmentStatus: req.SegmentStatus, ShowInPortal: req.ShowInPortal,
-		CreatedBy: middleware.SubjectFromContext(r.Context()),
+		SubscriberIDs: req.SubscriberIDs,
+		CreatedBy:     middleware.SubjectFromContext(r.Context()),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "create announcement failed")
@@ -103,6 +126,57 @@ func (h *Handler) CreateAnnouncement(w http.ResponseWriter, r *http.Request) {
 		"channels": created.Channels, "class": created.Class,
 	})
 	writeJSON(w, http.StatusCreated, created)
+}
+
+// SendBulkNotification creates and immediately sends a notification to
+// exactly the given subscriber ids — the console's multi-select "Notify
+// these" bulk action.
+//
+// Unlike CreateAnnouncement/SendAnnouncement's own two-step review flow
+// (compose now, broadcast later, often to tens of thousands of people via a
+// segment filter), a bulk console notification already names its small,
+// hand-picked audience: there is nothing left to review before sending, so
+// this collapses create+claim+fan-out+finish into one call for a direct,
+// non-HTTP caller (internal/staffui) the same way ProvisionSubscriber does
+// for subscriber creation.
+func (h *Handler) SendBulkNotification(ctx context.Context, requestedBy string, ids []int, title, body string, channels []string, showInPortal bool) (enqueued int, err error) {
+	created, err := h.announcements.CreateAnnouncement(ctx, notifications.Announcement{
+		Title: title, Body: body, Channels: channels,
+		// Transactional: a hand-picked, staff-initiated notice (an outage
+		// window, an account-specific heads-up) is a service message, not
+		// marketing, so DND opt-out should not silently swallow it.
+		Class:         "transactional",
+		ShowInPortal:  showInPortal,
+		SubscriberIDs: ids,
+		CreatedBy:     requestedBy,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("create bulk announcement: %w", err)
+	}
+
+	claimed, err := h.announcements.ClaimAnnouncementForSending(ctx, created.ID)
+	if err != nil {
+		return 0, fmt.Errorf("claim bulk announcement %d: %w", created.ID, err)
+	}
+	if claimed == nil {
+		return 0, fmt.Errorf("bulk announcement %d was not left in draft state", created.ID)
+	}
+
+	recipients, err := h.announcements.ListSegmentSubscriberIDs(ctx, claimed.ID,
+		claimed.SegmentFranchiseID, claimed.SegmentPlanID, claimed.SegmentStatus)
+	if err != nil {
+		h.finishAnnouncement(ctx, created.ID, notifications.AnnouncementFailed, 0)
+		return 0, fmt.Errorf("resolve bulk announcement %d recipients: %w", created.ID, err)
+	}
+
+	enqueued = h.fanOutAnnouncement(claimed, recipients)
+	h.finishAnnouncement(ctx, created.ID, notifications.AnnouncementSent, enqueued)
+
+	notifications.AnnouncementsSentTotal.Inc()
+	middleware.Audit(ctx, "announcement.send", strconv.Itoa(created.ID), map[string]any{
+		"recipients": len(recipients), "tasks_enqueued": enqueued, "bulk": true,
+	})
+	return enqueued, nil
 }
 
 // ListAnnouncements handles GET /api/v1/announcements?status=.
@@ -164,7 +238,7 @@ func (h *Handler) SendAnnouncement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recipients, err := h.announcements.ListSegmentSubscriberIDs(r.Context(),
+	recipients, err := h.announcements.ListSegmentSubscriberIDs(r.Context(), id,
 		claimed.SegmentFranchiseID, claimed.SegmentPlanID, claimed.SegmentStatus)
 	if err != nil {
 		// The claim already moved it out of draft; mark it failed so it is

@@ -12,15 +12,30 @@
   <div class="brand">Operations Console</div>
   <nav>
     {{range .Sections}}
-    <a href="{{.Path}}" class="{{if eq .Key $.Active}}on{{end}}">{{.Label}}</a>
+    <a href="{{.Path}}" data-section="{{.Key}}" data-shortcut="{{shortcutFor .Key}}" class="{{if eq .Key $.Active}}on{{end}}">{{.Label}}</a>
     {{end}}
   </nav>
   <div class="who">
+    <button type="button" class="linkish" id="shortcuts-open" title="Keyboard shortcuts (?)">?</button>
     <span class="role">{{.Session.Role}}</span>
     <span class="name">{{.Session.Username}}</span>
     <form method="post" action="/staff/logout"><button class="linkish">Sign out</button></form>
   </div>
 </header>
+
+<div id="shortcuts-help" class="shortcuts-help" hidden>
+  <div class="shortcuts-help-box">
+    <h3>Keyboard shortcuts</h3>
+    <dl>
+      <dt><kbd>/</kbd></dt><dd>Focus search</dd>
+      <dt><kbd>g</kbd> then a letter</dt><dd>Jump to a section (shown next to its name in this list when available)</dd>
+      <dt><kbd>?</kbd></dt><dd>Toggle this panel</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close this panel</dd>
+    </dl>
+    <p class="muted">Sections you can jump to: {{range .Sections}}{{if shortcutFor .Key}}<kbd>{{shortcutFor .Key}}</kbd> {{.Label}} &nbsp; {{end}}{{end}}</p>
+    <button type="button" class="btn" id="shortcuts-close">Close</button>
+  </div>
+</div>
 {{end}}
 
 <main class="wrap">
@@ -28,5 +43,6 @@
   {{if .Message}}<div class="alert ok">{{.Message}}</div>{{end}}
   {{template "content" .}}
 </main>
+{{if .Session.Username}}<script src="/staff/static/console.js" defer></script>{{end}}
 </body>
 </html>{{end}}

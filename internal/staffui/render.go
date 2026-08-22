@@ -26,12 +26,31 @@ var staticFS = func() fs.FS {
 func staticHandler() http.Handler { return http.FileServer(http.FS(staticFS)) }
 
 var funcMap = template.FuncMap{
-	"money":    func(d decimal.Decimal) string { return d.StringFixed(2) },
-	"datetime": func(t time.Time) string { return t.Format("02 Jan 2006 15:04") },
-	"date":     func(t time.Time) string { return t.Format("02 Jan 2006") },
-	"badge":    badgeClass,
-	"gbytes":   gbytes,
+	"money":       func(d decimal.Decimal) string { return d.StringFixed(2) },
+	"datetime":    func(t time.Time) string { return t.Format("02 Jan 2006 15:04") },
+	"date":        func(t time.Time) string { return t.Format("02 Jan 2006") },
+	"badge":       badgeClass,
+	"gbytes":      gbytes,
+	"shortcutFor": shortcutFor,
 }
+
+// sectionShortcuts maps a Section.Key to the letter console.js's "g <letter>"
+// navigation binds to it. Kept here, next to the nav template that reads it,
+// rather than on the Section struct itself — the shortcut is a presentation
+// detail of the layout template, not part of the role/authorization model
+// Section otherwise carries.
+var sectionShortcuts = map[string]string{
+	"subscribers": "s",
+	"catalogue":   "c",
+	"billing":     "b",
+	"nas":         "n",
+	"revenue":     "r",
+	"tickets":     "t",
+	"lea":         "l",
+	"demo":        "d",
+}
+
+func shortcutFor(key string) string { return sectionShortcuts[key] }
 
 // badgeClass maps a status to its pill colour, so state reads at a glance in a
 // list rather than having to be read word by word.
@@ -62,7 +81,7 @@ func gbytes(b int64) string {
 // has no inheritance and this is the standard workaround.
 var pageNames = []string{
 	"login", "subscribers", "subscriber_detail", "subscriber_new",
-	"billing", "tickets", "revenue", "catalogue", "lea", "error",
+	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo", "error",
 }
 
 var pages = func() map[string]*template.Template {

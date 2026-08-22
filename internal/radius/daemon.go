@@ -111,7 +111,13 @@ type Subscriber struct {
 	RateLimitStr string // MikroTik format: "100M/100M"
 	FUPActive    bool
 	FUPThrottle  string
-	PlanID       int // resolves a policy-reference vendor's QoS profile name (FR-NAS-001, MDS §4.11)
+	// SpeedOverrideRateLimit is an owner-triggered temporary rate (console
+	// "Speed override"), independent of the billed plan and of FUP. Empty
+	// means no override is set. Takes precedence over FUPThrottle when set
+	// and not yet past SpeedOverrideExpiresAt — see effectiveRateLimit.
+	SpeedOverrideRateLimit string
+	SpeedOverrideExpiresAt *time.Time
+	PlanID                 int // resolves a policy-reference vendor's QoS profile name (FR-NAS-001, MDS §4.11)
 	// NTHash is MD4(UTF-16LE(password)), present only for subscribers
 	// enrolled for EAP-MSCHAPv2 (FR-AAA-006, migration 029). Nil means PAP
 	// against PasswordHash is the only method available to them, which is

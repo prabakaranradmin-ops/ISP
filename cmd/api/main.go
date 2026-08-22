@@ -297,8 +297,21 @@ func run(ctx context.Context) error {
 		// audit entry exactly as the API route does, and apiHandler owns
 		// that path (api.ProvisionSubscriber).
 		SubscriberCreator: apiHandler,
-		Tasks:             taskClient,
-		JWTSecret:         cfg.JWTSecret,
+		// Same encryptor instance internal/api's NAS handlers use, so a
+		// secret saved from the console decrypts identically to one saved
+		// through the JSON API.
+		NAS:             database.NAS(),
+		SecretEncryptor: encryptor,
+		Demo:            database.Demo(),
+		TicketCreator:   database.Tickets(),
+		InvoiceSeeder:   database.Billing(),
+		SpeedOverride:   database.FUP(),
+		// Same *api.Handler instance as SubscriberCreator above: the console
+		// bulk toolbar calls straight into its exported *ForMany methods,
+		// not a second copy of the plan-change/status/credit/notify logic.
+		BulkActions: apiHandler,
+		Tasks:       taskClient,
+		JWTSecret:   cfg.JWTSecret,
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —

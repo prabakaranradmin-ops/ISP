@@ -120,3 +120,43 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 }
 .formgrid label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 13px; }
 .formgrid input, .formgrid select { font-weight: 400; }
+
+/* Tabs (console.js progressive enhancement). Panels render fully visible,
+   stacked, if the script never runs — .tab-btn is only ever hidden/shown
+   markup on top of content that already works without it. */
+.tabbar { display: flex; gap: 4px; border-bottom: 1px solid var(--rule); margin-bottom: 18px; }
+.tab-btn {
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  padding: 8px 14px; font: inherit; font-weight: 600; color: var(--muted); cursor: pointer;
+  border-radius: 0;
+}
+.tab-btn:hover { color: var(--ink); }
+.tab-btn.on { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Keyboard shortcuts help panel (console.js, toggled by "?"). */
+.shortcuts-help {
+  position: fixed; inset: 0; background: rgba(23, 33, 43, .35);
+  display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; z-index: 20;
+}
+.shortcuts-help-box {
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 20px 24px; width: 420px; max-width: calc(100vw - 40px);
+  box-shadow: 0 8px 28px rgba(0,0,0,.18);
+}
+.shortcuts-help-box h3 { margin-top: 0; }
+.shortcuts-help-box dl { grid-template-columns: max-content 1fr; margin-bottom: 12px; }
+.shortcuts-help-box dt { white-space: nowrap; }
+kbd {
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+  background: var(--neutral-bg); color: var(--neutral-fg);
+  border: 1px solid var(--rule); border-radius: 3px; padding: 1px 6px;
+}
+
+/* Per-row edit disclosure (Routers screen): a native <details> needs no JS,
+   consistent with the rest of this console. */
+td details { position: relative; }
+td details summary { cursor: pointer; list-style: none; }
+td details summary::-webkit-details-marker { display: none; }
+td details[open] { position: static; }
+td details form { background: var(--bg); border: 1px solid var(--rule); border-radius: 4px;
+  padding: 14px; margin-top: 8px; text-align: left; min-width: 480px; }

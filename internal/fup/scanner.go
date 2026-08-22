@@ -35,6 +35,10 @@ var (
 		Name: "fup_throttled_notification_enqueued_total",
 		Help: "Number of FUP throttle-applied notifications enqueued",
 	})
+	speedOverrideExpired = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "speed_override_expired_total",
+		Help: "Number of owner-triggered speed overrides auto-reverted on expiry",
+	})
 )
 
 const (
@@ -72,6 +76,12 @@ type FUPQuerier interface {
 	GetActiveSessionsAboveFUP(ctx context.Context) ([]SessionStats, error)
 	GetSessionsAtWarning(ctx context.Context, pct int) ([]SessionStats, error)
 	SetFUPActive(ctx context.Context, subscriberID int, active bool) error
+	// ListExpiredSpeedOverrides and ClearSpeedOverride back the auto-revert
+	// side of the owner's temporary speed override: this scanner's existing
+	// tick is reused to sweep for expiries rather than standing up a second
+	// ticker/goroutine for one more periodic check.
+	ListExpiredSpeedOverrides(ctx context.Context) ([]int, error)
+	ClearSpeedOverride(ctx context.Context, subscriberID int) error
 }
 
 // Scanner polls active sessions every 10s and enqueues CoA tasks for FUP breaches.
@@ -114,7 +124,41 @@ func (s *Scanner) scan(ctx context.Context) error {
 	if err := s.scanBreaches(ctx); err != nil {
 		return err
 	}
+	if err := s.scanExpiredOverrides(ctx); err != nil {
+		return err
+	}
 	return s.scanWarnings(ctx)
+}
+
+// scanExpiredOverrides reverts every owner-triggered speed override whose
+// time-box has passed. A subscriber currently offline still gets cleared in
+// the database — enqueueing a CoA for them is a harmless no-op that fails
+// after retries rather than something worth skipping, and it means the
+// override is already gone by the time they next connect.
+func (s *Scanner) scanExpiredOverrides(ctx context.Context) error {
+	ids, err := s.db.ListExpiredSpeedOverrides(ctx)
+	if err != nil {
+		return fmt.Errorf("fup: list expired speed overrides: %w", err)
+	}
+	for _, id := range ids {
+		if err := s.db.ClearSpeedOverride(ctx, id); err != nil {
+			log.Error().Err(err).Int("sub_id", id).Msg("fup: clear expired speed override failed")
+			continue
+		}
+		speedOverrideExpired.Inc()
+
+		payload, err := json.Marshal(CoAPayload{SubscriberID: id})
+		if err != nil {
+			log.Error().Err(err).Int("sub_id", id).Msg("fup: marshal revert-CoA payload failed")
+			continue
+		}
+		task := jobqueue.NewTask(TaskTypeCoA, payload,
+			jobqueue.Queue(QueueNetCommands), jobqueue.MaxRetry(5), jobqueue.Retention(24*time.Hour))
+		if _, err := s.client.EnqueueContext(ctx, task); err != nil {
+			log.Error().Err(err).Int("sub_id", id).Msg("fup: enqueue revert CoA for expired override failed")
+		}
+	}
+	return nil
 }
 
 // scanWarnings enqueues an 80%-of-quota warning notification for each session

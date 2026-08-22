@@ -121,6 +121,63 @@ func (s *FUPStore) SetFUPActive(ctx context.Context, subscriberID int, active bo
 	return nil
 }
 
+// SetSpeedOverride records an owner-triggered temporary rate for a
+// subscriber, independent of their billed plan. expiresAt nil means "until
+// manually cleared" — GetSubscriberByUsername and GetSubscriberNASSession
+// both treat a NULL expiry as never-expired.
+func (s *FUPStore) SetSpeedOverride(ctx context.Context, subscriberID int, rateLimit string, expiresAt *time.Time) error {
+	const q = `UPDATE subscribers SET speed_override_rate_limit = $2, speed_override_expires_at = $3 WHERE id = $1`
+
+	tag, err := s.pool.Exec(ctx, q, subscriberID, rateLimit, expiresAt)
+	if err != nil {
+		return fmt.Errorf("db: set speed override for subscriber %d: %w", subscriberID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("db: subscriber %d: %w", subscriberID, ErrNotFound)
+	}
+	return nil
+}
+
+// ClearSpeedOverride removes a subscriber's temporary rate, restoring their
+// plan (or FUP throttle) rate on the next Access-Accept or CoA.
+func (s *FUPStore) ClearSpeedOverride(ctx context.Context, subscriberID int) error {
+	const q = `UPDATE subscribers SET speed_override_rate_limit = NULL, speed_override_expires_at = NULL WHERE id = $1`
+
+	tag, err := s.pool.Exec(ctx, q, subscriberID)
+	if err != nil {
+		return fmt.Errorf("db: clear speed override for subscriber %d: %w", subscriberID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("db: subscriber %d: %w", subscriberID, ErrNotFound)
+	}
+	return nil
+}
+
+// ListExpiredSpeedOverrides returns subscriber IDs whose override has
+// passed its expiry and still needs clearing — the FUP scanner's expiry
+// sweep uses this so it only touches rows that actually need reverting.
+func (s *FUPStore) ListExpiredSpeedOverrides(ctx context.Context) ([]int, error) {
+	const q = `
+		SELECT id FROM subscribers
+		WHERE speed_override_expires_at IS NOT NULL AND speed_override_expires_at <= NOW()`
+
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("db: list expired speed overrides: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("db: scan expired speed override id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetSubscriberNASSession returns the NAS address, RADIUS session id, the
 // rate limit to apply, and the subscriber's plan ID, for building a
 // CoA-Request. planID resolves a policy-reference vendor's QoS profile name
@@ -131,7 +188,10 @@ func (s *FUPStore) SetFUPActive(ctx context.Context, subscriberID int, active bo
 func (s *FUPStore) GetSubscriberNASSession(ctx context.Context, subscriberID int) (nasIP, sessionID, rateLimit string, planID int, err error) {
 	const q = `
 		SELECT host(h.nas_ip_address), h.session_id,
-		       CASE WHEN s.fup_active AND COALESCE(p.fup_throttle_string,'') <> ''
+		       CASE WHEN s.speed_override_rate_limit IS NOT NULL
+		                 AND (s.speed_override_expires_at IS NULL OR s.speed_override_expires_at > NOW())
+		            THEN s.speed_override_rate_limit
+		            WHEN s.fup_active AND COALESCE(p.fup_throttle_string,'') <> ''
 		            THEN p.fup_throttle_string
 		            ELSE p.rate_limit_string
 		       END,

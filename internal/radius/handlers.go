@@ -141,10 +141,7 @@ func (d *RadiusDaemon) handleAuth(ctx context.Context, w radius.ResponseWriter, 
 // rate-limited and later throttled by the identical machinery as PPPoE,
 // because it is literally the same Access-Accept construction.
 func (d *RadiusDaemon) applyRateLimit(resp *radius.Packet, sub *Subscriber, r *radius.Request) {
-	rateLimit := sub.RateLimitStr
-	if sub.FUPActive && sub.FUPThrottle != "" {
-		rateLimit = sub.FUPThrottle
-	}
+	rateLimit := effectiveRateLimit(sub)
 
 	vendor := nas.VendorMikrotik
 	profileName := ""
@@ -175,8 +172,25 @@ func (d *RadiusDaemon) recordAuthFailure(ctx context.Context, username string) {
 	}
 }
 
-// RateLimitForSubscriber returns the effective rate-limit string (respects FUP).
+// RateLimitForSubscriber returns the effective rate-limit string (respects
+// a speed override, then FUP, then the plan rate).
 func RateLimitForSubscriber(sub *Subscriber) string {
+	return effectiveRateLimit(sub)
+}
+
+// effectiveRateLimit picks the rate an Access-Accept or CoA should carry.
+// A manual speed override — set from the console for a limited time or
+// until cleared — wins over the automatic FUP throttle, which wins over the
+// plan's own rate. This is the same three-tier precedence
+// GetSubscriberNASSession applies for CoA sends (internal/db/fup.go); kept
+// here too because Access-Accept is built from the cached *Subscriber, not
+// a fresh DB round trip, so the expiry check has to happen against
+// time.Now() rather than the database's own now().
+func effectiveRateLimit(sub *Subscriber) string {
+	if sub.SpeedOverrideRateLimit != "" &&
+		(sub.SpeedOverrideExpiresAt == nil || sub.SpeedOverrideExpiresAt.After(time.Now())) {
+		return sub.SpeedOverrideRateLimit
+	}
 	if sub.FUPActive && sub.FUPThrottle != "" {
 		return sub.FUPThrottle
 	}

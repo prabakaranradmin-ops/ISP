@@ -51,6 +51,14 @@ type Announcement struct {
 	SegmentPlanID      *int    `json:"segment_plan_id,omitempty"`
 	SegmentStatus      *string `json:"segment_status,omitempty"`
 
+	// SubscriberIDs, when non-empty, targets exactly these subscribers
+	// instead of the segment filters above — the console's multi-select
+	// "send to these" bulk action. Transient: read at CreateAnnouncement
+	// time to populate announcement_recipients, never scanned back off the
+	// announcements row (which has no column for it), so a later
+	// GetAnnouncement/ListAnnouncements leaves this empty.
+	SubscriberIDs []int `json:"subscriber_ids,omitempty"`
+
 	ShowInPortal   bool       `json:"show_in_portal"`
 	Status         string     `json:"status"`
 	RecipientCount int        `json:"recipient_count"`

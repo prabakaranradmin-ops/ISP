@@ -1,0 +1,22 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Demo Data</h1>
+<p class="muted">Populate this install with presentable sample data &mdash; a couple of plans, subscribers in every status, a support ticket, an invoice and a sample router &mdash; for a client walkthrough. No command line needed.</p>
+
+<div class="card">
+  <h3>Status</h3>
+  {{if $d.Status.Loaded}}
+    <p>Demo data is loaded: {{$d.Status.Subscribers}} subscribers, {{$d.Status.Plans}} plans, {{$d.Status.NASDevices}} router(s).</p>
+    <form method="post" action="/staff/demo/remove">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button class="primary" type="submit">Remove demo data</button>
+    </form>
+  {{else}}
+    <p class="muted">No demo data loaded.</p>
+    <form method="post" action="/staff/demo/load">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button class="primary" type="submit">Load demo data</button>
+    </form>
+  {{end}}
+</div>
+{{end}}

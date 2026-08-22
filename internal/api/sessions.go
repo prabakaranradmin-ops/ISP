@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/fup"
@@ -30,6 +31,12 @@ type SessionReader interface {
 type SessionController interface {
 	ResolveSessionSubscriber(ctx context.Context, sessionID string) (subscriberID int, nasIP string, err error)
 	SetFUPActive(ctx context.Context, subscriberID int, active bool) error
+	// SetSpeedOverride and ClearSpeedOverride back the owner's temporary
+	// speed override (distinct from FUP: a manual, time-boxed rate change
+	// that leaves the billed plan untouched). expiresAt nil means "until
+	// manually cleared".
+	SetSpeedOverride(ctx context.Context, subscriberID int, rateLimit string, expiresAt *time.Time) error
+	ClearSpeedOverride(ctx context.Context, subscriberID int) error
 }
 
 // TaskEnqueuer is the subset of *jobqueue.Client the API needs to trigger
@@ -157,4 +164,100 @@ func (h *Handler) FUPOverride(w http.ResponseWriter, r *http.Request) {
 		"subscriber_id": subscriberID, "action": req.Action,
 	})
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "coa_enqueued"})
+}
+
+// speedOverrideRequest is the POST /api/v1/subscribers/{id}/speed-override body.
+type speedOverrideRequest struct {
+	RateLimitString string `json:"rate_limit_string"`
+	// DurationMinutes 0 or absent means "until manually cleared".
+	DurationMinutes int `json:"duration_minutes,omitempty"`
+}
+
+// SpeedOverride handles POST /api/v1/subscribers/{id}/speed-override —
+// an owner-triggered temporary rate change, independent of the billed plan.
+// Restricted to isp_owner (see routes.go's ownerOnly), unlike FUPOverride
+// and DisconnectSession which noc_engineer can also use: this changes what
+// a specific customer is being charged to receive, not a network-health
+// action.
+func (h *Handler) SpeedOverride(w http.ResponseWriter, r *http.Request) {
+	subscriberID, err := pathInt(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", "id must be numeric")
+		return
+	}
+	if h.sessionCtl == nil || h.tasks == nil {
+		writeError(w, http.StatusServiceUnavailable, "ERR_UNAVAILABLE", "session control not configured")
+		return
+	}
+
+	var req speedOverrideRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", err.Error())
+		return
+	}
+	if req.RateLimitString == "" {
+		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "rate_limit_string is required")
+		return
+	}
+	if req.DurationMinutes < 0 {
+		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "duration_minutes must not be negative")
+		return
+	}
+
+	var expiresAt *time.Time
+	if req.DurationMinutes > 0 {
+		t := time.Now().Add(time.Duration(req.DurationMinutes) * time.Minute)
+		expiresAt = &t
+	}
+
+	if err := h.sessionCtl.SetSpeedOverride(r.Context(), subscriberID, req.RateLimitString, expiresAt); err != nil {
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not set speed override")
+		return
+	}
+
+	h.enqueueSpeedOverrideCoA(r.Context(), subscriberID)
+
+	middleware.Audit(r.Context(), "subscriber.speed_override", strconv.Itoa(subscriberID), map[string]any{
+		"rate_limit_string": req.RateLimitString, "duration_minutes": req.DurationMinutes,
+	})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "coa_enqueued"})
+}
+
+// ClearSpeedOverride handles POST /api/v1/subscribers/{id}/speed-override/clear.
+func (h *Handler) ClearSpeedOverride(w http.ResponseWriter, r *http.Request) {
+	subscriberID, err := pathInt(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", "id must be numeric")
+		return
+	}
+	if h.sessionCtl == nil || h.tasks == nil {
+		writeError(w, http.StatusServiceUnavailable, "ERR_UNAVAILABLE", "session control not configured")
+		return
+	}
+
+	if err := h.sessionCtl.ClearSpeedOverride(r.Context(), subscriberID); err != nil {
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not clear speed override")
+		return
+	}
+
+	h.enqueueSpeedOverrideCoA(r.Context(), subscriberID)
+
+	middleware.Audit(r.Context(), "subscriber.speed_override_cleared", strconv.Itoa(subscriberID), nil)
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "coa_enqueued"})
+}
+
+// enqueueSpeedOverrideCoA pushes the same CoA task the FUP scanner uses.
+// NasIP is left blank deliberately: fup.CoAHandler.ProcessTask resolves the
+// live NAS session fresh from GetSubscriberNASSession at execution time
+// rather than trusting a snapshot (see that type's own doc comment), so the
+// payload only needs the subscriber id. If the subscriber has no active
+// session right now, the task fails harmlessly — the override is already
+// stored and takes effect on their next Access-Accept regardless.
+func (h *Handler) enqueueSpeedOverrideCoA(ctx context.Context, subscriberID int) {
+	payload, _ := json.Marshal(fup.CoAPayload{SubscriberID: subscriberID}) //nolint:errcheck
+	task := jobqueue.NewTask(fup.TaskTypeCoA, payload,
+		jobqueue.Queue(fup.QueueNetCommands), jobqueue.MaxRetry(5), jobqueue.Retention(sessionTaskRetention))
+	if _, err := h.tasks.Enqueue(task); err != nil {
+		log.Error().Err(err).Int("subscriber_id", subscriberID).Msg("api: enqueue speed-override CoA task failed")
+	}
 }

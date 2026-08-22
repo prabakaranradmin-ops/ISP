@@ -95,19 +95,31 @@ func toApprovalResponse(r *workflow.ApprovalRequest) approvalResponse {
 // instead of acting. Shared by all three so the 202 shape and the audit
 // entry are written in exactly one place.
 func (h *Handler) requestApproval(w http.ResponseWriter, r *http.Request, req workflow.ApprovalRequest) {
-	req.RequestedBy = middleware.SubjectFromContext(r.Context())
-
-	created, err := h.approvals.CreateApprovalRequest(r.Context(), req)
+	created, err := h.createApprovalRequest(r.Context(), middleware.SubjectFromContext(r.Context()), req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not create approval request")
 		return
 	}
+	writeJSON(w, http.StatusAccepted, toApprovalResponse(created))
+}
+
+// createApprovalRequest does the actual write requestApproval wraps for one
+// HTTP call — factored out so BulkWalletCredit (subscribers_bulk.go) can
+// create N approval requests in a loop without N sets of response-writing
+// side effects racing on the same http.ResponseWriter.
+func (h *Handler) createApprovalRequest(ctx context.Context, requestedBy string, req workflow.ApprovalRequest) (*workflow.ApprovalRequest, error) {
+	req.RequestedBy = requestedBy
+
+	created, err := h.approvals.CreateApprovalRequest(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 
 	billing.LifecycleActionsTotal.WithLabelValues(string(req.ActionType) + "_requested").Inc()
-	middleware.Audit(r.Context(), "approval.request", strconv.Itoa(created.ID), map[string]any{
+	middleware.Audit(ctx, "approval.request", strconv.Itoa(created.ID), map[string]any{
 		"action_type": string(req.ActionType), "subscriber_id": req.SubscriberID,
 	})
-	writeJSON(w, http.StatusAccepted, toApprovalResponse(created))
+	return created, nil
 }
 
 // ── FR-WFL-001: Decisions ───────────────────────────────────────────────────

@@ -7,6 +7,73 @@
   <a class="btn" href="/staff/subscribers/new">New subscriber</a>
 </form>
 <p class="muted">{{len $d.Results}} shown of {{$d.Total}} total</p>
+
+{{if $d.ShowBulkActions}}
+<form method="post" action="/staff/subscribers/bulk">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<div class="card">
+  <table>
+    <thead><tr><th><input type="checkbox" id="select-all" title="Select all shown"></th><th>ID</th><th>Username</th><th></th></tr></thead>
+    <tbody>
+    {{range $d.Results}}
+      <tr>
+        <td><input type="checkbox" name="ids" value="{{.ID}}"></td>
+        <td class="num">{{.ID}}</td>
+        <td>{{.Username}}</td>
+        <td class="right"><a class="btn" href="/staff/subscribers/{{.ID}}">Open</a></td>
+      </tr>
+    {{else}}
+      <tr><td colspan="4" class="empty">No subscribers match.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Bulk action on selected</h3>
+  <p class="muted">Check subscribers above, pick one action, and fill in only the fields it needs.</p>
+  <div class="formgrid">
+    <label>Action
+      <select name="action">
+        <option value="plan_change">Change plan</option>
+        <option value="status">Suspend / resume</option>
+        <option value="credit">Wallet credit (files an approval per subscriber)</option>
+        <option value="notify">Send notification</option>
+      </select>
+    </label>
+    <label>New plan &mdash; for Change plan
+      <select name="plan_id">
+        {{range $d.Plans}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+      </select>
+    </label>
+    <label>Status &mdash; for Suspend / resume
+      <select name="status">
+        <option value="active">Active</option>
+        <option value="soft_suspended">Soft suspended</option>
+        <option value="hard_suspended">Hard suspended</option>
+      </select>
+    </label>
+    <label>Amount (&#8377;) &mdash; for Wallet credit
+      <input name="amount" inputmode="decimal" placeholder="100.00">
+    </label>
+    <label>Reason &mdash; for Wallet credit
+      <input name="reason" placeholder="Goodwill credit">
+    </label>
+    <label>Title &mdash; for Send notification
+      <input name="title" placeholder="Planned maintenance">
+    </label>
+    <label>Message &mdash; for Send notification
+      <input name="body" placeholder="Your connection will be briefly interrupted tonight.">
+    </label>
+    <label><input type="checkbox" name="channel_sms"> SMS</label>
+    <label><input type="checkbox" name="channel_email"> Email</label>
+    <label><input type="checkbox" name="channel_whatsapp"> WhatsApp</label>
+    <label><input type="checkbox" name="show_in_portal"> Also show as a portal banner</label>
+  </div>
+  <button class="primary" type="submit">Apply to selected</button>
+</div>
+</form>
+{{else}}
 <div class="card">
   <table>
     <thead><tr><th>ID</th><th>Username</th><th></th></tr></thead>
@@ -23,4 +90,5 @@
     </tbody>
   </table>
 </div>
+{{end}}
 {{end}}

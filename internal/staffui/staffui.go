@@ -51,6 +51,12 @@ type StaffQuerier interface {
 type SubscriberQuerier interface {
 	GetSubscriberByID(ctx context.Context, id int) (*api.SubscriberRecord, error)
 	GetSubscriberByUsername(ctx context.Context, username string) (*api.SubscriberRecord, error)
+	// UpdateSubscriber is used only by the Demo Data seeder today, to put a
+	// couple of seeded subscribers into a suspended state so the console has
+	// something in every status to show a client. *db.APIStore already
+	// implements this exact signature for internal/api, so exposing it here
+	// costs no new store code.
+	UpdateSubscriber(ctx context.Context, id int, planID *int, status *string) (*api.SubscriberRecord, error)
 }
 
 // SessionReader reports whether a subscriber is online right now. Live session
@@ -121,8 +127,25 @@ type HandlerDeps struct {
 	GSTR1             GSTR1Store
 	GSTSupplier       billing.Supplier
 	SubscriberCreator SubscriberCreator
-	Tasks             TaskEnqueuer
-	JWTSecret         string
+	// NAS and SecretEncryptor back the Routers screen (registering MikroTik
+	// and other vendor devices). Both optional, same as every other store
+	// here: a deployment with no encryption key configured still serves the
+	// rest of the console, just not that one screen.
+	NAS             NASStore
+	SecretEncryptor api.SecretEncryptor
+	// Demo, TicketCreator and InvoiceSeeder back the Demo Data panel — a
+	// one-click way to populate a fresh install with presentable sample
+	// data for a client walkthrough. All optional, same as everything else.
+	Demo          DemoStore
+	TicketCreator TicketCreator
+	InvoiceSeeder InvoiceSeeder
+	// SpeedOverride backs the owner's temporary speed-override card on a
+	// subscriber's detail page.
+	SpeedOverride SpeedOverrideController
+	// BulkActions backs the Subscribers screen's multi-select toolbar.
+	BulkActions BulkActionExecutor
+	Tasks       TaskEnqueuer
+	JWTSecret   string
 }
 
 // Handler serves the console.
@@ -139,6 +162,13 @@ type Handler struct {
 	gstr1             GSTR1Store
 	gstSupplier       billing.Supplier
 	subscriberCreator SubscriberCreator
+	nas               NASStore
+	secretEncryptor   api.SecretEncryptor
+	demo              DemoStore
+	ticketCreator     TicketCreator
+	invoiceSeeder     InvoiceSeeder
+	speedOverride     SpeedOverrideController
+	bulkActions       BulkActionExecutor
 	tasks             TaskEnqueuer
 	jwtSecret         string
 }
@@ -158,6 +188,13 @@ func NewHandler(deps HandlerDeps) *Handler {
 		gstr1:             deps.GSTR1,
 		gstSupplier:       deps.GSTSupplier,
 		subscriberCreator: deps.SubscriberCreator,
+		nas:               deps.NAS,
+		secretEncryptor:   deps.SecretEncryptor,
+		demo:              deps.Demo,
+		ticketCreator:     deps.TicketCreator,
+		invoiceSeeder:     deps.InvoiceSeeder,
+		speedOverride:     deps.SpeedOverride,
+		bulkActions:       deps.BulkActions,
 		tasks:             deps.Tasks,
 		jwtSecret:         deps.JWTSecret,
 	}
@@ -196,8 +233,17 @@ var sections = []Section{
 	// job.
 	{"catalogue", "Catalogue", "/staff/catalogue",
 		[]string{"isp_owner", "billing_admin"}, false},
+	// Router hardware is network-ops territory, same reach as LEA Lookup
+	// below: the owner and whoever configures the NAS estate, not billing
+	// or the front desk.
+	{"nas", "Routers", "/staff/nas",
+		[]string{"isp_owner", "noc_engineer"}, false},
 	{"lea", "LEA Lookup", "/staff/lea",
 		[]string{"isp_owner", "noc_engineer"}, true},
+	// Owner-only: seeding or removing demo data changes what every other
+	// role sees, so no one else should be able to trigger it.
+	{"demo", "Demo Data", "/staff/demo",
+		[]string{"isp_owner"}, false},
 }
 
 // AllowedSections returns the sections a given operator may use.
@@ -242,10 +288,16 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// rather than the router.
 	mux.Handle("GET /staff/subscribers/new", h.authed(h.NewSubscriber))
 	mux.Handle("POST /staff/subscribers/new", h.authed(h.requireCSRF(h.CreateSubscriber)))
+	mux.Handle("POST /staff/subscribers/bulk", h.authed(h.requireCSRF(h.BulkAction)))
 	mux.Handle("GET /staff/subscribers/{id}", h.authed(h.SubscriberDetail))
+	mux.Handle("POST /staff/subscribers/{id}/speed-override", h.authed(h.requireCSRF(h.ApplySpeedOverride)))
+	mux.Handle("POST /staff/subscribers/{id}/speed-override/clear", h.authed(h.requireCSRF(h.ClearSpeedOverride)))
 	mux.Handle("GET /staff/catalogue", h.authed(h.Catalogue))
 	mux.Handle("POST /staff/catalogue/plans", h.authed(h.requireCSRF(h.CreatePlan)))
 	mux.Handle("POST /staff/catalogue/gst", h.authed(h.requireCSRF(h.CreateGSTRate)))
+	mux.Handle("GET /staff/nas", h.authed(h.NAS))
+	mux.Handle("POST /staff/nas/new", h.authed(h.requireCSRF(h.CreateNASDeviceForm)))
+	mux.Handle("POST /staff/nas/{id}/update", h.authed(h.requireCSRF(h.UpdateNASDeviceForm)))
 	mux.Handle("GET /staff/billing", h.authed(h.Billing))
 	mux.Handle("GET /staff/billing/gstr1", h.authed(h.GSTR1Export))
 	mux.Handle("GET /staff/tickets", h.authed(h.Tickets))
@@ -253,5 +305,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/revenue", h.authed(h.Revenue))
 	mux.Handle("GET /staff/lea", h.authed(h.LEAPage))
 	mux.Handle("POST /staff/lea", h.authed(h.requireCSRF(h.LEALookup)))
+	mux.Handle("GET /staff/demo", h.authed(h.Demo))
+	mux.Handle("POST /staff/demo/load", h.authed(h.requireCSRF(h.LoadDemoData)))
+	mux.Handle("POST /staff/demo/remove", h.authed(h.requireCSRF(h.RemoveDemoData)))
 	mux.Handle("GET /staff/static/", http.StripPrefix("/staff/static/", staticHandler()))
 }

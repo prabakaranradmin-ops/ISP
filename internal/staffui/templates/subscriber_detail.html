@@ -3,67 +3,118 @@
 {{with $d.Subscriber}}
 <h1>{{.Username}} <span class="pill {{badge .Status}}">{{.Status}}</span></h1>
 {{end}}
-<div class="grid3">
-  {{with $d.Subscriber}}
-  <div class="card"><h3>Account</h3>
-    <dl>
-      <dt>Subscriber ID</dt><dd class="num">{{.ID}}</dd>
-      <dt>CAF number</dt><dd>{{.CAFNumber}}</dd>
-      <dt>Mobile</dt><dd>{{.MobileNumber}}</dd>
-      <dt>State</dt><dd>{{.RegisteredState}}</dd>
-    </dl>
+
+<div data-tabs>
+  <div class="tabbar" role="tablist">
+    <button type="button" class="tab-btn" data-tab="overview">Overview</button>
+    {{if $d.ShowBilling}}<button type="button" class="tab-btn" data-tab="billing">Billing</button>{{end}}
+    {{if $d.ShowTickets}}<button type="button" class="tab-btn" data-tab="tickets">Tickets</button>{{end}}
+    {{if and $d.ShowSpeedOverride $d.Subscriber}}<button type="button" class="tab-btn" data-tab="speed">Speed override</button>{{end}}
   </div>
+
+  <section data-tab-panel="overview">
+    <div class="grid3">
+      {{with $d.Subscriber}}
+      <div class="card"><h3>Account</h3>
+        <dl>
+          <dt>Subscriber ID</dt><dd class="num">{{.ID}}</dd>
+          <dt>CAF number</dt><dd>{{.CAFNumber}}</dd>
+          <dt>Mobile</dt><dd>{{.MobileNumber}}</dd>
+          <dt>State</dt><dd>{{.RegisteredState}}</dd>
+        </dl>
+      </div>
+      {{end}}
+
+      <div class="card"><h3>Connection</h3>
+        {{with $d.Session}}
+        <dl>
+          <dt>Status</dt><dd><span class="pill ok">online</span></dd>
+          <dt>IP address</dt><dd class="num">{{.AssignedIP}}</dd>
+          <dt>Used</dt><dd class="num">{{.GBUsed}} GB of {{.GBIncluded}} GB</dd>
+          <dt>Speed</dt><dd>{{if .FUPThrottled}}<span class="pill warn">throttled</span>{{else}}full speed{{end}}</dd>
+          <dt>Since</dt><dd>{{datetime .StartedAt}}</dd>
+        </dl>
+        {{else}}<p class="empty">Offline — no active session.</p>{{end}}
+      </div>
+
+      {{with $d.Health}}
+      <div class="card"><h3>Account health</h3>
+        <dl>
+          <dt>Wallet</dt><dd class="num">₹{{money .WalletBalance}}</dd>
+          <dt>Open tickets</dt><dd class="num">{{.OpenTickets}}</dd>
+          <dt>Do not disturb</dt><dd>{{if .DndOptOut}}yes{{else}}no{{end}}</dd>
+          {{if .LastNotifEvent}}<dt>Last message</dt><dd>{{.LastNotifEvent}}</dd>{{end}}
+        </dl>
+      </div>
+      {{end}}
+    </div>
+  </section>
+
+  {{if $d.ShowBilling}}
+  <section data-tab-panel="billing">
+    <div class="card"><h3>Recent ledger — balance ₹{{money $d.Balance}}</h3>
+      <table>
+        <thead><tr><th>When</th><th>Type</th><th class="right">Amount</th><th class="right">Balance after</th></tr></thead>
+        <tbody>
+        {{range $d.Ledger}}
+          <tr><td>{{datetime .CreatedAt}}</td><td>{{.EntryType}}</td>
+              <td class="right num">₹{{.Amount}}</td><td class="right num">₹{{.BalanceAfter}}</td></tr>
+        {{else}}<tr><td colspan="4" class="empty">No ledger entries.</td></tr>{{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
   {{end}}
 
-  <div class="card"><h3>Connection</h3>
-    {{with $d.Session}}
-    <dl>
-      <dt>Status</dt><dd><span class="pill ok">online</span></dd>
-      <dt>IP address</dt><dd class="num">{{.AssignedIP}}</dd>
-      <dt>Used</dt><dd class="num">{{.GBUsed}} GB of {{.GBIncluded}} GB</dd>
-      <dt>Speed</dt><dd>{{if .FUPThrottled}}<span class="pill warn">throttled</span>{{else}}full speed{{end}}</dd>
-      <dt>Since</dt><dd>{{datetime .StartedAt}}</dd>
-    </dl>
-    {{else}}<p class="empty">Offline — no active session.</p>{{end}}
-  </div>
+  {{if $d.ShowTickets}}
+  <section data-tab-panel="tickets">
+    <div class="card"><h3>Tickets</h3>
+      <table>
+        <thead><tr><th>Category</th><th>Description</th><th>Status</th><th>Filed</th></tr></thead>
+        <tbody>
+        {{range $d.Tickets}}
+          <tr><td>{{.Category}}</td><td>{{.Description}}</td>
+              <td><span class="pill {{badge .Status}}">{{.Status}}</span></td><td>{{datetime .CreatedAt}}</td></tr>
+        {{else}}<tr><td colspan="4" class="empty">No tickets.</td></tr>{{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {{end}}
 
-  {{with $d.Health}}
-  <div class="card"><h3>Account health</h3>
-    <dl>
-      <dt>Wallet</dt><dd class="num">₹{{money .WalletBalance}}</dd>
-      <dt>Open tickets</dt><dd class="num">{{.OpenTickets}}</dd>
-      <dt>Do not disturb</dt><dd>{{if .DndOptOut}}yes{{else}}no{{end}}</dd>
-      {{if .LastNotifEvent}}<dt>Last message</dt><dd>{{.LastNotifEvent}}</dd>{{end}}
-    </dl>
-  </div>
+  {{if and $d.ShowSpeedOverride $d.Subscriber}}
+  <section data-tab-panel="speed">
+    <div class="card"><h3>Speed override</h3>
+      <p class="muted">A temporary rate change that leaves the billed plan untouched and reverts on its own &mdash; not a plan edit.</p>
+      {{if $d.Subscriber.SpeedOverrideRateLimit}}
+        <p>Active: <strong>{{$d.Subscriber.SpeedOverrideRateLimit}}</strong>
+          {{if $d.Subscriber.SpeedOverrideExpiresAt}}until {{datetime $d.Subscriber.SpeedOverrideExpiresAt}}{{else}}until manually cleared{{end}}.</p>
+        <form method="post" action="/staff/subscribers/{{$d.Subscriber.ID}}/speed-override/clear">
+          <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+          <button type="submit">Clear override</button>
+        </form>
+      {{else}}
+        <p class="muted">No override active &mdash; running at the plan's normal speed (or FUP throttle, if breached).</p>
+      {{end}}
+      <form method="post" action="/staff/subscribers/{{$d.Subscriber.ID}}/speed-override">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <div class="formgrid">
+          <label>New speed (up/down)
+            <input name="rate_limit_string" required placeholder="100M/100M">
+          </label>
+          <label>Duration
+            <select name="duration_minutes">
+              <option value="60">1 hour</option>
+              <option value="240">4 hours</option>
+              <option value="1440" selected>24 hours</option>
+              <option value="">Until manually cleared</option>
+            </select>
+          </label>
+        </div>
+        <button class="primary" type="submit">Apply override</button>
+      </form>
+    </div>
+  </section>
   {{end}}
 </div>
-
-{{if $d.ShowBilling}}
-<div class="card"><h3>Recent ledger — balance ₹{{money $d.Balance}}</h3>
-  <table>
-    <thead><tr><th>When</th><th>Type</th><th class="right">Amount</th><th class="right">Balance after</th></tr></thead>
-    <tbody>
-    {{range $d.Ledger}}
-      <tr><td>{{datetime .CreatedAt}}</td><td>{{.EntryType}}</td>
-          <td class="right num">₹{{.Amount}}</td><td class="right num">₹{{.BalanceAfter}}</td></tr>
-    {{else}}<tr><td colspan="4" class="empty">No ledger entries.</td></tr>{{end}}
-    </tbody>
-  </table>
-</div>
-{{end}}
-
-{{if $d.ShowTickets}}
-<div class="card"><h3>Tickets</h3>
-  <table>
-    <thead><tr><th>Category</th><th>Description</th><th>Status</th><th>Filed</th></tr></thead>
-    <tbody>
-    {{range $d.Tickets}}
-      <tr><td>{{.Category}}</td><td>{{.Description}}</td>
-          <td><span class="pill {{badge .Status}}">{{.Status}}</span></td><td>{{datetime .CreatedAt}}</td></tr>
-    {{else}}<tr><td colspan="4" class="empty">No tickets.</td></tr>{{end}}
-    </tbody>
-  </table>
-</div>
-{{end}}
 {{end}}

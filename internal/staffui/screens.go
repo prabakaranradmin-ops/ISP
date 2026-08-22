@@ -43,6 +43,13 @@ type subscribersData struct {
 	Query   string
 	Results []revenue.SubscriberRow
 	Total   int
+	// ShowBulkActions gates the checkbox column and bulk-action card, same
+	// tier as the API's own "admin" middleware (billing_admin, isp_owner)
+	// that BulkChangeSubscriberPlan/BulkUpdateStatus/BulkWalletCredit sit
+	// behind — the console must never offer a bulk action the API itself
+	// would refuse.
+	ShowBulkActions bool
+	Plans           []Plan
 }
 
 // Subscribers lists subscribers with an optional search.
@@ -54,7 +61,16 @@ func (h *Handler) Subscribers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	h.renderSubscribers(w, r, s, query, "", "")
+}
+
+// renderSubscribers is shared by Subscribers itself and by BulkAction, so a
+// bulk action's per-subscriber results come back on the same list rather
+// than a dead-end confirmation page.
+func (h *Handler) renderSubscribers(w http.ResponseWriter, r *http.Request, s Session, query, message, errMsg string) {
 	d := h.page(s, "Subscribers", "subscribers")
+	d.Message, d.Error = message, errMsg
 
 	if h.revenue == nil {
 		d.Error = "The subscriber directory is not configured on this deployment."
@@ -65,12 +81,13 @@ func (h *Handler) Subscribers(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.revenue.ListSubscribers(r.Context(), nil)
 	if err != nil {
 		log.Error().Err(err).Msg("staffui: list subscribers failed")
-		d.Error = "Could not load subscribers."
+		if d.Error == "" {
+			d.Error = "Could not load subscribers."
+		}
 		h.render(w, "subscribers", d)
 		return
 	}
 
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	filtered := rows
 	if query != "" {
 		filtered = nil
@@ -83,7 +100,18 @@ func (h *Handler) Subscribers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	d.Data = subscribersData{Query: query, Results: filtered, Total: len(rows)}
+	sd := subscribersData{
+		Query:           query,
+		Results:         filtered,
+		Total:           len(rows),
+		ShowBulkActions: s.Role == "isp_owner" || s.Role == "billing_admin",
+	}
+	if sd.ShowBulkActions && h.catalogue != nil {
+		if plans, err := h.catalogue.ListPlans(r.Context()); err == nil {
+			sd.Plans = plans
+		}
+	}
+	d.Data = sd
 	h.render(w, "subscribers", d)
 }
 
@@ -95,9 +123,12 @@ type subscriberDetailData struct {
 	Ledger     []api.LedgerEntry
 	Tickets    []portal.TicketEntry
 	// ShowBilling and ShowTickets gate the panels by role, so a NOC engineer
-	// does not see a wallet ledger the API would refuse them.
-	ShowBilling bool
-	ShowTickets bool
+	// does not see a wallet ledger the API would refuse them. ShowSpeedOverride
+	// is narrower still — owner only, since it changes what a customer is
+	// being charged to receive, not just who can see it.
+	ShowBilling       bool
+	ShowTickets       bool
+	ShowSpeedOverride bool
 }
 
 // SubscriberDetail is the 360 view: who they are, whether they are online, and
@@ -112,11 +143,21 @@ func (h *Handler) SubscriberDetail(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, s, http.StatusBadRequest, "That is not a valid subscriber id.")
 		return
 	}
+	h.renderSubscriberDetail(w, r, s, id, "")
+}
 
+// renderSubscriberDetail is shared by SubscriberDetail itself and by
+// ApplySpeedOverride/ClearSpeedOverride's validation-failure paths, so a
+// rejected speed-override form comes back on the same page with everything
+// else about the subscriber still visible, matching how every other
+// create/edit form in this console reports its own errors.
+func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request, s Session, id int, errMsg string) {
 	d := h.page(s, "Subscriber", "subscribers")
+	d.Error = errMsg
 	detail := subscriberDetailData{
-		ShowBilling: canAccess("billing", s.Role, s.LeaAccess),
-		ShowTickets: canAccess("tickets", s.Role, s.LeaAccess),
+		ShowBilling:       canAccess("billing", s.Role, s.LeaAccess),
+		ShowTickets:       canAccess("tickets", s.Role, s.LeaAccess),
+		ShowSpeedOverride: s.Role == "isp_owner",
 	}
 
 	if h.subscribers != nil {

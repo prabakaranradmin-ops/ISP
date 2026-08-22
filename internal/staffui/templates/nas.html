@@ -1,0 +1,90 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Routers</h1>
+<p class="muted">NAS devices &mdash; MikroTik, Cisco, Huawei, ZTE, Juniper, or a wireless controller &mdash; that authenticate subscribers and enforce their plan speed. The shared secret is never shown again once saved.</p>
+
+<div class="card">
+  <h3>Registered devices</h3>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>IP</th><th>Vendor</th><th>Description</th><th>CoA port</th><th>PoD port</th><th>MAB</th><th></th></tr>
+    </thead>
+    <tbody>
+    {{range $d.Devices}}
+      {{$row := .}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td>{{.IP}}</td>
+        <td>{{.Vendor}}</td>
+        <td>{{if .Description}}{{.Description}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="num">{{.CoAPort}}</td>
+        <td class="num">{{.PoDPort}}</td>
+        <td><span class="pill {{if .AllowMAB}}ok{{else}}neutral{{end}}">{{if .AllowMAB}}on{{else}}off{{end}}</span></td>
+        <td class="right">
+          <details>
+            <summary class="btn">Edit</summary>
+            <form method="post" action="/staff/nas/{{.ID}}/update">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <div class="formgrid">
+                <label>Vendor
+                  <select name="vendor">
+                    {{range $d.Vendors}}<option value="{{.}}" {{if eq . $row.Vendor}}selected{{end}}>{{.}}</option>{{end}}
+                  </select>
+                </label>
+                <label>Description
+                  <input name="description" value="{{$row.Description}}" placeholder="Optional">
+                </label>
+                <label>CoA port
+                  <input name="coa_port" inputmode="numeric" value="{{$row.CoAPort}}">
+                </label>
+                <label>PoD port
+                  <input name="pod_port" inputmode="numeric" value="{{$row.PoDPort}}">
+                </label>
+                <label>Rotate secret (blank = keep existing)
+                  <input name="radius_secret" type="password" placeholder="Leave blank to keep the current secret" minlength="16">
+                </label>
+                <label><input type="checkbox" name="allow_mab" {{if $row.AllowMAB}}checked{{end}}> Allow MAC-only auth (hotspot)</label>
+              </div>
+              <button class="primary" type="submit">Save changes</button>
+            </form>
+          </details>
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="8" class="empty">No routers registered yet. Add one below.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Register a device</h3>
+  <form method="post" action="/staff/nas/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="formgrid">
+      <label>Vendor
+        <select name="vendor">
+          {{range $d.Vendors}}<option value="{{.}}">{{.}}</option>{{end}}
+        </select>
+      </label>
+      <label>IP address
+        <input name="ip" required placeholder="192.0.2.10">
+      </label>
+      <label>Description
+        <input name="description" placeholder="Main office MikroTik">
+      </label>
+      <label>RADIUS secret
+        <input name="radius_secret" type="password" required minlength="16" placeholder="At least 16 characters">
+      </label>
+      <label>CoA port
+        <input name="coa_port" inputmode="numeric" placeholder="1700">
+      </label>
+      <label>PoD port
+        <input name="pod_port" inputmode="numeric" placeholder="1700">
+      </label>
+      <label><input type="checkbox" name="allow_mab"> Allow MAC-only auth (hotspot)</label>
+    </div>
+    <button class="primary" type="submit">Register device</button>
+  </form>
+</div>
+{{end}}

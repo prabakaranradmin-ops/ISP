@@ -42,6 +42,11 @@ type SubscriberRecord struct {
 	KYCStatus       string     `json:"kyc_status"`
 	PlanExpiry      *time.Time `json:"plan_expiry,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
+	// SpeedOverrideRateLimit and SpeedOverrideExpiresAt reflect an
+	// owner-triggered temporary rate (console "Speed override"), set via
+	// SessionController.SetSpeedOverride. Empty/nil means none is active.
+	SpeedOverrideRateLimit string     `json:"speed_override_rate_limit,omitempty"`
+	SpeedOverrideExpiresAt *time.Time `json:"speed_override_expires_at,omitempty"`
 }
 
 // CreateSubscriberRequest is the POST /api/v1/subscribers body.
@@ -283,6 +288,16 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		admin(http.HandlerFunc(h.TerminateSubscriber)))
 	mux.Handle("POST /api/v1/subscribers/{id}/adjustments",
 		admin(http.HandlerFunc(h.CreateAdjustment)))
+
+	// Bulk subscriber operations (console multi-select) — same admin tier as
+	// the single-subscriber actions they loop, since a batch of fifty is not
+	// reach beyond what an operator can already do fifty times over.
+	mux.Handle("POST /api/v1/subscribers/bulk/plan-change",
+		admin(http.HandlerFunc(h.BulkChangeSubscriberPlan)))
+	mux.Handle("POST /api/v1/subscribers/bulk/status",
+		admin(http.HandlerFunc(h.BulkUpdateStatus)))
+	mux.Handle("POST /api/v1/subscribers/bulk/credit",
+		admin(http.HandlerFunc(h.BulkWalletCredit)))
 	mux.Handle("POST /api/v1/subscribers/{id}/refunds",
 		admin(http.HandlerFunc(h.CreateRefund)))
 
@@ -468,6 +483,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		nocOnly(http.HandlerFunc(h.DisconnectSession)))
 	mux.Handle("POST /api/v1/sessions/{session_id}/fup-override",
 		nocOnly(http.HandlerFunc(h.FUPOverride)))
+	// Speed override is owner-only, not nocOnly: it changes what a specific
+	// customer is being charged to receive, not a network-health action.
+	mux.Handle("POST /api/v1/subscribers/{id}/speed-override",
+		ownerOnly(http.HandlerFunc(h.SpeedOverride)))
+	mux.Handle("POST /api/v1/subscribers/{id}/speed-override/clear",
+		ownerOnly(http.HandlerFunc(h.ClearSpeedOverride)))
 
 	// Invoices (API-004)
 	mux.Handle("GET /api/v1/invoices/{subscriber_id}",
