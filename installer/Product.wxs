@@ -74,15 +74,45 @@
 
     <!-- ── Files ─────────────────────────────────────────────────────── -->
 
+    <!--
+      Each binary's component also declares ServiceControl for the service
+      that runs it.
+
+      Without these, Windows Installer has no idea the three services
+      exist: they are registered by register_services.ps1 inside a custom
+      action, which is opaque to MSI. Restart Manager then finds
+      api_service.exe, aaa_core_daemon.exe and postgres.exe holding files
+      it is about to replace, cannot stop them itself, and puts up the
+      "The following applications should be closed" dialog - which is
+      exactly what an upgrade over a running install hit.
+
+      Stop="both" covers install and uninstall alike, since an upgrade
+      removes the old product before laying down the new one. Wait="yes"
+      because the point is for the file to be free by the time RemoveFiles
+      runs; not waiting would race the very problem this fixes.
+
+      Remove is deliberately omitted: uninstall.ps1 already deletes the
+      services, and having MSI delete them too would mean two things
+      owning that step. Stopping is all MSI needs to do to get its files
+      free.
+
+      The PostgreSQL control hangs off BootstrapExe only because a
+      ServiceControl has to live in some component and that one is neither
+      of the two app services - the association carries no meaning beyond
+      install/uninstall conditioning.
+    -->
     <ComponentGroup Id="AppBinaries" Directory="INSTALLFOLDER">
       <Component Id="ApiServiceExe">
         <File Id="ApiServiceExe" Source="$(var.StageDir)\api_service.exe" KeyPath="yes" />
+        <ServiceControl Id="StopApiService" Name="ISPBSSApi" Stop="both" Wait="yes" />
       </Component>
       <Component Id="AaaCoreDaemonExe">
         <File Id="AaaCoreDaemonExe" Source="$(var.StageDir)\aaa_core_daemon.exe" KeyPath="yes" />
+        <ServiceControl Id="StopAaaCoreService" Name="ISPBSSAaaCore" Stop="both" Wait="yes" />
       </Component>
       <Component Id="BootstrapExe">
         <File Id="BootstrapExe" Source="$(var.StageDir)\bootstrap.exe" KeyPath="yes" />
+        <ServiceControl Id="StopPostgresService" Name="ISPBSSPostgres" Stop="both" Wait="yes" />
       </Component>
     </ComponentGroup>
 
