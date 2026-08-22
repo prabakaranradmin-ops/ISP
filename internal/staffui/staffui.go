@@ -98,6 +98,10 @@ type RevenueQuerier interface {
 	GetLedgerVariance(ctx context.Context) (decimal.Decimal, error)
 	GetTotalWalletBalance(ctx context.Context) (decimal.Decimal, error)
 	ListSubscribers(ctx context.Context, franchiseID *int) ([]revenue.SubscriberRow, error)
+	// Collections (FR-REV-003): exposure per dunning stage, and what has
+	// actually been collected month by month.
+	GetCollectionsByDunningStage(ctx context.Context) ([]revenue.CollectionsStageRow, error)
+	GetMonthlyRecovery(ctx context.Context, months int) ([]revenue.RecoveryMonth, error)
 }
 
 // HandlerDeps bundles the console's dependencies. Every one is optional: a

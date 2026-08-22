@@ -363,6 +363,17 @@ type revenueData struct {
 	TotalBalance decimal.Decimal
 	Subscribers  int
 	VarianceOK   bool
+
+	// Collections (FR-REV-003).
+	Stages           []revenue.CollectionsStageRow
+	TotalOutstanding decimal.Decimal
+	AtRiskCount      int
+	ThisMonth        decimal.Decimal
+	LastMonth        decimal.Decimal
+	RecoveryPct      decimal.Decimal
+	// RecoveryComparable is false in a first month of operation, where a
+	// change measured against zero has no meaning worth printing.
+	RecoveryComparable bool
 }
 
 // Revenue is the owner's dashboard: the figures the nightly reconciliation
@@ -395,6 +406,37 @@ func (h *Handler) Revenue(w http.ResponseWriter, r *http.Request) {
 	}
 	if rows, err := h.revenue.ListSubscribers(r.Context(), nil); err == nil {
 		rd.Subscribers = len(rows)
+	}
+
+	// Collections (FR-REV-003). A failure here degrades the panel rather
+	// than the page: the reconciliation figures above are what the screen
+	// has always been for, and losing them because a collections query
+	// failed would be the worse trade.
+	if stages, err := h.revenue.GetCollectionsByDunningStage(r.Context()); err != nil {
+		log.Error().Err(err).Msg("staffui: collections by stage failed")
+	} else {
+		rd.Stages = stages
+		for _, st := range stages {
+			rd.TotalOutstanding = rd.TotalOutstanding.Add(st.Outstanding)
+			if st.ServiceStopped {
+				rd.AtRiskCount += st.Subscribers
+			}
+		}
+	}
+	if recovery, err := h.revenue.GetMonthlyRecovery(r.Context(), 2); err != nil {
+		log.Error().Err(err).Msg("staffui: monthly recovery failed")
+	} else {
+		// Ordered most recent first by the query. A month with no
+		// collections produces no row at all rather than a zero one, so
+		// the slice can be shorter than asked for - indexing it blindly
+		// would panic on a quiet month.
+		if len(recovery) > 0 {
+			rd.ThisMonth = recovery[0].Collected
+		}
+		if len(recovery) > 1 {
+			rd.LastMonth = recovery[1].Collected
+		}
+		rd.RecoveryPct, rd.RecoveryComparable = revenue.RecoveryRate(rd.ThisMonth, rd.LastMonth)
 	}
 
 	d.Data = rd

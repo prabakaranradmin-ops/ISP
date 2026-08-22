@@ -453,3 +453,97 @@ func (s *RevenueStore) ListSubscribers(ctx context.Context, franchiseID *int) ([
 	}
 	return out, nil
 }
+
+// ── FR-REV-003: collections ─────────────────────────────────────────────────
+
+// GetCollectionsByDunningStage returns exposure per dunning stage.
+//
+// 'active' is excluded: a current subscriber owes nothing, and including
+// them would put the entire book in a row labelled outstanding. Ordered by
+// the ladder rather than alphabetically, so the screen reads in the
+// direction a subscriber actually travels.
+func (s *RevenueStore) GetCollectionsByDunningStage(ctx context.Context) ([]revenue.CollectionsStageRow, error) {
+	// The plan price is what a lapsed subscriber must pay to become
+	// current, which is the only defensible per-subscriber figure in a
+	// prepaid model with no receivable to age - see the note in
+	// internal/revenue/collections.go. LEFT JOIN so a subscriber whose
+	// plan row is missing still appears in the count instead of silently
+	// dropping out of a total an operator is reconciling against.
+	const q = `
+		SELECT s.dunning_state,
+		       COUNT(*),
+		       COALESCE(SUM(p.price), 0)
+		  FROM subscribers s
+		  LEFT JOIN plans p ON p.id = s.plan_id
+		 WHERE s.dunning_state <> 'active'
+		   AND s.status <> 'terminated'
+		 GROUP BY s.dunning_state
+		 ORDER BY CASE s.dunning_state
+		            WHEN 'remind_7d'      THEN 1
+		            WHEN 'remind_3d'      THEN 2
+		            WHEN 'remind_1d'      THEN 3
+		            WHEN 'grace_period'   THEN 4
+		            WHEN 'soft_suspended' THEN 5
+		            WHEN 'hard_suspended' THEN 6
+		            ELSE 7
+		          END`
+
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("db: collections by dunning stage: %w", err)
+	}
+	defer rows.Close()
+
+	var out []revenue.CollectionsStageRow
+	for rows.Next() {
+		var r revenue.CollectionsStageRow
+		if err := rows.Scan(&r.DunningState, &r.Subscribers, &r.Outstanding); err != nil {
+			return nil, fmt.Errorf("db: scan collections row: %w", err)
+		}
+		r.ServiceStopped = revenue.ServiceStoppedIn(r.DunningState)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// GetMonthlyRecovery returns collections for the last n calendar months,
+// most recent first.
+//
+// Credits only, and only those carrying a transaction token: a token means
+// the money came through the payment gateway or was recorded as a cash
+// receipt, which is what "collected" means here. Staff-issued goodwill
+// credits (internal/api's adjustment path, counter-account
+// adjustment_clearing) have no token and are deliberately excluded -
+// counting them would let a collections figure be inflated by writing
+// credits to oneself.
+func (s *RevenueStore) GetMonthlyRecovery(ctx context.Context, months int) ([]revenue.RecoveryMonth, error) {
+	if months <= 0 {
+		months = 2
+	}
+	const q = `
+		SELECT date_trunc('month', created_at) AS m,
+		       COALESCE(SUM(amount), 0),
+		       COUNT(DISTINCT subscriber_id)
+		  FROM wallet_ledgers
+		 WHERE entry_type = 'credit'
+		   AND transaction_token IS NOT NULL
+		   AND created_at >= date_trunc('month', NOW()) - make_interval(months => $1)
+		 GROUP BY m
+		 ORDER BY m DESC`
+
+	rows, err := s.pool.Query(ctx, q, months-1)
+	if err != nil {
+		return nil, fmt.Errorf("db: monthly recovery: %w", err)
+	}
+	defer rows.Close()
+
+	var out []revenue.RecoveryMonth
+	for rows.Next() {
+		var m revenue.RecoveryMonth
+		if err := rows.Scan(&m.Month, &m.Collected, &m.Payers); err != nil {
+			return nil, fmt.Errorf("db: scan recovery month: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}

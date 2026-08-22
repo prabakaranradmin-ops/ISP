@@ -45,6 +45,7 @@ body {
 }
 .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
 h1 { font-size: 22px; margin: 0 0 18px; letter-spacing: -.01em; }
+h2 { font-size: 18px; margin: 28px 0 14px; letter-spacing: -.01em; }
 h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
      color: var(--muted); margin: 0 0 12px; font-weight: 600; }
 .card {

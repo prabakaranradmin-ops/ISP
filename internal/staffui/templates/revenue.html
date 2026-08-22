@@ -12,4 +12,53 @@
     <p class="muted">Across {{$d.Subscribers}} subscribers.</p></div>
 </div>
 <p class="muted">These are read live. The same figures are written to a snapshot nightly at 02:00 IST.</p>
+
+<h2>Collections</h2>
+<div class="grid3">
+  <div class="card"><h3>Outstanding</h3>
+    <p class="big num">&#8377;{{money $d.TotalOutstanding}}</p>
+    <p class="muted">Renewal value of every lapsed subscriber.</p></div>
+  <div class="card"><h3>Service stopped</h3>
+    <p class="big num">{{$d.AtRiskCount}}</p>
+    <p class="muted">Subscribers suspended, soft or hard.</p></div>
+  <div class="card"><h3>Collected this month</h3>
+    <p class="big num">&#8377;{{money $d.ThisMonth}}</p>
+    <p>
+      {{if $d.RecoveryComparable}}
+        {{if lt $d.RecoveryPct.Sign 0}}
+          <span class="pill bad">{{money $d.RecoveryPct}}%</span>
+        {{else}}
+          <span class="pill ok">+{{money $d.RecoveryPct}}%</span>
+        {{end}}
+        <span class="muted">vs &#8377;{{money $d.LastMonth}} last month</span>
+      {{else}}
+        <span class="muted">no prior month to compare against</span>
+      {{end}}
+    </p></div>
+</div>
+
+<div class="card">
+  <h3>By dunning stage</h3>
+  <table>
+    <thead><tr><th>Stage</th><th>Service</th><th class="right">Subscribers</th><th class="right">Outstanding</th></tr></thead>
+    <tbody>
+    {{range $d.Stages}}
+      <tr>
+        <td><span class="pill {{badge .DunningState}}">{{.DunningState}}</span></td>
+        <td>{{if .ServiceStopped}}<span class="pill bad">stopped</span>{{else}}<span class="pill ok">online</span>{{end}}</td>
+        <td class="num right">{{.Subscribers}}</td>
+        <td class="num right">&#8377;{{money .Outstanding}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="4" class="empty">Nobody is in arrears.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="muted">
+    This service is prepaid, so nobody carries a debit balance. &ldquo;Outstanding&rdquo; is the
+    price of the plan each lapsed subscriber must renew to become current &mdash; an exposure
+    figure, not a receivable. Collected counts gateway and recorded cash payments only;
+    staff-issued credits are excluded.
+  </p>
+</div>
 {{end}}

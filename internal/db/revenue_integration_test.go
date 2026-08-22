@@ -301,3 +301,98 @@ func TestFR_FRN_002_RevenueStore_LCOCommission(t *testing.T) {
 		}
 	})
 }
+
+// ── FR-REV-003: collections ─────────────────────────────────────────────────
+
+// TestFR_REV_003_CollectionsByDunningStage pins the grouping, the exclusions
+// and the ordering, all of which are in SQL and none of which a stub could
+// exercise.
+func TestFR_REV_003_CollectionsByDunningStage(t *testing.T) {
+	database, pool := newTestDB(t)
+	ctx := context.Background()
+
+	seedPlan(ctx, t, pool, 1, "Basic", "50M/50M", 0, "", "499.00")
+	seedPlan(ctx, t, pool, 2, "Pro", "100M/100M", 0, "", "999.00")
+
+	// Two in one stage on different plans, so the sum is not just a count
+	// multiplied by a single price.
+	seedSubscriber(ctx, t, pool, 1, seedOpts{Username: "a", PlanID: 1, DunningState: "grace_period"})
+	seedSubscriber(ctx, t, pool, 2, seedOpts{Username: "b", PlanID: 2, DunningState: "grace_period"})
+	seedSubscriber(ctx, t, pool, 3, seedOpts{Username: "c", PlanID: 1, DunningState: "hard_suspended"})
+	// Current: owes nothing, must not appear at all.
+	seedSubscriber(ctx, t, pool, 4, seedOpts{Username: "d", PlanID: 2, DunningState: "active"})
+	// Terminated: no longer a collections prospect, however they left the
+	// dunning ladder.
+	seedSubscriber(ctx, t, pool, 5, seedOpts{
+		Username: "e", PlanID: 2, DunningState: "soft_suspended", Status: "terminated"})
+
+	rows, err := database.Revenue().GetCollectionsByDunningStage(ctx)
+	if err != nil {
+		t.Fatalf("GetCollectionsByDunningStage: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("want 2 stages (active and terminated excluded), got %d: %+v", len(rows), rows)
+	}
+	// Ladder order, not alphabetical: grace_period precedes hard_suspended.
+	if rows[0].DunningState != "grace_period" || rows[1].DunningState != "hard_suspended" {
+		t.Errorf("stages out of ladder order: %s then %s", rows[0].DunningState, rows[1].DunningState)
+	}
+	if rows[0].Subscribers != 2 {
+		t.Errorf("grace_period subscribers: want 2, got %d", rows[0].Subscribers)
+	}
+	if got := rows[0].Outstanding.StringFixed(2); got != "1498.00" {
+		t.Errorf("grace_period outstanding: want 1498.00 (499 + 999), got %s", got)
+	}
+	// Service state is derived, not stored: grace_period leaves the
+	// subscriber online, hard_suspended does not.
+	if rows[0].ServiceStopped {
+		t.Error("grace_period must not be reported as service-stopped")
+	}
+	if !rows[1].ServiceStopped {
+		t.Error("hard_suspended must be reported as service-stopped")
+	}
+}
+
+// TestFR_REV_003_MonthlyRecoveryCountsOnlyRealPayments is the one that
+// matters for trust in the number: a staff-issued goodwill credit has no
+// transaction token, and counting it would let anyone inflate collections
+// by crediting a wallet.
+func TestFR_REV_003_MonthlyRecoveryCountsOnlyRealPayments(t *testing.T) {
+	database, pool := newTestDB(t)
+	ctx := context.Background()
+
+	seedPlan(ctx, t, pool, 1, "Basic", "50M/50M", 0, "", "499.00")
+	seedSubscriber(ctx, t, pool, 1, seedOpts{Username: "payer", PlanID: 1})
+	seedSubscriber(ctx, t, pool, 2, seedOpts{Username: "payer2", PlanID: 1})
+
+	ins := func(subID int, entry, amount string, token *string, at time.Time) {
+		t.Helper()
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO wallet_ledgers (subscriber_id, entry_type, amount, balance_after, transaction_token, created_at)
+			 VALUES ($1,$2,$3,0,$4,$5)`, subID, entry, amount, token, at); err != nil {
+			t.Fatalf("seed ledger: %v", err)
+		}
+	}
+	tok := func(s string) *string { return &s }
+	now := time.Now()
+
+	ins(1, "credit", "500.00", tok("pay-1"), now) // counted
+	ins(2, "credit", "300.00", tok("pay-2"), now) // counted, second payer
+	ins(1, "credit", "250.00", nil, now)          // staff credit: excluded
+	ins(1, "debit", "100.00", tok("chg-1"), now)  // a charge, not a collection
+
+	months, err := database.Revenue().GetMonthlyRecovery(ctx, 2)
+	if err != nil {
+		t.Fatalf("GetMonthlyRecovery: %v", err)
+	}
+	if len(months) == 0 {
+		t.Fatal("want at least the current month, got none")
+	}
+	if got := months[0].Collected.StringFixed(2); got != "800.00" {
+		t.Errorf("collected: want 800.00 (gateway credits only), got %s", got)
+	}
+	if months[0].Payers != 2 {
+		t.Errorf("payers: want 2 distinct subscribers, got %d", months[0].Payers)
+	}
+}
