@@ -13,6 +13,8 @@ import (
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2866"
 	"layeh.com/radius/rfc2869"
+	"layeh.com/radius/rfc3162"
+	"layeh.com/radius/rfc4818"
 )
 
 // RADIUS accounting — FR-AAA-003 | DDS §5.2.
@@ -47,7 +49,7 @@ type AccountingStore interface {
 	// StartSession must be idempotent on sessionID: a NAS retransmits an
 	// unacknowledged Start, and a duplicate open row would be double-counted by
 	// the FUP scanner's SUM over open sessions.
-	StartSession(ctx context.Context, subscriberID int, sessionID, nasIP, assignedIP string) error
+	StartSession(ctx context.Context, subscriberID int, sessionID, nasIP, assignedIP, ipv6Prefix string) error
 	UpdateSessionOctets(ctx context.Context, sessionID string, inputOctets, outputOctets int64) (bool, error)
 	StopSession(ctx context.Context, sessionID string, inputOctets, outputOctets int64, cause string) (bool, error)
 }
@@ -220,7 +222,7 @@ func (d *RadiusDaemon) acctStart(ctx context.Context, r *radius.Request, session
 	}
 
 	nasIP, assignedIP := accountingNASIP(r), framedIP(r.Packet)
-	if err := d.acctDB.StartSession(ctx, sub.ID, sessionID, nasIP, assignedIP); err != nil {
+	if err := d.acctDB.StartSession(ctx, sub.ID, sessionID, nasIP, assignedIP, framedIPv6Prefix(r.Packet)); err != nil {
 		radiusAcctProcessed.WithLabelValues(status, "error").Inc()
 		log.Error().Err(err).Str("session_id", sessionID).Int("subscriber_id", sub.ID).
 			Msg("radius: accounting start persist failed")
@@ -389,6 +391,29 @@ func accountingNASIP(r *radius.Request) string {
 func framedIP(p *radius.Packet) string {
 	if ip := rfc2865.FramedIPAddress_Get(p); ip != nil {
 		return ip.String()
+	}
+	return ""
+}
+
+// framedIPv6Prefix returns the IPv6 prefix a NAS reports for this session,
+// in CIDR form, or "" when the session is IPv4-only.
+//
+// Two attributes carry one, and which a NAS sends depends on how it hands
+// out addresses. Delegated-IPv6-Prefix (RFC 4818) is the prefix routed to
+// the subscriber's own router for it to sub-delegate on the LAN, which on a
+// residential broadband service is the one that identifies the customer's
+// whole network. Framed-IPv6-Prefix (RFC 3162) is the prefix on the access
+// link itself. Delegated is preferred where both appear, because it is the
+// range the subscriber's devices actually appear from - the one an
+// address in a law-enforcement request would fall inside.
+//
+// FR-NET-003 | DBD §6.2
+func framedIPv6Prefix(p *radius.Packet) string {
+	if pfx := rfc4818.DelegatedIPv6Prefix_Get(p); pfx != nil {
+		return pfx.String()
+	}
+	if pfx := rfc3162.FramedIPv6Prefix_Get(p); pfx != nil {
+		return pfx.String()
 	}
 	return ""
 }

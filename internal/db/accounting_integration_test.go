@@ -281,7 +281,7 @@ func TestFR_AAA_003_RetransmittedStartDoesNotDoubleCount(t *testing.T) {
 
 	store := database.FUP()
 	for i := 0; i < 3; i++ {
-		if err := store.StartSession(ctx, 1, "dup-sess", "198.51.100.4", "100.64.7.9"); err != nil {
+		if err := store.StartSession(ctx, 1, "dup-sess", "198.51.100.4", "100.64.7.9", ""); err != nil {
 			t.Fatalf("StartSession attempt %d: %v", i+1, err)
 		}
 	}
@@ -299,7 +299,7 @@ func TestFR_AAA_003_RetransmittedStartDoesNotDoubleCount(t *testing.T) {
 	if _, err := store.StopSession(ctx, "dup-sess", 10, 20, "User-Request"); err != nil {
 		t.Fatalf("StopSession: %v", err)
 	}
-	if err := store.StartSession(ctx, 1, "dup-sess", "198.51.100.4", "100.64.7.9"); err != nil {
+	if err := store.StartSession(ctx, 1, "dup-sess", "198.51.100.4", "100.64.7.9", ""); err != nil {
 		t.Fatalf("StartSession after stop: %v", err)
 	}
 	total := countRows(ctx, t, pool,
@@ -341,3 +341,62 @@ func TestFR_AAA_003_UnmatchedRecordsReportHonestly(t *testing.T) {
 // Compile-time proof that the store wired into cmd/radiusd is the one these
 // tests exercise, rather than a shape that merely satisfies the interface.
 var _ ispradius.AccountingStore = (*db.FUPStore)(nil)
+
+// ── FR-NET-003 ──────────────────────────────────────────────────────────────
+
+// TestFR_NET_003_StartSessionPersistsIPv6Prefix pins the write against a real
+// PostgreSQL, because the interesting part is the SQL rather than the Go: the
+// column is CIDR, not text, and an empty string is not a valid CIDR. The
+// NULLIF cast that makes an IPv4-only session store NULL instead of failing
+// the insert cannot be verified against a stub store at all.
+func TestFR_NET_003_StartSessionPersistsIPv6Prefix(t *testing.T) {
+	database, pool := newTestDB(t)
+	ctx := context.Background()
+
+	seedPlan(ctx, t, pool, 1, "P6", "100M/100M", 0, "", "799.00")
+	seedSubscriber(ctx, t, pool, 1, seedOpts{Username: "v6@isp", PlanID: 1})
+
+	store := database.FUP()
+	if err := store.StartSession(ctx, 1, "v6-sess", "198.51.100.4", "100.64.7.9", "2001:db8:abcd::/56"); err != nil {
+		t.Fatalf("StartSession with an IPv6 prefix: %v", err)
+	}
+
+	var prefix *string
+	if err := pool.QueryRow(ctx,
+		`SELECT assigned_ipv6_prefix::text FROM subscriber_session_history WHERE session_id = 'v6-sess'`,
+	).Scan(&prefix); err != nil {
+		t.Fatalf("read back prefix: %v", err)
+	}
+	if prefix == nil {
+		t.Fatal("assigned_ipv6_prefix is NULL after a session that reported one")
+	}
+	if *prefix != "2001:db8:abcd::/56" {
+		t.Errorf("assigned_ipv6_prefix = %q, want 2001:db8:abcd::/56", *prefix)
+	}
+}
+
+// An IPv4-only session passes "" for the prefix. That must land as NULL:
+// the column is CIDR, and "" would be rejected outright, failing an insert
+// that has nothing to do with IPv6.
+func TestFR_NET_003_IPv4OnlySessionStoresNullPrefix(t *testing.T) {
+	database, pool := newTestDB(t)
+	ctx := context.Background()
+
+	seedPlan(ctx, t, pool, 1, "P4", "100M/100M", 0, "", "799.00")
+	seedSubscriber(ctx, t, pool, 1, seedOpts{Username: "v4@isp", PlanID: 1})
+
+	store := database.FUP()
+	if err := store.StartSession(ctx, 1, "v4-sess", "198.51.100.4", "100.64.7.9", ""); err != nil {
+		t.Fatalf("StartSession without an IPv6 prefix must succeed: %v", err)
+	}
+
+	var prefix *string
+	if err := pool.QueryRow(ctx,
+		`SELECT assigned_ipv6_prefix::text FROM subscriber_session_history WHERE session_id = 'v4-sess'`,
+	).Scan(&prefix); err != nil {
+		t.Fatalf("read back prefix: %v", err)
+	}
+	if prefix != nil {
+		t.Errorf("assigned_ipv6_prefix = %q, want NULL for an IPv4-only session", *prefix)
+	}
+}

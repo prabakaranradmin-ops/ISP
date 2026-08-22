@@ -168,22 +168,29 @@ func (s *FUPStore) GetSubscriberNASSession(ctx context.Context, subscriberID int
 // partition key in any unique constraint — session_id alone cannot carry one.
 // Two Starts racing at the same instant could still both insert; the daemon's
 // Redis dedup covers the retransmit window where that is actually possible.
-func (s *FUPStore) StartSession(ctx context.Context, subscriberID int, sessionID, nasIP, assignedIP string) error {
+// ipv6Prefix is the CIDR the NAS delegated for this session, empty for an
+// IPv4-only one. Stored because an IPv6 subscriber's traffic appears from
+// that prefix and nothing else recorded here identifies them: a
+// law-enforcement request naming an IPv6 address could not be answered
+// against assigned_ipv4 at all. The column has existed since migration
+// 010; until now nothing wrote it (FR-NET-003, DBD §6.2).
+func (s *FUPStore) StartSession(ctx context.Context, subscriberID int, sessionID, nasIP, assignedIP, ipv6Prefix string) error {
 	const q = `
 		INSERT INTO subscriber_session_history (
-			subscriber_id, session_id, nas_ip_address, assigned_ipv4, start_time
+			subscriber_id, session_id, nas_ip_address, assigned_ipv4,
+			assigned_ipv6_prefix, start_time
 		)
 		-- $2 is cast explicitly because it appears both in the SELECT list, where
 		-- nothing constrains its type, and in the comparison below against a
 		-- VARCHAR column. Without the cast PostgreSQL deduces two different types
 		-- for one parameter and rejects the statement (SQLSTATE 42P08).
-		SELECT $1, $2::varchar, $3::inet, NULLIF($4,'')::inet, NOW()
+		SELECT $1, $2::varchar, $3::inet, NULLIF($4,'')::inet, NULLIF($5,'')::cidr, NOW()
 		WHERE NOT EXISTS (
 			SELECT 1 FROM subscriber_session_history
 			 WHERE session_id = $2::varchar AND stop_time IS NULL
 		)`
 
-	if _, err := s.pool.Exec(ctx, q, subscriberID, sessionID, nasIP, assignedIP); err != nil {
+	if _, err := s.pool.Exec(ctx, q, subscriberID, sessionID, nasIP, assignedIP, ipv6Prefix); err != nil {
 		return fmt.Errorf("db: start session for subscriber %d: %w", subscriberID, err)
 	}
 	return nil

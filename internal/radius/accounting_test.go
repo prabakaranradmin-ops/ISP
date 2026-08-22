@@ -20,6 +20,8 @@ import (
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2866"
 	"layeh.com/radius/rfc2869"
+	"layeh.com/radius/rfc3162"
+	"layeh.com/radius/rfc4818"
 )
 
 var acctSecret = []byte("acct-testing123")
@@ -45,6 +47,7 @@ type acctStartCall struct {
 	SessionID    string
 	NASIP        string
 	AssignedIP   string
+	IPv6Prefix   string
 }
 
 type acctOctetCall struct {
@@ -58,13 +61,13 @@ type acctStopCall struct {
 	Cause     string
 }
 
-func (s *acctRecorder) StartSession(_ context.Context, subscriberID int, sessionID, nasIP, assignedIP string) error {
+func (s *acctRecorder) StartSession(_ context.Context, subscriberID int, sessionID, nasIP, assignedIP, ipv6Prefix string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.err != nil {
 		return s.err
 	}
-	s.starts = append(s.starts, acctStartCall{subscriberID, sessionID, nasIP, assignedIP})
+	s.starts = append(s.starts, acctStartCall{subscriberID, sessionID, nasIP, assignedIP, ipv6Prefix})
 	return nil
 }
 
@@ -173,6 +176,8 @@ type acctOpts struct {
 	OutputGigawords uint32
 	NASIP           string
 	FramedIP        string
+	DelegatedIPv6   string
+	FramedIPv6      string
 	Cause           rfc2866.AcctTerminateCause
 	OmitSessionID   bool
 }
@@ -208,6 +213,24 @@ func acctRequest(t *testing.T, o acctOpts) *radius.Request {
 	if o.OutputGigawords > 0 {
 		if err := rfc2869.AcctOutputGigawords_Set(pkt, rfc2869.AcctOutputGigawords(o.OutputGigawords)); err != nil {
 			t.Fatalf("set Acct-Output-Gigawords: %v", err)
+		}
+	}
+	if o.DelegatedIPv6 != "" {
+		_, ipnet, err := net.ParseCIDR(o.DelegatedIPv6)
+		if err != nil {
+			t.Fatalf("parse Delegated-IPv6-Prefix: %v", err)
+		}
+		if err := rfc4818.DelegatedIPv6Prefix_Set(pkt, ipnet); err != nil {
+			t.Fatalf("set Delegated-IPv6-Prefix: %v", err)
+		}
+	}
+	if o.FramedIPv6 != "" {
+		_, ipnet, err := net.ParseCIDR(o.FramedIPv6)
+		if err != nil {
+			t.Fatalf("parse Framed-IPv6-Prefix: %v", err)
+		}
+		if err := rfc3162.FramedIPv6Prefix_Set(pkt, ipnet); err != nil {
+			t.Fatalf("set Framed-IPv6-Prefix: %v", err)
 		}
 	}
 	if o.NASIP != "" {
@@ -716,5 +739,97 @@ func TestFR_AAA_003_NASAddressFallsBackToPacketSource(t *testing.T) {
 	// Counters exist to make the metric name real, not just the behaviour.
 	if acctCounterVec(t, radiusAcctProcessed, "start", "persisted") == 0 {
 		t.Error("a persisted start must be counted")
+	}
+}
+
+// ── FR-NET-003: IPv6 prefix delegation is recorded ──────────────────────────
+//
+// subscriber_session_history has carried assigned_ipv6_prefix since
+// migration 010 and nothing ever wrote it. On an IPv6 subscriber that left
+// the session row with no address at all: assigned_ipv4 is null for them,
+// so a law-enforcement request naming an IPv6 address had nothing to match
+// against (FR-OBS-003 reads this same table).
+
+func TestFR_NET_003_AccountingStartRecordsDelegatedIPv6Prefix(t *testing.T) {
+	store := &acctRecorder{matched: true}
+	d := acctDaemon(t, store)
+
+	d.handleAccounting(context.Background(), &acctWriter{}, acctRequest(t, acctOpts{
+		SessionID: "sess-v6", Username: "pppoe@isp",
+		Status: rfc2866.AcctStatusType_Value_Start,
+		NASIP:  "10.10.0.1", DelegatedIPv6: "2001:db8:abcd::/56",
+	}))
+
+	starts, _, _ := store.snapshot()
+	if len(starts) != 1 {
+		t.Fatalf("want 1 start call, got %d", len(starts))
+	}
+	if starts[0].IPv6Prefix != "2001:db8:abcd::/56" {
+		t.Errorf("assigned_ipv6_prefix: want 2001:db8:abcd::/56, got %q", starts[0].IPv6Prefix)
+	}
+}
+
+// Where a NAS sends only the access-link prefix, that is still better than
+// recording nothing.
+func TestFR_NET_003_FallsBackToFramedIPv6Prefix(t *testing.T) {
+	store := &acctRecorder{matched: true}
+	d := acctDaemon(t, store)
+
+	d.handleAccounting(context.Background(), &acctWriter{}, acctRequest(t, acctOpts{
+		SessionID: "sess-v6b", Username: "pppoe@isp",
+		Status: rfc2866.AcctStatusType_Value_Start,
+		NASIP:  "10.10.0.1", FramedIPv6: "2001:db8:1234::/64",
+	}))
+
+	starts, _, _ := store.snapshot()
+	if len(starts) != 1 {
+		t.Fatalf("want 1 start call, got %d", len(starts))
+	}
+	if starts[0].IPv6Prefix != "2001:db8:1234::/64" {
+		t.Errorf("assigned_ipv6_prefix: want the Framed-IPv6-Prefix, got %q", starts[0].IPv6Prefix)
+	}
+}
+
+// Delegated wins when a NAS sends both: it is the range the subscriber's
+// own devices appear from, so it is the one an address in a
+// law-enforcement request would fall inside.
+func TestFR_NET_003_DelegatedPrefixWinsOverFramed(t *testing.T) {
+	store := &acctRecorder{matched: true}
+	d := acctDaemon(t, store)
+
+	d.handleAccounting(context.Background(), &acctWriter{}, acctRequest(t, acctOpts{
+		SessionID: "sess-v6c", Username: "pppoe@isp",
+		Status: rfc2866.AcctStatusType_Value_Start, NASIP: "10.10.0.1",
+		DelegatedIPv6: "2001:db8:abcd::/56",
+		FramedIPv6:    "2001:db8:1234::/64",
+	}))
+
+	starts, _, _ := store.snapshot()
+	if len(starts) != 1 {
+		t.Fatalf("want 1 start call, got %d", len(starts))
+	}
+	if starts[0].IPv6Prefix != "2001:db8:abcd::/56" {
+		t.Errorf("want the delegated prefix to win, got %q", starts[0].IPv6Prefix)
+	}
+}
+
+// An IPv4-only session must record an empty prefix, which the store writes
+// as NULL rather than failing the insert on an invalid CIDR.
+func TestFR_NET_003_IPv4OnlySessionRecordsNoPrefix(t *testing.T) {
+	store := &acctRecorder{matched: true}
+	d := acctDaemon(t, store)
+
+	d.handleAccounting(context.Background(), &acctWriter{}, acctRequest(t, acctOpts{
+		SessionID: "sess-v4", Username: "pppoe@isp",
+		Status: rfc2866.AcctStatusType_Value_Start,
+		NASIP:  "10.10.0.1", FramedIP: "100.64.0.5",
+	}))
+
+	starts, _, _ := store.snapshot()
+	if len(starts) != 1 {
+		t.Fatalf("want 1 start call, got %d", len(starts))
+	}
+	if starts[0].IPv6Prefix != "" {
+		t.Errorf("an IPv4-only session must carry no prefix, got %q", starts[0].IPv6Prefix)
 	}
 }

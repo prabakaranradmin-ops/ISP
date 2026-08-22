@@ -230,7 +230,7 @@ func TestFR_AAA_003_FUPStore_SessionLifecycle(t *testing.T) {
 
 	store := database.FUP()
 
-	if err := store.StartSession(ctx, 1, "live-1", "10.10.0.9", "100.64.1.2"); err != nil {
+	if err := store.StartSession(ctx, 1, "live-1", "10.10.0.9", "100.64.1.2", ""); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	if n := countRows(ctx, t, pool, `SELECT COUNT(*) FROM subscriber_session_history WHERE stop_time IS NULL`); n != 1 {
