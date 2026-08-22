@@ -212,6 +212,35 @@ func (h *Handler) executeApprovedAction(r *http.Request, req *workflow.ApprovalR
 // action was approved. These are the same store/service calls the ungated
 // MDS §4.14 handlers make — the approval flow decides whether and when they
 // run, it does not reimplement what they do.
+// auditGatedAction records a completed approval-gated action against the
+// subscriber it happened to.
+//
+// The approval flow already audits approval.request and approval.approve,
+// but both target the *approval's* id, not the subscriber's. FR-LC-003
+// (BO-007, CRD-REG-001) requires every lifecycle-affecting action - plan
+// change, termination, adjustment, refund - to be traceable against the
+// subscriber with staff attribution, and the first two of those already
+// are: they execute inline and audit as subscriber.plan_change and
+// subscriber.adjustment. Termination and refund do not, because they
+// execute here instead, which left the exact question an auditor asks -
+// "what was done to subscriber 42, and by whom" - answerable for two of
+// the four actions and not the other two.
+//
+// Both parties are recorded. middleware.Audit takes actor_id from the
+// request context, which during execution is the approver; the requester
+// is the one whose judgment call it was, so it goes in the detail
+// alongside the approval id that ties the two entries together.
+func auditGatedAction(ctx context.Context, req *workflow.ApprovalRequest, detail map[string]any) {
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	detail["approval_id"] = req.ID
+	detail["requested_by"] = req.RequestedBy
+	detail["reason"] = req.Reason
+	middleware.Audit(ctx, "subscriber."+string(req.ActionType),
+		strconv.Itoa(req.SubscriberID), detail)
+}
+
 func (h *Handler) performGatedAction(r *http.Request, req *workflow.ApprovalRequest) (*int, error) {
 	ctx := r.Context()
 
@@ -252,6 +281,17 @@ func (h *Handler) performGatedAction(r *http.Request, req *workflow.ApprovalRequ
 			return nil, err
 		}
 
+		// Audited here, against the subscriber, the moment the money has
+		// actually moved - see auditGatedAction on why the approval entry
+		// alone does not satisfy FR-LC-003. Emitted before the refund
+		// record below so that a CreateRefund failure, which leaves the
+		// debit committed, still leaves the movement in the audit trail.
+		auditGatedAction(ctx, req, map[string]any{
+			"amount":     req.Amount.String(),
+			"direction":  direction,
+			"ledger_txn": tx.ID,
+		})
+
 		if req.ActionType == workflow.ActionRefund {
 			if h.refunds == nil {
 				return &tx.ID, errors.New("refund store not configured")
@@ -281,6 +321,8 @@ func (h *Handler) performGatedAction(r *http.Request, req *workflow.ApprovalRequ
 					Msg("api: auth-cache invalidation failed after approved termination")
 			}
 		}
+		auditGatedAction(ctx, req, map[string]any{"username": updated.Username})
+
 		enqueuePoDIfSessionActive(ctx, h, req.SubscriberID)
 		h.openCPERecoveryTasks(ctx, req.SubscriberID, updated.Username)
 		return nil, nil

@@ -11,6 +11,7 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -20,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
@@ -651,3 +654,159 @@ func TestFR_WFL_002_FieldTaskUnknownIs404(t *testing.T) {
 }
 
 func decimalPtr(d decimal.Decimal) *decimal.Decimal { return &d }
+
+// ── FR-LC-003: lifecycle actions are auditable against the subscriber ────────
+//
+// FR-LC-003 (BO-007, CRD-REG-001) requires every lifecycle-affecting action
+// to be audit-logged with staff attribution. Plan change and adjustment
+// execute inline and have always emitted subscriber.* entries; termination,
+// refund and the *gated* half of an adjustment execute inside the approval
+// flow instead, which audited only approval.request/approval.approve
+// against the approval's own id. The question an auditor actually asks -
+// "what was done to subscriber 42, and by whom" - was therefore answerable
+// for two of the four actions and silently not for the others.
+//
+// These assert on the emitted audit line rather than on a call count,
+// because the line *is* the deliverable: a regulator reads the log, not the
+// code path that produced it.
+
+// captureAuditLog redirects the package-level logger for the duration of a
+// test, mirroring internal/middleware's own withCapturedLog.
+func captureAuditLog(t *testing.T, buf *bytes.Buffer) {
+	t.Helper()
+	orig := log.Logger
+	log.Logger = zerolog.New(buf)
+	t.Cleanup(func() { log.Logger = orig })
+}
+
+// auditEntries returns the audit lines in buf, decoded.
+func auditEntries(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			continue // not every logged line is JSON we care about
+		}
+		if v, ok := m["audit"].(bool); ok && v {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// findAudit returns the first audit entry with the given action, or nil.
+func findAudit(entries []map[string]any, action string) map[string]any {
+	for _, e := range entries {
+		if e["action"] == action {
+			return e
+		}
+	}
+	return nil
+}
+
+func TestFR_LC_003_ApprovedTerminationIsAuditedAgainstTheSubscriber(t *testing.T) {
+	var buf bytes.Buffer
+	captureAuditLog(t, &buf)
+
+	h := newWorkflowHarness(t)
+	h.approvals.seed(workflow.ApprovalRequest{
+		ActionType: workflow.ActionTerminate, SubscriberID: 9,
+		Reason: "relocated", RequestedBy: "alice",
+	})
+
+	if rec := h.do(t, http.MethodPost, "/api/v1/approvals/1/approve", ``, "billing_admin", "bob"); rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d — %s", rec.Code, rec.Body.String())
+	}
+
+	entry := findAudit(auditEntries(t, &buf), "subscriber.terminate")
+	if entry == nil {
+		t.Fatal("no subscriber.terminate audit entry: a termination is not traceable against the subscriber it terminated")
+	}
+	if entry["target"] != "9" {
+		t.Errorf("target = %v, want the subscriber id \"9\"", entry["target"])
+	}
+	// Both parties: the approver from the request context, the requester
+	// from the approval record. Either alone leaves a two-person control
+	// looking like a one-person action.
+	if entry["actor_id"] != "bob" {
+		t.Errorf("actor_id = %v, want the approver \"bob\"", entry["actor_id"])
+	}
+	detail, _ := entry["detail"].(map[string]any)
+	if detail == nil || detail["requested_by"] != "alice" {
+		t.Errorf("detail.requested_by = %v, want the requester \"alice\"", detail["requested_by"])
+	}
+	if detail["reason"] != "relocated" {
+		t.Errorf("detail.reason = %v, want \"relocated\"", detail["reason"])
+	}
+}
+
+func TestFR_LC_003_ApprovedRefundIsAuditedAgainstTheSubscriber(t *testing.T) {
+	var buf bytes.Buffer
+	captureAuditLog(t, &buf)
+
+	h := newWorkflowHarness(t)
+	h.wallet.balance = decimal.NewFromInt(500)
+	h.approvals.seed(workflow.ApprovalRequest{
+		ActionType: workflow.ActionRefund, SubscriberID: 9,
+		Amount: decimalPtr(decimal.NewFromInt(200)),
+		Reason: "service outage", RequestedBy: "alice",
+	})
+
+	if rec := h.do(t, http.MethodPost, "/api/v1/approvals/1/approve", ``, "billing_admin", "bob"); rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d — %s", rec.Code, rec.Body.String())
+	}
+
+	entry := findAudit(auditEntries(t, &buf), "subscriber.refund")
+	if entry == nil {
+		t.Fatal("no subscriber.refund audit entry: money left the system with no subscriber-level trace")
+	}
+	if entry["target"] != "9" {
+		t.Errorf("target = %v, want the subscriber id \"9\"", entry["target"])
+	}
+	detail, _ := entry["detail"].(map[string]any)
+	if detail == nil {
+		t.Fatal("refund audit entry carries no detail")
+	}
+	// The amount is the whole point of auditing a refund.
+	if detail["amount"] != "200" {
+		t.Errorf("detail.amount = %v, want \"200\"", detail["amount"])
+	}
+	if detail["direction"] != "debit" {
+		t.Errorf("detail.direction = %v, want \"debit\"", detail["direction"])
+	}
+}
+
+// The gated half of an adjustment: CreateAdjustment audits the immediate
+// debit itself, but a credit is routed through approval and so took the
+// same unaudited path terminations did.
+func TestFR_LC_003_ApprovedWalletCreditIsAuditedAgainstTheSubscriber(t *testing.T) {
+	var buf bytes.Buffer
+	captureAuditLog(t, &buf)
+
+	h := newWorkflowHarness(t)
+	h.approvals.seed(workflow.ApprovalRequest{
+		ActionType: workflow.ActionWalletCredit, SubscriberID: 9,
+		Amount: decimalPtr(decimal.NewFromInt(150)),
+		Reason: "goodwill", RequestedBy: "alice",
+	})
+
+	if rec := h.do(t, http.MethodPost, "/api/v1/approvals/1/approve", ``, "billing_admin", "bob"); rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d — %s", rec.Code, rec.Body.String())
+	}
+
+	entry := findAudit(auditEntries(t, &buf), "subscriber.wallet_credit")
+	if entry == nil {
+		t.Fatal("no subscriber.wallet_credit audit entry for an approved credit")
+	}
+	if entry["target"] != "9" {
+		t.Errorf("target = %v, want the subscriber id \"9\"", entry["target"])
+	}
+	detail, _ := entry["detail"].(map[string]any)
+	if detail == nil || detail["direction"] != "credit" {
+		t.Errorf("detail.direction = %v, want \"credit\"", detail["direction"])
+	}
+}
