@@ -165,3 +165,21 @@ func TestCalculateGstInvoiceFrom_UnknownStateFallsBackToInterstate(t *testing.T)
 		t.Error("an unresolvable subscriber state must not be treated as a home-state supply")
 	}
 }
+
+// internal/config declares its GST_HOME_STATE default as a literal rather
+// than importing this package, so that config stays a leaf every service
+// can import without inverting the layering. This is what keeps the two
+// from drifting: if DefaultHomeState changes and the config default does
+// not, an operator who never set GST_HOME_STATE would silently start
+// billing against a different state.
+func TestDefaultHomeStateMatchesConfigDefault(t *testing.T) {
+	const configDefault = "TN" // must match internal/config's env("GST_HOME_STATE", ...)
+	if DefaultHomeState != configDefault {
+		t.Errorf("DefaultHomeState = %q but internal/config defaults GST_HOME_STATE to %q; "+
+			"an unset deployment would bill against a different state than this package assumes",
+			DefaultHomeState, configDefault)
+	}
+	if _, ok := NormaliseState(DefaultHomeState); !ok {
+		t.Errorf("DefaultHomeState %q is not a resolvable state", DefaultHomeState)
+	}
+}

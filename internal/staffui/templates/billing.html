@@ -5,6 +5,20 @@
   <input name="subscriber_id" value="{{if $d.SubscriberID}}{{$d.SubscriberID}}{{end}}" placeholder="Subscriber id" aria-label="Subscriber id">
   <button class="primary" type="submit">Look up</button>
 </form>
+
+<div class="card">
+  <h3>GSTR-1 export</h3>
+  <form class="searchbar" method="get" action="/staff/billing/gstr1">
+    <input name="period" placeholder="YYYY-MM (blank = last month)" aria-label="Return period">
+    <button type="submit">Download CSV</button>
+  </form>
+  <p class="muted">
+    Outward supplies for one month: B2B invoices individually, B2C aggregated by
+    state and rate, and the HSN summary. Defaults to last month, since a return is
+    filed for a completed period. Give this to your accountant &mdash; it is not the
+    GST portal upload format.
+  </p>
+</div>
 {{if $d.Looked}}
 <div class="card"><h3>Wallet balance</h3><p class="big">₹{{money $d.Balance}}</p></div>
 <div class="card"><h3>Ledger</h3>

@@ -24,6 +24,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
+	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/health"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
 	"github.com/maaransoft/isp-bss-oss/internal/revenue"
@@ -117,6 +118,8 @@ type HandlerDeps struct {
 	LEA               LEAQuerier
 	Revenue           RevenueQuerier
 	Catalogue         CatalogueStore
+	GSTR1             GSTR1Store
+	GSTSupplier       billing.Supplier
 	SubscriberCreator SubscriberCreator
 	Tasks             TaskEnqueuer
 	JWTSecret         string
@@ -133,6 +136,8 @@ type Handler struct {
 	lea               LEAQuerier
 	revenue           RevenueQuerier
 	catalogue         CatalogueStore
+	gstr1             GSTR1Store
+	gstSupplier       billing.Supplier
 	subscriberCreator SubscriberCreator
 	tasks             TaskEnqueuer
 	jwtSecret         string
@@ -150,6 +155,8 @@ func NewHandler(deps HandlerDeps) *Handler {
 		lea:               deps.LEA,
 		revenue:           deps.Revenue,
 		catalogue:         deps.Catalogue,
+		gstr1:             deps.GSTR1,
+		gstSupplier:       deps.GSTSupplier,
 		subscriberCreator: deps.SubscriberCreator,
 		tasks:             deps.Tasks,
 		jwtSecret:         deps.JWTSecret,
@@ -240,6 +247,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/catalogue/plans", h.authed(h.requireCSRF(h.CreatePlan)))
 	mux.Handle("POST /staff/catalogue/gst", h.authed(h.requireCSRF(h.CreateGSTRate)))
 	mux.Handle("GET /staff/billing", h.authed(h.Billing))
+	mux.Handle("GET /staff/billing/gstr1", h.authed(h.GSTR1Export))
 	mux.Handle("GET /staff/tickets", h.authed(h.Tickets))
 	mux.Handle("POST /staff/tickets/{id}/status", h.authed(h.requireCSRF(h.UpdateTicketStatus)))
 	mux.Handle("GET /staff/revenue", h.authed(h.Revenue))

@@ -286,6 +286,12 @@ func run(ctx context.Context) error {
 		LEA:         database.FUP(),
 		Revenue:     database.Revenue(),
 		Catalogue:   database.Catalogue(),
+		GSTR1:       database.Billing(),
+		GSTSupplier: billing.Supplier{
+			GSTIN: cfg.GSTSupplierGSTIN,
+			State: cfg.GSTHomeState,
+			Name:  cfg.GSTSupplierName,
+		},
 		// The API handler itself, not a store: creating a subscriber from
 		// the console has to hash the password, encrypt KYC and write the
 		// audit entry exactly as the API route does, and apiHandler owns

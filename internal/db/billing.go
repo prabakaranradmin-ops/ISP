@@ -502,3 +502,48 @@ func (s *BillingStore) GetInvoiceDetail(ctx context.Context, invoiceID int) (*ap
 	}
 	return &d, nil
 }
+
+// ── FR-BIL-006: GSTR-1 ──────────────────────────────────────────────────────
+
+// ListInvoicesForGSTR1 returns every invoice issued in a calendar month,
+// with the recipient details a return needs.
+//
+// One flat row set rather than three aggregate queries: the B2B/B2C split
+// and the HSN summary all derive from the same invoices, and computing
+// them in Go (billing.BuildReturn) keeps the arithmetic testable without a
+// database and guarantees the three sections reconcile because they are
+// summed from one pass over one slice.
+//
+// The month is bounded by a half-open range on created_at so the query can
+// use an index rather than wrapping the column in date_trunc.
+func (s *BillingStore) ListInvoicesForGSTR1(ctx context.Context, year int, month time.Month) ([]billing.InvoiceRow, error) {
+	from := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
+	to := from.AddDate(0, 1, 0)
+
+	const q = `
+		SELECT i.id, i.created_at, i.subscriber_id,
+		       s.username, COALESCE(s.gstin, ''), s.registered_state,
+		       i.base_amount, i.cgst_amount, i.sgst_amount, i.igst_amount, i.total_amount
+		  FROM invoices i
+		  JOIN subscribers s ON s.id = i.subscriber_id
+		 WHERE i.created_at >= $1 AND i.created_at < $2
+		 ORDER BY i.id`
+
+	rows, err := s.pool.Query(ctx, q, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("db: list invoices for GSTR-1: %w", err)
+	}
+	defer rows.Close()
+
+	var out []billing.InvoiceRow
+	for rows.Next() {
+		var r billing.InvoiceRow
+		if err := rows.Scan(&r.InvoiceID, &r.InvoiceDate, &r.SubscriberID,
+			&r.SubscriberName, &r.RecipientGSTIN, &r.RecipientState,
+			&r.TaxableValue, &r.CGST, &r.SGST, &r.IGST, &r.Total); err != nil {
+			return nil, fmt.Errorf("db: scan GSTR-1 invoice row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

@@ -119,6 +119,20 @@ type Config struct {
 	// no longer talks to a Gotenberg container at all.
 	ChromiumPath        string
 	PagerDutyRoutingKey string
+
+	// GST filing identity (FR-BIL-006).
+	//
+	// GSTHomeState decides which supplies are intrastate and therefore
+	// which are charged CGST+SGST rather than IGST, so it is the one
+	// value here with a direct effect on money. It defaults to the state
+	// this system assumed before the value was configurable, which keeps
+	// an existing deployment billing exactly as it did.
+	//
+	// GSTSupplierGSTIN and GSTSupplierName appear only in the GSTR-1
+	// export header, so an operator who never files can leave both unset.
+	GSTHomeState     string
+	GSTSupplierGSTIN string
+	GSTSupplierName  string
 }
 
 // Requirement describes how strictly a field is enforced.
@@ -186,6 +200,13 @@ func Load(service string) (*Config, error) {
 		OneSignalAppID:  env("ONESIGNAL_APP_ID", ""),
 		OneSignalAPIKey: env("ONESIGNAL_API_KEY", ""),
 
+		// "TN" literal rather than billing.DefaultHomeState: config is a
+		// leaf package every service imports, and having it depend on
+		// billing would invert that. internal/billing asserts the two
+		// agree (TestDefaultHomeStateMatchesConfigDefault).
+		GSTHomeState:        env("GST_HOME_STATE", "TN"),
+		GSTSupplierGSTIN:    env("GST_SUPPLIER_GSTIN", ""),
+		GSTSupplierName:     env("GST_SUPPLIER_NAME", ""),
 		ChromiumPath:        env("CHROMIUM_PATH", ""),
 		PagerDutyRoutingKey: env("PAGERDUTY_ROUTING_KEY", ""),
 	}
