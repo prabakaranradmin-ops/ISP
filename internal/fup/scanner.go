@@ -6,6 +6,7 @@ package fup
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -30,14 +31,19 @@ var (
 		Name: "fup_warning_enqueued_total",
 		Help: "Number of 80% FUP warning notifications enqueued",
 	})
+	fupThrottledEnqueued = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fup_throttled_notification_enqueued_total",
+		Help: "Number of FUP throttle-applied notifications enqueued",
+	})
 )
 
 const (
-	TaskTypeCoA        = "network:coa_send"
-	TaskTypePoD        = "network:pod_send"
-	TaskTypeFUPWarning = "notif:fup_warning"
-	scanInterval       = 10 * time.Second
-	FUPWarningPct      = 80
+	TaskTypeCoA          = "network:coa_send"
+	TaskTypePoD          = "network:pod_send"
+	TaskTypeFUPWarning   = "notif:fup_warning"
+	TaskTypeFUPThrottled = "notif:fup_throttled"
+	scanInterval         = 10 * time.Second
+	FUPWarningPct        = 80
 	// QueueNetCommands and QueueNotifications are exported so callers outside
 	// this package (the admin API, enqueuing a session-control task) use the
 	// exact same queue names the workers here listen on.
@@ -53,6 +59,12 @@ type SessionStats struct {
 	FUPThreshold int64 // bytes; 0 = unlimited
 	BytesUsed    int64
 	FUPActive    bool
+	// FUPThrottle is the plan's post-breach rate limit ("10M/10M"), empty
+	// when the plan sets none. Carried on the session rather than looked up
+	// again at notification time so the subscriber is told the speed that
+	// was actually applied to them, not whatever the plan says by the time
+	// the queued notification runs.
+	FUPThrottle string
 }
 
 // FUPQuerier is the DB interface for the scanner.
@@ -169,8 +181,50 @@ func (s *Scanner) scanBreaches(ctx context.Context) error {
 				return fmt.Errorf("fup: enqueue CoA for sub %d: %w", sess.SubscriberID, err)
 			}
 			coaEnqueued.Inc()
+
+			// Tell the subscriber their speed dropped (FR-NOTIF-003,
+			// FR-FUP-005). Enqueued after the CoA rather than before, so a
+			// failure to actually apply the throttle does not first
+			// announce one that never happened.
+			//
+			// A failure here is logged, not returned: the throttle itself
+			// has already been applied and recorded, and abandoning the
+			// scan would leave every later breached session in this pass
+			// unthrottled over an undelivered message.
+			if err := s.enqueueThrottledNotice(ctx, sess); err != nil {
+				log.Error().Err(err).Int("sub_id", sess.SubscriberID).
+					Msg("fup: enqueue throttle notification failed; throttle itself was applied")
+			}
 		}
 	}
+	return nil
+}
+
+// enqueueThrottledNotice queues the throttle-applied notification for one
+// session.
+func (s *Scanner) enqueueThrottledNotice(ctx context.Context, sess SessionStats) error {
+	payload, err := json.Marshal(ThrottledPayload{
+		SubscriberID:  sess.SubscriberID,
+		Username:      sess.Username,
+		ThrottleSpeed: sess.FUPThrottle,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal throttled payload: %w", err)
+	}
+	task := jobqueue.NewTask(TaskTypeFUPThrottled, payload,
+		jobqueue.Queue(QueueNotifications),
+		jobqueue.TaskID(ThrottledTaskID(sess.SubscriberID, sess.FUPThreshold)),
+		jobqueue.MaxRetry(3),
+		jobqueue.Retention(24*time.Hour))
+	if _, err := s.client.EnqueueContext(ctx, task); err != nil {
+		// Already notified for this quota cycle - the idempotency
+		// guarantee working, not a failure.
+		if errors.Is(err, jobqueue.ErrTaskIDConflict) {
+			return nil
+		}
+		return err
+	}
+	fupThrottledEnqueued.Inc()
 	return nil
 }
 

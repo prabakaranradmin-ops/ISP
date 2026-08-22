@@ -46,7 +46,8 @@ func (s *FUPStore) GetActiveSessionsAboveFUP(ctx context.Context) ([]fup.Session
 	const q = `
 		WITH usage AS (` + liveSessionUsage + `)
 		SELECT s.id, s.username, COALESCE(u.nas_ip, ''),
-		       p.fup_threshold_bytes, COALESCE(u.bytes_used, 0), s.fup_active
+		       p.fup_threshold_bytes, COALESCE(u.bytes_used, 0), s.fup_active,
+		       COALESCE(p.fup_throttle_string, '')
 		FROM usage u
 		JOIN subscribers s ON s.id = u.subscriber_id
 		JOIN plans p       ON p.id = s.plan_id
@@ -70,7 +71,8 @@ func (s *FUPStore) GetSessionsAtWarning(ctx context.Context, pct int) ([]fup.Ses
 	const q = `
 		WITH usage AS (` + liveSessionUsage + `)
 		SELECT s.id, s.username, COALESCE(u.nas_ip, ''),
-		       p.fup_threshold_bytes, COALESCE(u.bytes_used, 0), s.fup_active
+		       p.fup_threshold_bytes, COALESCE(u.bytes_used, 0), s.fup_active,
+		       COALESCE(p.fup_throttle_string, '')
 		FROM usage u
 		JOIN subscribers s ON s.id = u.subscriber_id
 		JOIN plans p       ON p.id = s.plan_id
@@ -94,7 +96,7 @@ func (s *FUPStore) scanSessionStats(ctx context.Context, q string, args ...any) 
 	for rows.Next() {
 		var st fup.SessionStats
 		if err := rows.Scan(&st.SubscriberID, &st.Username, &st.NasIP,
-			&st.FUPThreshold, &st.BytesUsed, &st.FUPActive); err != nil {
+			&st.FUPThreshold, &st.BytesUsed, &st.FUPActive, &st.FUPThrottle); err != nil {
 			return nil, fmt.Errorf("db: scan FUP session row: %w", err)
 		}
 		stats = append(stats, st)

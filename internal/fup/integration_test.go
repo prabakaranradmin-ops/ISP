@@ -759,3 +759,148 @@ func errorIsSkipRetry(err error) bool {
 	}
 	return false
 }
+
+// ── FR-NOTIF-003 / FR-FUP-005: throttle-applied notification ────────────────
+//
+// Before this existed the breach path set fup_active, sent the CoA that
+// actually slowed the line, and told the subscriber nothing. They received
+// an 80% warning, then went quiet and got slower — which is the call the
+// support desk then takes. TMPL-002 ("fup_throttled") had been sitting in
+// internal/notifications' template map the whole time with nothing sending
+// it.
+
+func TestFR_NOTIF_003_FUPScanner_NotifiesOnThrottleApplied(t *testing.T) {
+	_, client, inspector := itQueue(t)
+
+	const threshold = int64(1_771_674_009_600)
+	db := &itFUPDB{
+		aboveFUP: []SessionStats{{
+			SubscriberID: 42,
+			Username:     "heavy@isp",
+			NasIP:        "10.10.0.1",
+			FUPThreshold: threshold,
+			BytesUsed:    threshold + 1,
+			FUPThrottle:  "10M/10M",
+		}},
+	}
+
+	scanner := NewScanner(db, client)
+	if err := scanner.scan(context.Background()); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	pending := itPendingTasks(t, inspector, QueueNotifications)
+	if len(pending) != 1 {
+		t.Fatalf("%s queue: want 1 task, got %d", QueueNotifications, len(pending))
+	}
+	if pending[0].Type != TaskTypeFUPThrottled {
+		t.Fatalf("task type: want %q, got %q", TaskTypeFUPThrottled, pending[0].Type)
+	}
+
+	var payload ThrottledPayload
+	if err := json.Unmarshal(pending[0].Payload, &payload); err != nil {
+		t.Fatalf("unmarshal throttled payload: %v", err)
+	}
+	if payload.SubscriberID != 42 || payload.Username != "heavy@isp" {
+		t.Errorf("payload identifies the wrong subscriber: %+v", payload)
+	}
+	// FR-FUP-005 wants the subscriber told what actually happened, and a
+	// speed they cannot see is the difference between a useful message and
+	// one that generates a support call.
+	if payload.ThrottleSpeed != "10M/10M" {
+		t.Errorf("throttle_speed: want 10M/10M, got %q", payload.ThrottleSpeed)
+	}
+}
+
+// The notification must not fire again on the next 10-second pass, nor for
+// a subscriber who was already throttled before this scan.
+func TestFR_NOTIF_003_ThrottleNotificationIsOncePerQuotaCycle(t *testing.T) {
+	_, client, inspector := itQueue(t)
+
+	const threshold = int64(500)
+	db := &itFUPDB{
+		aboveFUP: []SessionStats{{
+			SubscriberID: 7, Username: "sub7", NasIP: "10.0.0.1",
+			FUPThreshold: threshold, BytesUsed: threshold + 1, FUPThrottle: "5M/5M",
+		}},
+	}
+	scanner := NewScanner(db, client)
+
+	if err := scanner.scan(context.Background()); err != nil {
+		t.Fatalf("first scan: %v", err)
+	}
+	// The real scanner would see fup_active set on the second pass, but the
+	// task ID is the guarantee that holds even if it does not — a scan
+	// racing SetFUPActive must still not double-notify.
+	if err := scanner.scan(context.Background()); err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+
+	pending := itPendingTasks(t, inspector, QueueNotifications)
+	if len(pending) != 1 {
+		t.Fatalf("want exactly 1 notification across two scans, got %d", len(pending))
+	}
+}
+
+func TestFR_NOTIF_003_ThrottledTaskIDIsPerQuotaCycle(t *testing.T) {
+	if a, b := ThrottledTaskID(1, 100), ThrottledTaskID(2, 100); a == b {
+		t.Errorf("different subscribers must get different task IDs, both %q", a)
+	}
+	if a, b := ThrottledTaskID(1, 100), ThrottledTaskID(1, 200); a == b {
+		t.Errorf("different quota cycles must get different task IDs, both %q", a)
+	}
+	// Must not collide with the 80% warning for the same cycle, or one
+	// would suppress the other.
+	if a, b := ThrottledTaskID(1, 100), WarningTaskID(1, 100); a == b {
+		t.Errorf("throttle and warning task IDs collide, both %q", a)
+	}
+}
+
+func TestFR_FUP_005_ThrottledHandler_SendsTemplateWithSpeed(t *testing.T) {
+	n := &itNotifier{}
+	h := NewThrottledHandler(n)
+
+	payload, err := json.Marshal(ThrottledPayload{
+		SubscriberID: 9, Username: "sub9", ThrottleSpeed: "10M/10M",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := h.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypeFUPThrottled, payload)); err != nil {
+		t.Fatalf("ProcessTask: %v", err)
+	}
+
+	calls := n.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("want 1 notify call, got %d", len(calls))
+	}
+	if calls[0].TemplateID != TemplateFUPThrottled {
+		t.Errorf("template: want %q, got %q", TemplateFUPThrottled, calls[0].TemplateID)
+	}
+	if len(calls[0].Vars) < 2 || calls[0].Vars[1] != "10M/10M" {
+		t.Errorf("vars must carry the applied speed, got %v", calls[0].Vars)
+	}
+}
+
+// A plan with no throttle string still slowed the subscriber down, so it
+// still notifies — but must not print an empty speed at them.
+func TestFR_FUP_005_ThrottledHandler_HandlesPlanWithNoThrottleString(t *testing.T) {
+	n := &itNotifier{}
+	h := NewThrottledHandler(n)
+
+	payload, err := json.Marshal(ThrottledPayload{SubscriberID: 9, Username: "sub9"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := h.ProcessTask(context.Background(), jobqueue.NewTask(TaskTypeFUPThrottled, payload)); err != nil {
+		t.Fatalf("ProcessTask: %v", err)
+	}
+
+	calls := n.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("want 1 notify call, got %d", len(calls))
+	}
+	if len(calls[0].Vars) < 2 || calls[0].Vars[1] == "" {
+		t.Errorf("an absent throttle string must still render as something readable, got %v", calls[0].Vars)
+	}
+}

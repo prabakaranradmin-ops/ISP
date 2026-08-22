@@ -395,6 +395,7 @@ func run(ctx context.Context) error {
 		podHandler.SetNASResolver(nasResolver)
 	}
 	warningHandler := fup.NewWarningHandler(dispatcher)
+	throttledHandler := fup.NewThrottledHandler(dispatcher)
 	dunningNoticeHandler := billing.NewDunningNoticeHandler(dispatcher)
 	paymentReceiptHandler := billing.NewPaymentReceiptHandler(dispatcher)
 	ticketUpdateHandler := tickets.NewUpdateHandler(dispatcher)
@@ -436,6 +437,7 @@ func run(ctx context.Context) error {
 	workerMux.Handle(fup.TaskTypeCoA, coaHandler)
 	workerMux.Handle(fup.TaskTypePoD, podHandler)
 	workerMux.Handle(fup.TaskTypeFUPWarning, warningHandler)
+	workerMux.Handle(fup.TaskTypeFUPThrottled, throttledHandler)
 	workerMux.Handle(billing.TaskTypeDunningNotice, dunningNoticeHandler)
 	workerMux.Handle(billing.TaskTypePaymentReceipt, paymentReceiptHandler)
 	workerMux.Handle(tickets.TaskTypeTicketUpdate, ticketUpdateHandler)
