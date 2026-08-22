@@ -669,13 +669,22 @@ func hashSubscriberPassword(password string) (string, error) {
 // subscriberRecordFrom builds the starting state every new subscriber shares:
 // active, undunned, KYC pending, empty wallet.
 func subscriberRecordFrom(req CreateSubscriberRequest) SubscriberRecord {
+	// Stored canonical rather than as typed. validateCreateSubscriber has
+	// already rejected anything unresolvable, so the fallback here is
+	// unreachable in practice; keeping the original value rather than
+	// silently emptying the column is still the right behaviour if that
+	// ever stops being true.
+	state := req.RegisteredState
+	if canonical, ok := billing.NormaliseState(state); ok {
+		state = canonical
+	}
 	return SubscriberRecord{
 		CAFNumber:       req.CAFNumber,
 		Username:        req.Username,
 		MobileNumber:    req.MobileNumber,
 		Email:           req.Email,
 		PlanID:          req.PlanID,
-		RegisteredState: req.RegisteredState,
+		RegisteredState: state,
 		Status:          "active",
 		DunningState:    "active",
 		KYCStatus:       "pending",
@@ -908,6 +917,17 @@ func validateCreateSubscriber(req CreateSubscriberRequest) error {
 	}
 	if req.RegisteredState == "" {
 		return fmt.Errorf("registered_state is required")
+	}
+	// Resolved against the GST state registry, not merely checked for
+	// non-emptiness. registered_state decides whether a subscriber is
+	// billed CGST+SGST or IGST, and an unrecognised value silently takes
+	// the interstate branch - so "Tamil Nadu" typed instead of "TN" filed
+	// a Tamil Nadu customer's tax to the centre. Rejecting at entry is
+	// what keeps that out of the ledger; see internal/billing/state.go.
+	if _, ok := billing.NormaliseState(req.RegisteredState); !ok {
+		return fmt.Errorf("registered_state %q is not a recognised Indian state: "+
+			"use the two-letter code (TN), the GST code (33) or the full name (Tamil Nadu)",
+			req.RegisteredState)
 	}
 	return nil
 }
