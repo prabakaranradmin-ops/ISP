@@ -26,15 +26,23 @@
 # either path - see uninstall.ps1's own reasoning for why data always
 # outlives the software that used it.
 #
+# On success, opens the staff console login page — in the default browser
+# normally, or as a chromeless standalone window (Edge/Chrome --app=) with
+# -AppMode, for a client-facing walkthrough where a full browser chrome
+# (address bar, tabs, bookmarks) would look like a demo of a website rather
+# than of a product.
+#
 # Usage:
 #   .\deploy.ps1
 #   .\deploy.ps1 -MsiPath 'D:\path\to\some.msi'
 #   .\deploy.ps1 -FullReinstall
+#   .\deploy.ps1 -AppMode
 
 [CmdletBinding()]
 param(
     [string]$MsiPath = '',
     [switch]$FullReinstall,
+    [switch]$AppMode,
     [string]$LogDir = ''
 )
 
@@ -49,6 +57,7 @@ if ($LogDir -eq '') { $LogDir = Join-Path $PSScriptRoot 'dist' }
 
 $services = @('ISPBSSApi', 'ISPBSSAaaCore', 'ISPBSSPostgres')
 $productName = 'ISP BSS/OSS'
+$loginUrl = 'https://localhost/staff/login'
 
 function Assert-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -115,6 +124,44 @@ function Show-LogTail {
     }
 }
 
+# Open-ConsoleLogin opens the staff console after a successful install.
+#
+# -AppMode launches it as a standalone window via a Chromium-based
+# browser's own --app= flag (a window with no address bar, tabs or
+# bookmarks - the browser is still doing the rendering, there is no
+# separate native app here) rather than Start-Process's normal "open in
+# whatever the default browser is" behaviour, which always adds a full
+# browser window around the page. Edge is checked first since every
+# Windows 10/11 machine already has it; Chrome is a fallback for a machine
+# where Edge was removed. Falls back to a normal browser tab if neither is
+# found, rather than failing the whole script over a cosmetic preference.
+function Open-ConsoleLogin {
+    param([string]$Url, [switch]$AppMode)
+
+    if (-not $AppMode) {
+        Write-Host "`nOpening $Url ..."
+        Start-Process $Url
+        return
+    }
+
+    $candidates = @(
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+        "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
+        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
+    )
+    $browser = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+
+    if (-not $browser) {
+        Write-Warning "No Edge or Chrome install found for -AppMode; opening $Url in the default browser instead."
+        Start-Process $Url
+        return
+    }
+
+    Write-Host "`nOpening $Url as a standalone window ($browser)..."
+    Start-Process -FilePath $browser -ArgumentList "--app=$Url"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────
 
 Assert-Admin
@@ -177,3 +224,5 @@ Get-Service -Name $services -ErrorAction SilentlyContinue | Format-Table Name, S
 
 Write-Host "Health check:"
 & curl.exe -sk -o NUL -w "  https://localhost/readyz -> %{http_code}`n" https://localhost/readyz
+
+Open-ConsoleLogin -Url $loginUrl -AppMode:$AppMode
