@@ -133,11 +133,19 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .tab-btn:hover { color: var(--ink); }
 .tab-btn.on { color: var(--accent); border-bottom-color: var(--accent); }
 
-/* Keyboard shortcuts help panel (console.js, toggled by "?"). */
+/* Keyboard shortcuts help panel (console.js, toggled by "?").
+   .shortcuts-help[hidden] must come after (and outrank, via the extra
+   attribute selector) the bare .shortcuts-help rule below: an unconditional
+   `display: flex` on the same class the `hidden` attribute lives on
+   otherwise beats the browser's own `[hidden] { display: none }` — author
+   styles always win over the default stylesheet, even at equal
+   specificity — so the panel shows on load and console.js's close()
+   correctly sets hidden=true while nothing visibly happens. */
 .shortcuts-help {
   position: fixed; inset: 0; background: rgba(23, 33, 43, .35);
   display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; z-index: 20;
 }
+.shortcuts-help[hidden] { display: none; }
 .shortcuts-help-box {
   background: var(--surface); border: 1px solid var(--rule); border-radius: 6px;
   padding: 20px 24px; width: 420px; max-width: calc(100vw - 40px);
