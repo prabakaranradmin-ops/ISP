@@ -259,11 +259,15 @@ suite would look for first, beyond billing and AAA.
 - **Announcements** — staff-composed broadcast (maintenance notices, outage
   alerts) to all subscribers or a filtered segment, reusing the existing
   DND/notification-log machinery
-- **Franchise module, actually reachable** — the commission/P&L engine exists
-  in code (`internal/revenue/franchise.go`) but has no route and no console
-  screen; wire it up, add restricted LCO-partner portal login, and a staff
-  onboarding flow for new franchise accounts (this was CRD-FRN-001's original
-  ask — it was scoped once already and never finished)
+- **Franchise module, actually reachable** — *(update 2026-08-24: the API
+  route and owner-side console screen are now done — `/api/v1/franchises`,
+  `/staff/franchise`, onboarding form and per-partner/consolidated P&L, see
+  `internal/staffui/franchise.go`. Still open: a restricted LCO-partner
+  portal login — `lco`/`franchise_admin`/`franchise_staff` roles exist in
+  `staff_users` and are scoped correctly by the API, but
+  `AllowedSections` maps none of them to any console section, so such an
+  account can authenticate today and then see an empty console. Tracked as
+  CRD-EXP-005 below.)*
 - **General reporting** — subscriber growth/churn, plan-mix distribution,
   ticket-resolution metrics, and per-area collection performance, not just
   revenue reconciliation
@@ -294,3 +298,154 @@ decision: schema-per-tenant vs. database-per-tenant, tenant-aware routing,
 and billing-for-the-platform-itself are new architectural surface, not an
 extension of existing tables. Scoped last on purpose — it should follow
 Phase 2–4 landing on real deployments, not precede it.
+
+---
+
+## 1.12 Remaining Commercial-Parity Gaps *(new — gap analysis 2026-08-24, against a competing ISP-billing product's marketing feature list)*
+
+### Why this section exists
+
+A second gap analysis, run the same way as § 1.11's (compare against what a
+commercial ISP-management suite advertises, then verify against actual code
+rather than trust either side's claims), found four items already scoped
+under § 1.11 that a console operator still cannot reach, plus several items
+genuinely absent from both the codebase and the roadmap. This section closes
+that: the reachability gaps get a concrete follow-up (CRD-EXP-005), and the
+genuinely new items get scoped as CRD-EXP-006 through CRD-EXP-011, in the
+same phased, evidence-cited style as § 1.11 — not built from a marketing
+checklist with no sequencing.
+
+### CRD-EXP-005 — Finish wiring what § 1.11 Phase 3 already built
+
+Four Phase 3 items have working, tested backends with no console screen —
+the same "built but unreachable" gap the franchise module had, now found in
+four more places. All four follow the exact pattern `internal/staffui/nas.go`
+and (as of 2026-08-24) `internal/staffui/franchise.go` already establish:
+a thin `staffui` handler over an existing store interface, one new
+`Section` entry, one or two templates. No new backend design work — this is
+console-screen labor, sequenced first because it is the fastest path to
+closing a real, already-built gap.
+
+- **Franchise partner self-service login** — `lco`, `franchise_admin` and
+  `franchise_staff` roles exist and are scoped correctly at the API
+  (`internal/api/franchises.go`'s `callerFranchiseScope`), but
+  `AllowedSections` (`internal/staffui/staffui.go`) maps none of them to any
+  section, so such an account signs in to an empty console today. Needs its
+  own restricted section set (own subscribers, own P&L, nothing
+  cross-partner) — not the owner's `franchise` section widened.
+- **Inventory / CPE console screen** — `internal/inventory/inventory.go` and
+  `internal/api/inventory.go` fully track device types, serials, issue/
+  return status and vendor purchases (`/api/v1/cpe/types`, `/cpe/devices`,
+  `/cpe/devices/{serial}/issue|return`, `/cpe/stock`, `/cpe/purchases`); no
+  console screen exists.
+- **General reporting console screen** — `internal/reporting/rows.go`'s four
+  reports (plan-mix, growth/churn, ticket resolution, per-franchise
+  collections) are routed at `/api/v1/reports/{report}` with CSV export; only
+  GSTR-1 (a fifth, tax-specific report) has a console screen today.
+- **Task management console screen** — ad hoc field-task assignment
+  (`/api/v1/field-tasks`, migration `026_create_task_approval_workflows.sql`)
+  and second-approver sign-off (`internal/api/workflow.go`) both work and are
+  tested; neither has a console screen.
+- **Ticket SLA/priority visible in the console** — `023_create_sla_engine.sql`
+  added `priority`, `sla_response_due_at`, `sla_resolution_due_at` to
+  `tickets`, with breach scanning in `internal/tickets/sla_scanner.go` and
+  full exposure via the API's `TicketRecord`. The console's Tickets screen
+  (`internal/staffui/screens.go`) renders `portal.TicketEntry`, a narrower
+  type with no priority or due-by fields — so the data exists and is
+  correctly computed, but no operator can see it without calling the API
+  directly.
+
+### CRD-EXP-006 — General ledger / accounts management
+
+Today's "double-entry" (`internal/billing/wallet.go`) is a per-subscriber
+prepaid wallet ledger — correct and real, but not a chart of accounts. There
+is no way to record the ISP's own business expenses (rent, salaries,
+upstream bandwidth bills, equipment purchases already tracked in inventory)
+against revenue, so there is no P&L for the *business*, only for each
+subscriber's wallet and (since § 1.11) each franchise partner's commission.
+
+- Chart of accounts (assets/liabilities/equity/income/expense, standard
+  double-entry postings)
+- Accounts payable: record and track a vendor bill (the inventory module's
+  `Purchase` records already capture *what* was bought and from whom — this
+  extends that into *when it's due* and *whether it's paid*)
+- A trial balance and a company-level P&L / balance sheet, distinct from the
+  subscriber revenue-reconciliation dashboard that already exists
+- This is real financial-software surface (audit trail, period close,
+  reversing entries) — recommend scoping it as its own detailed design pass
+  before implementation starts, not folding it into an existing module.
+
+### CRD-EXP-007 — Purchase / procurement management
+
+The inventory module's `Purchase` type (`internal/inventory/inventory.go`)
+is a vendor-restock record for CPE devices specifically — a device type, a
+quantity, a vendor name, a low-stock trigger. A general procurement system is
+a different shape: a purchase order with its own approval step (reusing
+`internal/api/workflow.go`'s existing approval-request pattern rather than
+inventing a second one), a status lifecycle (requested → approved → ordered
+→ received), and goods/services that are not CPE hardware (office supplies,
+vehicle fuel, a contractor invoice). Depends on CRD-EXP-006 if the goal is
+for a received purchase order to post an accounts-payable entry automatically
+— sequence after it, not before.
+
+### CRD-EXP-008 — Network topology diagram
+
+No topology/diagram code exists anywhere in the repo today. A useful version
+of this is not a hand-drawn diagram tool but a *generated* map: NAS devices
+(`nas_devices`, already tracked) as nodes, PPPoE/hotspot sessions as edges to
+online subscribers, refreshed from the same session/health data the
+Subscribers screen already reads — closer to a live network-health view than
+a CAD tool. Lower priority than CRD-EXP-005/006/007: no business outcome in
+§ 1.1 depends on it, and NOC engineers today get equivalent information
+per-subscriber via the health panel and per-device via the Routers screen.
+
+### CRD-EXP-009 — Bandwidth wholesale buy & sell, reseller panel
+
+**Flagged for an owner decision before scoping, not scoped here.** Everything
+this platform bills today is a *retail subscription* (an ISP selling internet
+access to an end subscriber) or a *commission* on one (a franchise partner
+reselling subscriptions). Buying and reselling raw upstream bandwidth
+capacity between ISPs is a materially different business — different unit of
+sale (Mbps-months of transit, not subscriber-months of service), different
+counterparties (peer ISPs/IXPs, not subscribers or franchise partners), and
+arguably a different product. Before this is scoped as CRD-EXP-family work,
+confirm the business actually intends to operate as a bandwidth wholesaler —
+if so, it warrants its own CRD section with its own outcome IDs, not an
+extension of the subscriber-billing data model.
+
+### CRD-EXP-010 — MAC-voucher reseller tier
+
+`internal/hotspot/hotspot.go` already does real MAC-bound voucher issuance
+and redemption (`GenerateCode`, `HashCode`, `RedeemVoucher`) — a technician
+or CSR issues a voucher, a walk-up Wi-Fi user redeems it by MAC address. What
+is missing is a distinct *reseller* tier: an external agent (a shop, a local
+partner) who buys a batch of vouchers at a discount and sells them
+independently, with their own running balance and settlement — structurally
+close to the franchise module's commission model (§ 1.11 Phase 3), and
+should reuse `internal/revenue/franchise.go`'s commission-ledger pattern
+rather than inventing a second one, scoped as a voucher-specific extension
+of the franchise/LCO concept rather than a wholly separate subsystem.
+
+### CRD-EXP-011 — HR & payroll
+
+No code, schema, or prior scope exists for this anywhere in the project.
+Unlike every other item in this section, this is not adjacent to the
+platform's existing domain (subscriber billing, network AAA, franchise
+commission) — it is a distinct HR/payroll product (statutory compliance,
+attendance, salary structures, PF/ESI filings) with its own regulatory
+surface unrelated to ISP licensing. Recommend integrating with an existing
+payroll provider (e.g. via API/CSV export of the Staff Accounts roster this
+platform already has) rather than building one in-house, unless the business
+has a specific reason a bought-in HR system will not work for it.
+
+### Sequencing summary
+
+| Item | Backend exists? | Effort to close | Recommended priority |
+|---|---|---|---|
+| CRD-EXP-005 (5 console screens) | Yes, fully | Low — established pattern | P1, do first |
+| CRD-EXP-006 (GL/accounts) | No | High — real financial-software design | P2 |
+| CRD-EXP-007 (procurement) | Partial (CPE-only) | Medium | P3, after CRD-EXP-006 |
+| CRD-EXP-010 (voucher reseller tier) | Partial (vouchers yes, tier no) | Medium — extend franchise pattern | P3 |
+| CRD-EXP-008 (network diagram) | No | Medium | P4 — no outcome in § 1.1 depends on it |
+| CRD-EXP-011 (HR/payroll) | No | High, and arguably not this product's job | P4 — recommend integration over build |
+| CRD-EXP-009 (bandwidth wholesale) | No | High, and a different business model | Needs an owner decision before any estimate |
