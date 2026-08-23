@@ -106,7 +106,7 @@ A real uninstall-then-install (e.g. troubleshooting a corrupted install) is
 still available as an explicit opt-in:
 
 ```
-deploy.bat "" -FullReinstall
+deploy.bat -FullReinstall
 ```
 
 Neither path touches `pgdata\` or `config\` — see
