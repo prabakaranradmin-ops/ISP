@@ -81,7 +81,8 @@ func gbytes(b int64) string {
 // has no inheritance and this is the standard workaround.
 var pageNames = []string{
 	"login", "subscribers", "subscriber_detail", "subscriber_new",
-	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo", "error",
+	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
+	"accounts", "change_password", "error",
 }
 
 var pages = func() map[string]*template.Template {

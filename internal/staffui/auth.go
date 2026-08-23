@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -242,4 +243,82 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	h.clearSessionCookie(w)
 	http.Redirect(w, r, "/staff/login", http.StatusSeeOther)
+}
+
+// ── Self-service password change ────────────────────────────────────────────
+//
+// Available to every signed-in role, not gated by requireSection: everyone
+// should be able to change their own password, independent of what console
+// sections their role can otherwise reach. Owner-only resetting of someone
+// else's password lives on the Staff Accounts screen instead (accounts.go)
+// — a different action with a different trust boundary (no current
+// password needed there, since the owner isn't proving they are that
+// person).
+
+// ChangePasswordPage renders the form.
+func (h *Handler) ChangePasswordPage(w http.ResponseWriter, r *http.Request) {
+	s, ok := SessionFrom(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/staff/login", http.StatusSeeOther)
+		return
+	}
+	h.renderChangePassword(w, s, "", "")
+}
+
+func (h *Handler) renderChangePassword(w http.ResponseWriter, s Session, message, errMsg string) {
+	d := h.page(s, "Change password", "")
+	d.Message, d.Error = message, errMsg
+	h.render(w, "change_password", d)
+}
+
+// ChangePassword verifies the caller's current password before setting a
+// new one — the one place this file trusts a password the caller typed
+// rather than one it already validated via the session cookie, so it has
+// to re-check it here.
+func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	s, ok := SessionFrom(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/staff/login", http.StatusSeeOther)
+		return
+	}
+	if h.staff == nil {
+		h.renderChangePassword(w, s, "", "Staff account management is not configured.")
+		return
+	}
+
+	current := r.PostFormValue("current_password")
+	newPassword := r.PostFormValue("new_password")
+	confirm := r.PostFormValue("confirm_password")
+
+	account, err := h.staff.GetStaffByUsername(r.Context(), s.Username)
+	if err != nil || account == nil {
+		log.Error().Err(err).Str("username", s.Username).Msg("staffui: credential-change lookup failed")
+		h.renderChangePassword(w, s, "", "Could not verify your account. Try signing in again.")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(account.PasswordHash), []byte(current)); err != nil {
+		h.renderChangePassword(w, s, "", "Current password is incorrect.")
+		return
+	}
+	if len(newPassword) < minStaffPasswordLength {
+		h.renderChangePassword(w, s, "", fmt.Sprintf("New password must be at least %d characters.", minStaffPasswordLength))
+		return
+	}
+	if newPassword != confirm {
+		h.renderChangePassword(w, s, "", "New password and confirmation do not match.")
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), 12)
+	if err != nil {
+		log.Error().Err(err).Msg("staffui: hash new credential failed")
+		h.renderChangePassword(w, s, "", "Could not change your password.")
+		return
+	}
+	if err := h.staff.SetStaffPassword(r.Context(), account.ID, string(hash)); err != nil {
+		log.Error().Err(err).Int("staff_id", account.ID).Msg("staffui: set new credential failed")
+		h.renderChangePassword(w, s, "", "Could not change your password.")
+		return
+	}
+	h.renderChangePassword(w, s, "Password changed.", "")
 }

@@ -1,0 +1,74 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Staff Accounts</h1>
+<p class="muted">Who can sign in to this console, and at what level. Deactivating an account keeps its history (audit entries, approvals, tickets) intact but blocks it from signing in — the same as if it never existed to the login form.</p>
+
+<div class="card">
+  <h3>Accounts</h3>
+  <table>
+    <thead>
+      <tr><th>Username</th><th>Full name</th><th>Role</th><th>LEA</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+    {{range $d.Accounts}}
+      {{$row := .}}
+      <tr>
+        <td>{{.Username}}</td>
+        <td>{{.FullName}}</td>
+        <td>{{.Role}}</td>
+        <td><span class="pill {{if .LeaAccess}}ok{{else}}neutral{{end}}">{{if .LeaAccess}}on{{else}}off{{end}}</span></td>
+        <td><span class="pill {{if .Active}}ok{{else}}bad{{end}}">{{if .Active}}active{{else}}deactivated{{end}}</span></td>
+        <td class="right">
+          <details>
+            <summary class="btn">Edit</summary>
+            <form method="post" action="/staff/accounts/{{.ID}}/update">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <div class="formgrid">
+                <label>Role
+                  <select name="role">
+                    {{range $d.Roles}}<option value="{{.}}" {{if eq . $row.Role}}selected{{end}}>{{.}}</option>{{end}}
+                  </select>
+                </label>
+                <label>Reset password (blank = keep current)
+                  <input name="password" type="password" placeholder="Leave blank to keep the current password" minlength="10">
+                </label>
+                <label><input type="checkbox" name="lea_access" {{if $row.LeaAccess}}checked{{end}}> LEA access</label>
+                <label><input type="checkbox" name="active" {{if $row.Active}}checked{{end}}> Active (can sign in)</label>
+              </div>
+              <button class="primary" type="submit">Save changes</button>
+            </form>
+          </details>
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">No staff accounts found.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Add a staff account</h3>
+  <form method="post" action="/staff/accounts/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="formgrid">
+      <label>Username
+        <input name="username" required placeholder="jane.doe">
+      </label>
+      <label>Full name
+        <input name="full_name" required placeholder="Jane Doe">
+      </label>
+      <label>Role
+        <select name="role">
+          {{range $d.Roles}}<option value="{{.}}">{{.}}</option>{{end}}
+        </select>
+      </label>
+      <label>Password
+        <input name="password" type="password" required minlength="10" placeholder="At least 10 characters">
+      </label>
+      <label><input type="checkbox" name="lea_access"> LEA access</label>
+    </div>
+    <button class="primary" type="submit">Create account</button>
+  </form>
+</div>
+{{end}}

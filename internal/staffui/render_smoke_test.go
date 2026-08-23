@@ -113,3 +113,21 @@ func TestRenderDemo(t *testing.T) {
 		Status: DemoStatus{Subscribers: 5, Plans: 2, NASDevices: 1},
 	}})
 }
+
+func TestRenderAccounts(t *testing.T) {
+	h := &Handler{}
+	assertRendersOK(t, h, "accounts", pageData{Session: testSession(), Data: accountsData{Roles: staffRoles}})
+	assertRendersOK(t, h, "accounts", pageData{Session: testSession(), Data: accountsData{
+		Roles: staffRoles,
+		Accounts: []StaffAccount{
+			{ID: 1, Username: "owner", FullName: "Owner", Role: "isp_owner", LeaAccess: true, Active: true},
+			{ID: 2, Username: "old_csr", FullName: "Former CSR", Role: "csr", LeaAccess: false, Active: false},
+		},
+	}})
+}
+
+func TestRenderChangePassword(t *testing.T) {
+	h := &Handler{}
+	assertRendersOK(t, h, "change_password", pageData{Session: testSession()})
+	assertRendersOK(t, h, "change_password", pageData{Session: testSession(), Error: "Current password is incorrect."})
+}

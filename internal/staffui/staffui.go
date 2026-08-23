@@ -32,6 +32,11 @@ import (
 )
 
 // StaffAccount is a console operator.
+//
+// PasswordHash is left unpopulated ("") by any query that lists accounts
+// for display (ListStaff) rather than authenticating one (GetStaffByUsername)
+// — not fetched then withheld, simply never selected, so there is no value
+// sitting in the struct for a template change to accidentally render.
 type StaffAccount struct {
 	ID           int
 	Username     string
@@ -39,12 +44,25 @@ type StaffAccount struct {
 	FullName     string
 	Role         string
 	LeaAccess    bool
+	Active       bool
 }
 
-// StaffQuerier looks up console operators.
+// StaffQuerier looks up console operators and, for isp_owner, manages them.
+//
+// CreateStaff/UpdateStaff/SetStaffPassword exist because until now the only
+// way to create a staff account, change a password, or deactivate someone
+// was a direct SQL statement against staff_users — the exact gap this
+// interface closes. Deactivation rather than deletion matches the schema's
+// own policy: migration 021 grants the app role no DELETE on this table at
+// all ("accounts are deactivated, never removed").
 type StaffQuerier interface {
 	GetStaffByUsername(ctx context.Context, username string) (*StaffAccount, error)
 	TouchStaffLogin(ctx context.Context, staffID int) error
+	ListStaff(ctx context.Context) ([]StaffAccount, error)
+	CreateStaff(ctx context.Context, username, fullName, passwordHash, role string, leaAccess bool) (*StaffAccount, error)
+	// UpdateStaff applies a partial update; a nil field is left unchanged.
+	UpdateStaff(ctx context.Context, id int, role *string, leaAccess, active *bool) (*StaffAccount, error)
+	SetStaffPassword(ctx context.Context, id int, passwordHash string) error
 }
 
 // SubscriberQuerier serves the subscriber search and 360 view.
@@ -244,6 +262,10 @@ var sections = []Section{
 	// role sees, so no one else should be able to trigger it.
 	{"demo", "Demo Data", "/staff/demo",
 		[]string{"isp_owner"}, false},
+	// Owner-only: who has console access at all, and at what level, is an
+	// owner-level decision by definition.
+	{"accounts", "Staff Accounts", "/staff/accounts",
+		[]string{"isp_owner"}, false},
 }
 
 // AllowedSections returns the sections a given operator may use.
@@ -308,5 +330,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/demo", h.authed(h.Demo))
 	mux.Handle("POST /staff/demo/load", h.authed(h.requireCSRF(h.LoadDemoData)))
 	mux.Handle("POST /staff/demo/remove", h.authed(h.requireCSRF(h.RemoveDemoData)))
+	mux.Handle("GET /staff/accounts", h.authed(h.StaffAccounts))
+	mux.Handle("POST /staff/accounts/new", h.authed(h.requireCSRF(h.CreateStaffAccount)))
+	mux.Handle("POST /staff/accounts/{id}/update", h.authed(h.requireCSRF(h.UpdateStaffAccount)))
+	// Available to every signed-in role, not owner-only: anyone should be
+	// able to change their own password.
+	mux.Handle("GET /staff/change-password", h.authed(h.ChangePasswordPage))
+	mux.Handle("POST /staff/change-password", h.authed(h.requireCSRF(h.ChangePassword)))
 	mux.Handle("GET /staff/static/", http.StripPrefix("/staff/static/", staticHandler()))
 }
