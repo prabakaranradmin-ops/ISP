@@ -74,7 +74,8 @@
         <input name="description" placeholder="Main office MikroTik">
       </label>
       <label>RADIUS secret
-        <input name="radius_secret" type="password" required minlength="16" placeholder="At least 16 characters">
+        <input name="radius_secret" id="nas-radius-secret" type="password" required minlength="16" placeholder="At least 16 characters">
+        <button type="button" class="btn" id="nas-generate-secret">Generate secret</button>
       </label>
       <label>CoA port
         <input name="coa_port" inputmode="numeric" placeholder="1700">
@@ -84,6 +85,14 @@
       </label>
       <label><input type="checkbox" name="allow_mab"> Allow MAC-only auth (hotspot)</label>
     </div>
+
+    <div id="nas-router-commands" class="nas-router-commands" hidden>
+      <h3>Run these on the router itself</h3>
+      <p class="muted">Registering here only tells this server about the router &mdash; the router still needs to be told about this server, with the identical secret above. Paste into a Winbox or SSH terminal on the router.</p>
+      <pre id="nas-router-commands-text" class="code-block"></pre>
+      <button type="button" class="btn" id="nas-copy-commands">Copy commands</button>
+    </div>
+
     <button class="primary" type="submit">Register device</button>
   </form>
 </div>

@@ -121,6 +121,17 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .formgrid label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 13px; }
 .formgrid input, .formgrid select { font-weight: 400; }
 
+/* Generated router-setup preview (Routers screen, console.js). A plain
+   divider rather than a nested .card - a card inside a card reads as a
+   mistake, a rule line reads as "part of the same form, one step later". */
+.nas-router-commands { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--rule); }
+.code-block {
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 4px;
+  padding: 12px 14px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px;
+  white-space: pre-wrap; word-break: break-word; margin: 10px 0;
+}
+.formgrid label button.btn { align-self: flex-start; margin-top: 2px; }
+
 /* Tabs (console.js progressive enhancement). Panels render fully visible,
    stacked, if the script never runs — .tab-btn is only ever hidden/shown
    markup on top of content that already works without it. */

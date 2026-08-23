@@ -13,6 +13,7 @@
     initSearchFocus();
     initTabs();
     initSelectAll();
+    initNasSecretGenerator();
   });
 
   function onReady(fn) {
@@ -153,5 +154,100 @@
     all.addEventListener("change", function () {
       boxes.forEach(function (b) { b.checked = all.checked; });
     });
+  }
+
+  // ── NAS registration helper (Routers screen) ────────────────────────────
+  //
+  // Generates the RADIUS secret client-side (Web Crypto, never touches the
+  // server until "Register device" is actually submitted) and fills it
+  // straight into the field, then builds the matching router-side setup
+  // commands from whatever else is already in the form plus the exact host
+  // this page was loaded from — the address a router configured to point
+  // here would actually use. This is the browser-native equivalent of
+  // scripts/windows/new_nas_registration.ps1; see that script's own
+  // comments for why the secret is generated rather than typed twice.
+
+  function initNasSecretGenerator() {
+    var genBtn = document.getElementById("nas-generate-secret");
+    var secretInput = document.getElementById("nas-radius-secret");
+    if (!genBtn || !secretInput) return;
+
+    var form = genBtn.closest("form");
+    var commandsBox = document.getElementById("nas-router-commands");
+    var commandsText = document.getElementById("nas-router-commands-text");
+    var copyBtn = document.getElementById("nas-copy-commands");
+
+    genBtn.addEventListener("click", function () {
+      var secret = randomSecret(24);
+      secretInput.value = secret;
+      if (!commandsBox || !commandsText) return;
+
+      var vendorField = form.querySelector('[name="vendor"]');
+      var vendor = vendorField ? vendorField.value : "";
+      var coaField = form.querySelector('[name="coa_port"]');
+      var coaPort = (coaField && coaField.value.trim()) || "1700";
+      var serverAddress = window.location.hostname;
+
+      commandsText.textContent = vendor === "mikrotik"
+        ? mikrotikCommands(serverAddress, secret, coaPort)
+        : genericNote(vendor, serverAddress, secret, coaPort);
+      commandsBox.hidden = false;
+    });
+
+    if (copyBtn) {
+      copyBtn.addEventListener("click", function () {
+        if (!(navigator.clipboard && navigator.clipboard.writeText)) return;
+        navigator.clipboard.writeText(commandsText.textContent).then(function () {
+          var original = copyBtn.textContent;
+          copyBtn.textContent = "Copied";
+          setTimeout(function () { copyBtn.textContent = original; }, 1500);
+        });
+      });
+    }
+  }
+
+  function mikrotikCommands(serverAddress, secret, coaPort) {
+    return [
+      "/radius",
+      "add service=ppp,hotspot address=" + serverAddress + " secret=" + secret +
+        " authentication-port=1812 accounting-port=1813 timeout=3s",
+      "",
+      "/ppp aaa",
+      "set use-radius=yes",
+      "",
+      "/radius incoming",
+      "set accept=yes port=" + coaPort,
+      "",
+      "# If this router also does hotspot/Wi-Fi (not just PPPoE):",
+      "# /ip hotspot profile",
+      "# set [find] use-radius=yes",
+      "# /ip hotspot walled-garden",
+      "# add dst-host=" + serverAddress
+    ].join("\n");
+  }
+
+  function genericNote(vendor, serverAddress, secret, coaPort) {
+    return "Ready-made commands are only available for MikroTik right now.\n" +
+      "The generated secret above still applies - configure this " + (vendor || "router") + "'s\n" +
+      "own RADIUS client by hand with:\n\n" +
+      "  RADIUS server:       " + serverAddress + "\n" +
+      "  shared secret:       " + secret + "\n" +
+      "  authentication port: 1812\n" +
+      "  accounting port:     1813\n" +
+      "  CoA/disconnect port: " + coaPort;
+  }
+
+  // randomSecret avoids Math.random (not cryptographically secure) in
+  // favour of the Web Crypto API, available in every browser this console
+  // targets since it already requires HTTPS.
+  function randomSecret(length) {
+    var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    var bytes = new Uint8Array(length);
+    window.crypto.getRandomValues(bytes);
+    var out = "";
+    for (var i = 0; i < length; i++) {
+      out += alphabet[bytes[i] % alphabet.length];
+    }
+    return out;
   }
 })();
