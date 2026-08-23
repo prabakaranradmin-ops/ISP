@@ -80,6 +80,41 @@ and MSI deferred custom actions cannot see ordinary session properties,
 which is exactly the kind of plumbing a single already-tested script avoids
 needing at all.
 
+## Installing or upgrading
+
+```
+deploy.bat
+```
+
+Elevates itself (a UAC prompt, then a new Administrator window), stops the
+three services if they're running, runs `msiexec /i` against
+`dist\ISP-BSS-Setup-1.0.0.msi`, and reports service status plus a
+`/readyz` check afterward. Logs to `dist\install.log`.
+
+This is a single-transaction **upgrade**, not uninstall-then-install, even
+over an existing install — `Product.wxs`'s `MajorUpgrade` element and fixed
+`UpgradeCode` already make one `/i` call remove the old version and lay
+down the new one atomically. A separate manual uninstall first is exactly
+what produced a stuck Windows Installer transaction during this project's
+own installer debugging (locked PostgreSQL files renamed to `.tmp`,
+queued for deletion on next reboot, leaving every following `msiexec` call
+failing with "Another program is being installed" until a reboot cleared
+it) — `deploy.bat` stops the services itself before `msiexec` ever runs
+specifically to avoid re-creating that.
+
+A real uninstall-then-install (e.g. troubleshooting a corrupted install) is
+still available as an explicit opt-in:
+
+```
+deploy.bat "" -FullReinstall
+```
+
+Neither path touches `pgdata\` or `config\` — see
+[uninstall.ps1](../scripts/windows/uninstall.ps1)'s own reasoning for why
+data always outlives the software that used it. `deploy.bat` accepts a
+different MSI path as its first argument if you're not installing the
+default `dist\ISP-BSS-Setup-1.0.0.msi`.
+
 ## Verifying a build without installing it
 
 Nothing below needs Administrator rights — installing the MSI for real
