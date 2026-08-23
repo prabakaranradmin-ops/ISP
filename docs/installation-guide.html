@@ -1,0 +1,320 @@
+<title>Bring-Up Manual</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --bg:#EEF2F4; --surface:#FFFFFF; --surface-2:#F7F9FA;
+  --ink:#16232C; --muted:#5B6B75; --rule:#D7DEE2;
+  --accent:#0E7A8C; --accent-strong:#095A68; --accent-ink:#FFFFFF;
+  --warn-fg:#8A5A16; --warn-bg:#FBF0DF;
+  --ok-fg:#1F7A4D; --ok-bg:#E3F5EA;
+  --bad-fg:#A02121; --bad-bg:#FBE4E4;
+  --code-bg:#101B22; --code-ink:#D7E7EA; --code-muted:#7C939B;
+  --shadow: 0 1px 2px rgba(16,27,34,.06), 0 8px 24px rgba(16,27,34,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0D161C; --surface:#131F27; --surface-2:#17242D;
+    --ink:#E7EEF0; --muted:#93A5AD; --rule:#24343D;
+    --accent:#35B4CC; --accent-strong:#55C8DD; --accent-ink:#04202A;
+    --warn-fg:#F0C892; --warn-bg:#3A2D14;
+    --ok-fg:#8FE0B4; --ok-bg:#123424;
+    --bad-fg:#F3A3A3; --bad-bg:#3A1717;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0D161C; --surface:#131F27; --surface-2:#17242D;
+  --ink:#E7EEF0; --muted:#93A5AD; --rule:#24343D;
+  --accent:#35B4CC; --accent-strong:#55C8DD; --accent-ink:#04202A;
+  --warn-fg:#F0C892; --warn-bg:#3A2D14;
+  --ok-fg:#8FE0B4; --ok-bg:#123424;
+  --bad-fg:#F3A3A3; --bad-bg:#3A1717;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box;}
+html{-webkit-text-size-adjust:100%;}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:"IBM Plex Sans",ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;
+  font-size:16px; line-height:1.6;
+}
+::selection{ background:var(--accent); color:var(--accent-ink); }
+a{ color:var(--accent-strong); }
+:root[data-theme="dark"] a, :root:not([data-theme="light"]) a{ color:var(--accent-strong); }
+a:focus-visible, button:focus-visible, input:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+.shell{ display:grid; grid-template-columns: 258px 1fr; min-height:100vh; }
+@media (max-width: 860px){ .shell{ grid-template-columns: 1fr; } .side{ position:static !important; height:auto !important; } }
+
+.side{
+  position:sticky; top:0; height:100vh; overflow-y:auto;
+  border-right:1px solid var(--rule); background:var(--surface);
+  padding:28px 22px; display:flex; flex-direction:column; gap:22px;
+}
+.brand{ display:flex; flex-direction:column; gap:2px; }
+.brand .mark{ font-weight:700; font-size:15px; letter-spacing:.01em; }
+.brand .sub{ font-size:12px; color:var(--muted); font-family:"IBM Plex Mono",monospace; letter-spacing:.02em; }
+
+.switcher{ display:flex; border:1px solid var(--rule); border-radius:8px; overflow:hidden; font-size:13px; }
+.switcher a{ flex:1; text-align:center; padding:8px 6px; text-decoration:none; color:var(--muted); font-weight:500; }
+.switcher a.on{ background:var(--accent); color:var(--accent-ink); }
+
+.toc{ display:flex; flex-direction:column; gap:2px; font-size:14px; }
+.toc-group{ margin-top:10px; }
+.toc-group h3{ font-size:11px; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:0 0 6px; font-weight:600; }
+.toc a{ display:block; padding:5px 8px; margin:0 -8px; border-radius:6px; text-decoration:none; color:var(--ink); opacity:.75; }
+.toc a:hover{ background:var(--surface-2); opacity:1; }
+
+.side-foot{ margin-top:auto; font-size:12px; color:var(--muted); border-top:1px solid var(--rule); padding-top:14px; }
+
+main{ padding: 56px clamp(20px,5vw,72px) 100px; }
+.content{ max-width:740px; margin:0 auto; }
+
+.eyebrow{ font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.09em; text-transform:uppercase; color:var(--accent-strong); margin:0 0 10px; }
+h1{ font-size:clamp(30px,4vw,40px); line-height:1.12; margin:0 0 14px; letter-spacing:-.01em; text-wrap:balance; font-weight:700; }
+.lede{ font-size:18px; color:var(--muted); margin:0 0 40px; max-width:62ch; }
+
+h2{ font-size:23px; margin:56px 0 8px; letter-spacing:-.005em; font-weight:700; scroll-margin-top:24px; }
+h2 .num{ font-family:"IBM Plex Mono",monospace; color:var(--accent-strong); font-weight:600; margin-right:10px; font-size:19px; }
+h2 + .h2-sub{ color:var(--muted); margin:0 0 22px; max-width:62ch; }
+h3{ font-size:17px; margin:30px 0 10px; font-weight:600; scroll-margin-top:24px; }
+
+p{ margin:0 0 16px; max-width:66ch; }
+ul,ol{ margin:0 0 18px; padding-left:1.3em; }
+li{ margin-bottom:7px; max-width:64ch; }
+strong{ font-weight:600; }
+code{ font-family:"IBM Plex Mono",monospace; background:var(--surface-2); border:1px solid var(--rule); border-radius:4px; padding:.1em .4em; font-size:.9em; }
+
+.steps{ counter-reset:step; list-style:none; padding:0; margin:0 0 24px; display:flex; flex-direction:column; gap:16px; }
+.steps > li{ counter-increment:step; position:relative; padding-left:44px; margin:0; max-width:100%; }
+.steps > li::before{
+  content:counter(step); position:absolute; left:0; top:-1px;
+  width:30px; height:30px; border-radius:50%; background:var(--surface-2); border:1px solid var(--rule);
+  display:flex; align-items:center; justify-content:center;
+  font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:13px; color:var(--accent-strong);
+}
+
+.callout{ display:flex; gap:12px; padding:14px 16px; border-radius:10px; margin:20px 0; border:1px solid var(--rule); }
+.callout .icon{ font-family:"IBM Plex Mono",monospace; font-weight:700; flex-shrink:0; }
+.callout p, .callout ul{ margin:0; }
+.callout.note{ background:var(--surface-2); }
+.callout.warn{ background:var(--warn-bg); color:var(--warn-fg); border-color:transparent; }
+.callout.warn code{ background:rgba(0,0,0,.08); border-color:transparent; color:inherit; }
+.callout.ok{ background:var(--ok-bg); color:var(--ok-fg); border-color:transparent; }
+
+.panel{ background:var(--surface); border:1px solid var(--rule); border-radius:12px; padding:20px 22px; margin:20px 0; box-shadow:var(--shadow); }
+.panel h4{ margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
+
+.code-panel{ background:var(--code-bg); color:var(--code-ink); border-radius:10px; margin:18px 0; overflow:hidden; box-shadow:var(--shadow); }
+.code-panel .bar{ display:flex; align-items:center; justify-content:space-between; padding:9px 14px; border-bottom:1px solid rgba(255,255,255,.08); }
+.code-panel .bar span{ font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--code-muted); }
+.code-panel pre{ margin:0; padding:16px; overflow-x:auto; font-family:"IBM Plex Mono",monospace; font-size:13.5px; line-height:1.6; }
+.code-panel code{ background:none; border:none; padding:0; color:inherit; }
+
+.shot{ margin:22px 0 26px; border:1px solid var(--rule); border-radius:12px; overflow:hidden; box-shadow:var(--shadow); background:var(--surface); }
+.shot .titlebar{ display:flex; align-items:center; gap:8px; padding:9px 12px; background:var(--surface-2); border-bottom:1px solid var(--rule); }
+.shot .dots{ display:flex; gap:5px; }
+.shot .dots span{ width:9px; height:9px; border-radius:50%; background:var(--rule); }
+.shot .path{ font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--muted); margin-left:4px; }
+.shot img{ display:block; width:100%; height:auto; }
+.shot figcaption{ padding:10px 14px; font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule); }
+
+table{ width:100%; border-collapse:collapse; margin:18px 0; font-size:14.5px; }
+th{ text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); padding:0 12px 8px 0; border-bottom:1px solid var(--rule); }
+td{ padding:10px 12px 10px 0; border-bottom:1px solid var(--rule); vertical-align:top; }
+tr:last-child td{ border-bottom:0; }
+.tw{ overflow-x:auto; }
+
+.pill{ display:inline-block; font-family:"IBM Plex Mono",monospace; font-size:11.5px; padding:2px 9px; border-radius:20px; font-weight:600; }
+.pill.ok{ background:var(--ok-bg); color:var(--ok-fg); }
+.pill.warn{ background:var(--warn-bg); color:var(--warn-fg); }
+
+hr.div{ border:none; border-top:1px solid var(--rule); margin:52px 0; }
+
+footer.doc-end{ margin-top:60px; padding-top:22px; border-top:1px solid var(--rule); color:var(--muted); font-size:13.5px; }
+</style>
+
+<div class="shell">
+  <nav class="side">
+    <div class="brand">
+      <div class="mark">ISP BSS/OSS</div>
+      <div class="sub">bring-up manual</div>
+    </div>
+
+    <div class="switcher">
+      <a class="on" href="#top">Install</a>
+      <a href="operations-guide.html">Operate</a>
+    </div>
+
+    <div class="toc">
+      <div class="toc-group">
+        <h3>Before you start</h3>
+        <a href="#prereqs">What the machine needs</a>
+        <a href="#whats-in-the-box">What gets installed</a>
+      </div>
+      <div class="toc-group">
+        <h3>First install</h3>
+        <a href="#install">Run the installer</a>
+        <a href="#first-login">First sign-in</a>
+        <a href="#verify">Confirm it's healthy</a>
+      </div>
+      <div class="toc-group">
+        <h3>Ongoing</h3>
+        <a href="#upgrade">Upgrading a version</a>
+        <a href="#uninstall">Uninstalling</a>
+        <a href="#trouble">If something goes wrong</a>
+      </div>
+    </div>
+
+    <div class="side-foot">One MSI, three Windows services, no Docker.</div>
+  </nav>
+
+  <main>
+    <div class="content" id="top">
+      <p class="eyebrow">Installation · Windows</p>
+      <h1>Getting ISP&nbsp;BSS/OSS running on a Windows machine</h1>
+      <p class="lede">Everything below happens on the machine that will run the software — a dedicated server or a well-specced desktop. No Docker, no separate database install: one file lays down the whole stack.</p>
+
+      <h2 id="prereqs"><span class="num">01</span>What the machine needs</h2>
+      <div class="tw"><table>
+        <tr><th>Requirement</th><th>Detail</th></tr>
+        <tr><td>Operating system</td><td>Windows 10, Windows 11, or Windows Server 2019+ (64-bit)</td></tr>
+        <tr><td>Administrator access</td><td>Required to run the installer — it registers Windows services and writes to <code>Program Files</code></td></tr>
+        <tr><td>Disk space</td><td>~2&nbsp;GB free (the installer bundles its own PostgreSQL database engine)</td></tr>
+        <tr><td>Network</td><td>Port <strong>443</strong> (HTTPS, console &amp; portal) and UDP <strong>1812/1813</strong> (RADIUS) reachable from wherever staff and routers connect from</td></tr>
+      </table></div>
+      <p>Nothing else needs to be pre-installed. PostgreSQL, the web server, and the RADIUS service all ship inside the one installer file.</p>
+
+      <h2 id="whats-in-the-box"><span class="num">02</span>What gets installed</h2>
+      <p>The installer places everything under <code>Program Files\ISP BSS</code> and registers three Windows services, so the software starts itself on every boot without anyone signing in:</p>
+      <div class="tw"><table>
+        <tr><th>Service name</th><th>What it does</th></tr>
+        <tr><td><code>ISPBSSPostgres</code></td><td>The database — starts first, everything else depends on it</td></tr>
+        <tr><td><code>ISPBSSApi</code></td><td>The website: staff console, customer portal, and Wi-Fi sign-in page</td></tr>
+        <tr><td><code>ISPBSSAaaCore</code></td><td>RADIUS — talks to your routers, authenticates customers, enforces plan speeds</td></tr>
+      </table></div>
+      <div class="callout note">
+        <span class="icon">i</span>
+        <p>Settings and generated passwords live separately, under <code>ProgramData\ISP BSS\config</code>, so an upgrade or repair can safely replace the program files without touching them.</p>
+      </div>
+
+      <hr class="div">
+
+      <h2 id="install"><span class="num">03</span>Run the installer</h2>
+      <p class="h2-sub">You'll have received one file: <code>ISP-BSS-Setup-1.0.0.msi</code>. The easiest path uses the deploy script that ships alongside it — it handles elevation, service stop/start, and a health check in one go.</p>
+
+      <ol class="steps">
+        <li>Copy <code>ISP-BSS-Setup-1.0.0.msi</code> and the <code>installer</code> folder onto the target machine (or the whole project folder, if you have it).</li>
+        <li>Open the <code>installer</code> folder and double-click <code>deploy.bat</code>.</li>
+        <li>Windows will ask permission to make changes to your device (User Account Control). Click <strong>Yes</strong> — a new window opens to do the actual work; the one you clicked closes, which is expected.</li>
+        <li>Wait for it to finish. On a first install this takes a couple of minutes: it lays down the files, initializes the database, generates secrets, and starts all three services.</li>
+      </ol>
+
+      <div class="code-panel">
+        <div class="bar"><span>Terminal · what a clean run looks like</span></div>
+        <pre><code>Stopping services (if running)...
+  ISPBSSApi - not registered, skipping
+  ISPBSSAaaCore - not registered, skipping
+  ISPBSSPostgres - not registered, skipping
+
+Installing D:\...\ISP-BSS-Setup-1.0.0.msi ...
+  msiexec /i ... /qn /l*v ...
+Install succeeded.
+
+Service status:
+Name            Status
+----            ------
+ISPBSSAaaCore  Running
+ISPBSSApi      Running
+ISPBSSPostgres Running
+
+Health check:
+  https://localhost/readyz -&gt; 200
+
+Opening https://localhost/staff/login ...</code></pre>
+      </div>
+
+      <div class="callout note">
+        <span class="icon">→</span>
+        <p>Prefer a standalone window instead of a browser tab (no address bar, no tabs — closer to a real desktop app) for showing this to someone? Run <code>deploy.bat -AppMode</code> instead of double-clicking it.</p>
+      </div>
+
+      <h3>Installing without the script</h3>
+      <p>If you'd rather not use <code>deploy.bat</code>, the MSI works on its own from an elevated Command Prompt or PowerShell:</p>
+      <div class="code-panel">
+        <div class="bar"><span>PowerShell · run as Administrator</span></div>
+        <pre><code>msiexec /i "ISP-BSS-Setup-1.0.0.msi" /l*v install.log</code></pre>
+      </div>
+      <p>The trade-off: you stop the three services yourself first if this is an upgrade over a running install, and you open the console yourself afterward. <code>deploy.bat</code> exists specifically to remove those manual steps.</p>
+
+      <hr class="div">
+
+      <h2 id="first-login"><span class="num">04</span>Sign in for the first time</h2>
+      <p>On first boot, the installer creates exactly one staff account — the owner — with a randomly generated password, and writes it to a text file that only exists on this machine:</p>
+
+      <div class="panel">
+        <h4>Where to find it</h4>
+        <code>C:\ProgramData\ISP BSS\config\initial_admin.txt</code>
+      </div>
+
+      <ol class="steps">
+        <li>Open that file in Notepad. It contains a <code>username</code> and a <code>password</code> line.</li>
+        <li>Go to <code>https://&lt;this machine's address&gt;/staff/login</code> — <code>https://localhost/staff/login</code> if you're sitting at the machine itself.</li>
+        <li>Your browser will warn that the certificate isn't trusted — this is a self-signed certificate the software generates for itself, not a sign anything is wrong. Proceed anyway (usually "Advanced → Continue").</li>
+        <li>Enter the username and password from the file and sign in.</li>
+      </ol>
+
+      <figure class="shot">
+        <div class="titlebar"><div class="dots"><span></span><span></span><span></span></div><span class="path">https://localhost/staff/login</span></div>
+        <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABQAAAALQCAIAAABAH0oBAAAQAElEQVR4nOzdCZQV9Z3o8VKBRpFGpEG0wQVQQBoQCZAQDIpiIIrwwIRITCJRkcwY0afivIiOIzgTMMagTkQSJW5kMOCgghBEDEoYlUEWQSWymDQIQot2s0gD6qvekDa4QIzN5ff5HA5U3Vu3qrh96pz+3n9V3WobCzcnAAAAcKA7OAEAAIAABDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhVEsAqDrvv//Btu07thVv37Hz/QQ4cFWvdkjNrBo1a1Q/5BDDDwBVRgADVJm0fos2b61d69D6dWtn1aieAAeu9GOuos3vpYd89uGHaWCAqiKAAapMOvZbUr9HZifAgS79kKv+kdWTg9IDf3utQ2smAFQFH0ACVJltxduzDz80AcLIrnXotuIdCQBVxAgwQJXZsfN9Zz5DKOkh74J/gCpkBBgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAbgy1c0d3ivhk3yGna8bMLqhE+1Zuw5eSXvVZO8y2YnAMDfQwADZLTi9c9PGHJBr5NalDXSqSedNuCy++bkFyf7t8X3j1tV8m/Bn+6csSapUttWzxl77cAuHb9WFpml72Gvvg+/lgAABxwBDJC5Vk646Ow2A4ZPeGFV0fayR7YXrVn82IjBHdoOGLtiP4ng4sIV8+4fdcWZHQeO/Wiwt8OgwSeU/Jvz9Z+cnZtUmaL5owYc/43BN06at7xgU8WD6Xu4au4LBQkAcMCplgCQkdaMPee8G18tnWzSe9w9N/ZsmpUUr5w2bMjASauS7Ytv7D4geXbSoEZJVZs3tPvgx0ommu/2YFb7oU+sG5pUqaJZV/QaMOXt0ukT+o+69fpeLRpkpcFe9Prz9974QgIAHHiMAANkpPUTh5XXb06P8Y/eUlK/qawmPW99eNy5tUufWHbj8Ke3JezZttkjB5fXb/Obn3pi9Pml9ZvKyj6x61W/G9olAQAOOAIYIBOtmTxuXtnUqUP+pVv27k9l9xz8nfplk0899NiGkn9nXVF+F6Uu9y2a//A1Z7Y9tWS2xdfOHPZ05auFi/Nn/KzvWeVXwx7XccCQiSsLK7a4262YiuaPGnhcOn3FnJKXzH5wyAW9Wpets8mpJ5018IYZ5ecPl263bPg3KQnyb+y6k9Meb+xUsqrL+nY9rvxa3K+17nvN/QuKPtq72deUX6Z7zoOvr5h8Wd+vlW+x783TNuxax5ppJadbV1zQ27brmcPmrE/+VsGE0Y+Vrbrx4FsGNU0+2RexVyVv7O0XVFrJzbN2PVv02oThA7uUv4HpPvfqO/zpz7qK+1N+UgDAJxLAABlow7zpZcO/yQk9v5rz8WdP7tC5fGrerFcqPbN8xPfOuWH60k2lVwxv37R0/JAOfR/ML3+yaNa1Z3cY/NDcleVXwxYXLJ4w9LwOV8z5WFkVTbq575h5FYE2b8TAkRNeWLWhbJ3J9qKV8349+PS+E/f2GtrSrQ8c+djCtyvWvGnDwunX9evcYdi8j6fd6t+c033YYws3lW9x4SMD+97+esn0yrF9vzlwzKyluy7o3fT20gWr9tCSxfOmLyybOqb3uS2Sf+xeJa/fN6DD4HufqbSSRcvLZlY8+K2O5w8ZN295+RuYPrlq7rghHU67bMKKT92rz/GTAgA+RgADZKDiTRWjmic03sNVvsfkNSmfWr7iY/dYbn75pLnrVi55Y8qVrcoeeHXkiNIx2G0zhg2YVHpKcMsrZ766ZN2rfxx3br10rmjKzXdWruhnpkzfPSnrtPzO6Cl/WJa+ZLfVzh394JIk6XZH+uCY3hWbvvnZkmXu6fq3O5wUPlGx9Zxuo5+dX7Kqp0b0KE37/PHX3LKg8tKbtrcf9Yc3SjfXrOyRNdMmpDs5+97y08JzL3y0bH+eGnN515w9bG9DQUX2t8j75OHfL2avkjl3jVhWOn/MpeNLVrLu1cfHD+7SoOSR10ZcNPKl0vJtNfjhZSVP/fHRwaUXSxf8aciwyXsau96LnxQA8DECGODAk5WVVT5VJztr9yfqD7xxWLuSE6ZrnnzJ6MHHlD04/alFaW89Nm5W6dwxl996SV76oqycngPPLH3xm9Nnr6y0+l01eGuHJOkyauqN/U/OrZNVXLihYEOS06zsps5rFi/dkHxuBdPHl209OeOGW/s3KtlszaZ9hpelYPL2A+PmVFq8ycU3n59bs+R/0fMHLcseejO/ZHMVYb7mTxNmrywsTlfSZdjQno2TffNF7VVScSX2m9MnzXm9qDjJatJt6FV90k8uFjzy67IPKHIvHj20bZ2k5G3vPPSq8o8MXnhw8h6+JHlvflIAQGUCGCAjVXTtqvw9NNKq+eUnSCeN61ca/+zcqe2u6To5ZffKSoqLNqVDkXPL73v85l3nll+d27DfI2VBufzVN3dfyUc1WNLZRRUXFbdv3un0DucOe6x8yLmocC++hmnX1puf0e6jYm/c9ITyqRWr8ndfPCurZvlUbrPdx2+/2qd/+X931YTB5zVveWrrC3427TM6fI9v4Be6V0mH/v3qlU3lTxpy2intG55Wfpl0/oJF5W9Suw55Hy1/Qvvyfl42f8Wn7NVn/6QAgI8RwAAZqFGb9uX1umra839zte0r8+aWT3U746uVn8r6pDUmn/9+0dm7jSrn3zew4qLiGtm5x7Tq3q1V7WQffDF3q87qMnrm46MHtMmuUTa/fcMLDw3s1G/s3yZuozadK97ABya9lvxD9yrJ6nbrE8+N+k6r2uW7lawpuUz6zPvWJPvEnb0BYJ8JYIBM1PbS75WfwPzS6F/Nr/RU0bQxj5SNemYN+H6fysW79JVdp8gWz3+h7MLUpNUpJ+w26njM5VNKrp6t9OeOT/pOoJWTx5et5OujF7705+dmPH3PlX3qJ3vvozHPua98NHCcv2JV2URWuzaf9zTm7Cb9R4z/82vzF0+5oUf5aPCyCTP+NjXb9u9VMSo75lcTipJ/7F4l2Seef+PTi15644WJI7uXb3fppFlJ04r7by2Y9/pHC+8awO/Q7eRP2au9+kkBACUEMEBGOnHomJvLQqjgkXP63j53Q2mhFa+cdu33Bk4pvTlwTo9xQzt87FXLb732zhXpksXrZ1w/9Kmyx9r8oFdukuT27Fd2aeubd11bsbZ0sVcmD7liQv4n7sWm/PITjAvWl7ykOH/iL+/8+FWoteuUj7Uue+b5ok9YT26fgeW7On3Y9dNKt77tlQeHjK64d9SAtsnnMfv2C0aVXmSbZDVo2qFzxe3BPnYhdJn2Q2/pXV7Is4acddmI0muGSxQXLJlRsp4vbK+SOTdcdPusFUXpyG3N+id07pRb/nB27ayu3/lB2T6suXfw3a9tK936rGE3l39xVPfv9NjDpwn79pMCAEpUSwDISE0G/W5cft/Lfr1ye7Lw3r6d7q30ZE6PMVN/Xvn7gcssu6V7+1t2m281bMQPSyur8Y9uvXnSeSV3UX618tpaXndN8klKxlEfGP/2bqutl53m7qY9LpM8M7Rzw6FJ73F7uBF0g/NHj3+214ApbycF0wd2mr7bMzVOHTZm2MnJ57PmmTH3njam8mM537m8155uBJ3d5Z6ptxafc+30gpJbLt818Ly7dn/23A5f3F4l65+9d0D3yj+gpF7/wT0bJFmjfnfd/O4jl6YDwreef/ytu+927/G39qyzp7Xt008KAChhBBggY2V3GD7zf+aNufiMU+pVDHHWrt+kw6WjJi578ed7PBW52cARN3c/oWzhrHTJMX98+kcV35iUFvXUuVOH92hVcXOspEbt+qf0uPmGT7uLcvsRk8YNaF6+wpY9Rk6645pGe1xm13W5n/if6XbHjEr/lxq1m3W6cPSUPz750R5+lvpdzjjlmF0bysppc8bg0fOeu7HbJ135XL/nb1+cO3PU7m9g+hbWq39Kt8v7tfjC9irJ6da9Tf1dFwDXrteq+8Xjnp0xumvpKpt+/+mFD4/s16FZxQLpbvceNmbec7fs6fOLMvvykwIAUgdtLNycAFAV1hW827JJbvKPN+uKvAFTSiaaDfvDnB99GVsEPsmrK9c0zDkiAaAqGAEGAAAgBAEMAABACAIYAACAEAQwAAAAIfgaJIADX7c7lqy7IwEACM4IMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhVEsAyEgFk0bcNe2dsukjeg69st9Re/fCet0uH3lOTrLgoUseWp4kzQbddmHHT37N2qm/vGFB3vBhZx2d/L2+wFUBAOyVgzYWbk4AqArrCt5t2SQ32RdLbr96YnLhTVe1K517a+akN8/q1660Ldec9ZtBeZ/yysrLpOuZeexexDPw93p15ZqGOUckAFQFp0ADcw/xiQAAEABJREFUZKC31q1Lmn29XcXsUSX1+znlr3m3Xm7D3daT01j9AgAxGAEGqDJf2AhwqRfH3jR2Wfl0q9KnSgZ7Z7272yOVz5rulTPtieXlL2h+fuVx45L1Ly2d+uhM6akNK85b3vXsET0vzHvxoXX9Sk6fLln5X885P3mo4qlPGlj+aFWf+yVwADECDFCFXAMMkInyrhq67rpRN13y0EfX7nYcdFPjSqc3F8xdkzf8tpJkLSnhqTPXtjur37CbGo+9aVJuadMmSb+WM68bVZavlbw4duK6bpf/pmSZghcXfGzT5e39m5L2LinYt5Nmu55b+tDCQbfddFVZjf96ZufPcaHvPrwEAGDfOAUaIDMdddbI2276zYXJ2KtvumTskj0tkdNvUHlMHv2VvHrvrMtP9sLba9aVraRju5xKTyxYuLRul++2q9jEpV3q7fZkqwsrarx3l8+5xX14CQDAvjECDJDJ2l34m9ITm6+b2rBsULeS8js8l2mWfG7pYHIy9qZL0pHeul0+drvmtW8WJA1O2ZtB2o/Opv7btQEAfJkEMECmy+nc7ohpJQO2HxuqLb3U9rYLS4LzrZJTnZO9kTZwx7Jzp0ckH6/W9evWJnnlj7y57u3PWFPeVbflJQAA+wGnQANkoLdm3j61oGKmYO6C3W7sXKF0qLZhWaau/d8ln5WpuyuYNHbm2tKpo4/5+Khy6dnUc/5rQcWSU5cnAAAZwggwQAY6qmEy665LZpXPld+oOa3Tc85qdfXES66eWHLP54rpkgWaN6u3F2vPaZzMueHqOaXTzQbdVnn496izRl647pKHbrrkoaT0LtBd6j20d2PLAABVxdcgAVSZv+NrkPYblb4eCfhsvgYJoAo5BRqAfbbk9oeW12t3ivoFADKCU6AB2Cu73dV5t7OvAQD2fwIYgL3irs4AQKZyCjQAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGCATDTnsiZ5Xe5b89EDs69p2KTf2NUJAACfRAADAAAQggAGONAUPn9739NObdgkr2HbXiMWlDyybcWEi8oeOe2KsQuKSh5a/WCXJnkXDLu9S4u8hlfMyb+vX8Mm19w58YrW6WyTrhdMXFm6puL5dw/s0DavdFX9bnj+oxdedvfk0hWe2nrYnMIVZdN5rS+a/Hr5LhTNGt7vuPRVTb525rCn1ycAAPsFAQxwgJkzdMC9+V3vWLxw7uI7OtRJo3XD5AHdh+f3umfxq3Onnr3mxn7DJheXL/rMgtrjFi1Zd0eX0rnpk1d+/8nnHh/dffszQ39ZukzB+qze46bOXbZw4vWNlv36sl/Or9jGY1NWDfrdE48OPGHD+MHNL5jV87cznhvVrejZYbfMKHnZ/GG9BjyRO+qp+W88e12DJ4acM+q1BABgPyCAAQ4sxcVpgxZuKCjMym7Q9cafdE3yn3hwbtLj+qEdGmRltx/Yp1ky65nny5c9Y/D3T8za9coe1wzt0Lh+k/4Dvp4kq/JLLifO7fmjPnmNsutkt+jTr3myqaiwYtHeQ67q3Ci3c8nakmaDr+vfNOfE83v3SJLlqwvSAn9g/NulD2bVbNTn0nQHZs/LTwAAql61BIADQMWgbpJ15ujxF/a9bNhpLW+u3/3GR+/pk79wWZIsG9Bk+q5lW1VMZGdn7b6O3WZWLUkDuGlx/oxfDR0zbcnqTRsKNiXJCXtctFXT3EoPrV6VDhQvH/HNhiMqlmiZAADsDwQwQCbKaZybPPbsvMIf5dYpnZ//wuIk6dCsUcl0na/+y9OLrlr//O19BwwbfF+H357SPJnd9tFFN3befQWf437R22Zc22HwmkvHjxvTLrfo4X4dRiSfS6MT0sDOHv7HJ7+XkwAA7E+cAg2QiVr073VM8uyws66dMG3G05NHXXbBuDezB3ynW/rM6glDRs1bX5xk1c/NLl208dl9mm16ZMi1T7++oWD96tfuv3va5zwhecPqkq9ZapCdVbxh3v2TliWfV4f+59Z+afT1Y59fs35Dweuzf3b/8wkAwP5AAANkpBOHThw/uEMyY/jAwUMGP/xa4wGj54xoW/JEVk4y44o2Lds37/6r4nNvHfOj3KTR96eOuzB7xrWndTq9zVkDH9h0TP3Pt4nG5//LpS3fvOXc09tc9HTjrzZPPq+sbrc+PLLdm7cM+GabTqefNfzNmo0SAID9wUEbCzcnAFSFdQXvtmySmwCRvLpyTcOcIxIAqoIRYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAI1RIAMs3v57467aUV81esfevdLQnw5TrqiFrtmx79rVObnt+5ZQJARvE9wABVZh++B3h94ZZ/umf6nFfzE6CqfaPVsf85qEf97MP26lW+BxigChkBBsgkPx4z7U+vrT77lCaXf+srzXPr1TksKwG+XIVbi5etefuOKfNmLl6VHpITh/ZLAMgQAhggYzw8e0lp/Z7wwJDzNhZuLnj73TfX7UyAL1eN6tWaNch+6KreF97+WNrA/zXnle92OTkBIBMIYICMMWX+6+nfQ87tmNbvlveKGx11ZFaN6gnw5SrevmPDxqJ04qrzOqYB/OT81wUwQKZwF2iAjLHkrxvSv1vk5rxTtKXBkdnqF6pEeujVPzI7PQybNKybzi56Y30CQIYwAgyQMTYUbk3/rlWz+vYdO9UvVKH0AEwPw7q1aqbTbsYOkEGMAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADZIz6dQ5L/35ny7Ya1asVb9+RAFUkPQDTwzA9GNPpBnVqJQBkCAEMkDFaH9sg/XvF2nfqZtdav7FIA0OVSA+9DRuL0sMwPRjT2bbHN0gAyBDVEgAyxIVd82a9/MboKS8+eGXvdHb1Wxu379iZAF+udOw3rd8j6xx++b0z09mLzzolASBDCGCAjPGt9s3OaH3cU4tWXXj7Y0N6dWieWy/70KwE+HJt3LxtxbqNP7lvZvqBVI9Tm56ed1wCQIYQwACZZPTFZ//z2D/MXLwq/ZMAVeobrY79+Q/PTADIHAIYIJM0qFPr99f2nTj31anzl7+0ct1b725JgC9XwyNqtW96dM9Tm57fuWUCQEYRwACZJ/2122/eAAB7y12gAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAB8kRa9vPSEk78y4+k/JgAA+xkBDJB5tmzZ+n++e1HDJnnpn6Obth50+dXrNxQkAAB8KgEMkKnO7dl90fPP/OY/f/G/CxZd/f/+9b1t2xIAAD6ZAAbIVIfWPPSoBvXP6dH9yn8eNG/+gvzVb86Z+8LXzzy3bFj4llG379ixM/1z2x13H9+yffpg7/4/2PjOu6+8tqxHn++ms41OOuX3//34pMlTWrTr/OflK9MVPjD+kXTJBYuWpNN3jrn3m737v1tY9NfVa75/yT9/bKi57Dzna6//t2ZtOv3k6p+mW0k3ly6QvvzXv33oww8/TAAA9j8CGCDj1TrssLKJre+9d9t//NtrC+ZefcWP04L9nxfmzZr93J13/+auX/xsybxne5zVbdOmzdff9B/1jqy78H9m/ffvxh180MGt804++OCDV73xl507dz439/ltxcUvL30lnV64eMlX2rVNA/r7F/9T0aZNz854fOqkhxe+vHT3oeaVq/4y79kZd9727+MfmfSrX/925PAbnpv5xPvvv5+uJAEA2P8IYIDM9tf81ffe//ApbVo3bnTM2Wee/tWO7Y+ok929W9dDa9ZMQzRN4h07d75bWFgnO/vHl15Ut26d4uLizVu2bN++vUP7dv36nHtMw6OaNT3hpYWLC4s2vf32O926dknTN51evmLlN7p8bdGSV1a+8ZefXnPlSc2anHpKm8sv+1HZUHPZpgd8p2/dI+ps3freE9Nm9OjeLZ1tnHvMoIE/qJmVlQAA7H8EMECm+v1/P96wSV7Hrj2KNm2++Ybr0uJd9vqKy35yzSlf69ajz3fLxmnP7XH2P1160bXX/9uJbTr99qH/qn344aNu+dc0dNNX9e7/gzfXrjv88FqtT245f+HiRS8vrVkz69t9z3vltT+n0zt3vt/ipGbpdL0jj0zTumyLDY9qUFy8/b333iubrV378PTvLVu3/jV/TZtWLatVq5bOHnzwQakEAGD/I4ABMlXZTbBemT/nuaceT0do06Hg/j+49NjGuTOf+P20//5d2sPpMtWrV7t+6FUrXn7x0oEXDh/5izRo805ukS4/4/FHVq958+ejf5Uuk470rnrjL3+Y+UzrVi1Pbdt6+/Ydc+a+cPxxjY86qsHJLU56e+PGXUO+695anwZzOsK8+26kG2p4VP3XXl9edunvBx986BpgAGD/JIABMlXZTbCOrHtE2Yjrps1bNm3enJWVtX3HjukznykbAR7/yKNP//G5Dz74oG7dI9LZd94t/I/b7thQ8Pahh9Y8vFatsvWkI73VqlWfOv2pr3+1Y/2c1JFj7r3/qx2/UjMrq23eyU2OP+7ff/7LPy9f+dLCxXfdc1/Ps8/MPebo3XcjTeJ2bVtPmTbjkUcfTxcb/rPbXAMMAOyfBDDAAeKkZk1/9P0Lbrvj7m98s/chBx9cNgJ82GGH/njI0GZtOv3nPfcNv+FfWrdqsfjlpW06nX5a9/OObdzomiH/lC6TjvQ2a3J8zZpZJzZrki7frk1eWtQd27dLn8rJqXffmNHpxDfOPu+cft/75pmn3/TTa8tOdd7d1Vf8+NyeZw+59vpvX3hx19M6l20aAGB/c9DGws0JAFVhXcG7LZvkJkAkr65c0zDniASAqmAEGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhVEsAyEAbi7a8W7SlePuOBPhyZdWoXje7VvonASDTCGCAzLOxcPPWbdtzG9RNfxFPgC9X+sHThnc2ffhhcmQdDQyQYZwCDZB53inaUr9ubfULVSI99NID8N1NmxMAMo0RYIDMs33HTvULVSg9AIu370wAyDRGgAEAAAhBAAMAABCCAAYAACAEAQwAANwNRSEAAA3QSURBVEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABMk+N6tWKt+9IgCqSHoBZNaolAGQaAQyQeepmH77hnU0aGKpEeuilB+ARtWslAGQaH14CZJ4j66S/eX+4Zv07Ghi+fFk1qh9R+7Aj6xyeAJBpBDBARkp/+fb7NwDAXnEKNAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhFAtASADjZ7y4n0zF71VuCUBvlxH1ak18My2V/bqmACQaQQwQOZJ6/e2yc9vf/+DBPjSpR88/eKx5z9MPryqV6cEgIziFGiAzHPvzIXqF6pQegDeN3NRAkCmMQIMkHnWF25NgCq1ochhCJB5jAADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAjVEgBgH9Q76eZLuvRvml2nesnctoIVQ6594rG8s5/7cdPk5dmnjXkl+XvUa/foDV9vVbDgrBF/yk8AgC+GAAaAfZB98xVnDzq2WuHaNyb/tTipXqvV0Yc0SB8+OrvBYVlJnazk75RTv/5h1bIOq9U4SQQwAHxRBDAA7IOmeTnVkoIVA3/6xNzdH35qYvOnki/AshmnDZqRAABfKAEMAPtgy7Yd6Thto2u+Vb/vkxs+erj7+csGNEpem9185IIkOe7m6878QYvsmiUnSL/xUnJ855yNEwY+MCQ5+7lxJ5+4dsXYrQ0HNa2VJDvzX/5T318sqDzSW7bMKw1/OuPS6348vEUy95nV9bs0PbF6kmzdcP/dD1+3JAEA9pabYAHAPvjzdVPfyN+R1fnb33vjl98bc3r9v12i//89e1CL7OK1K+68f85jhfVPzan89NHH9dyxYujvX1mytVrj1l8Z2fHTN5fVuVPdpZOfvvPlom2H1f/ht7smAMDeE8AAsC/yn5rcYfjTE1YUJXXq9/lh/8X/t13jSs+37p+O7u5Ye+dPn7jlj/87ZMS0Zwoqv75w9c9HznrgyRkDXy5KklqNW3/G5pa8MHnwky/f8osFL20tuUL40gQA2GsCGAD2Vf7LQ0bcd/yNT08rqNbg46O4R9c/LEkK3rmrfHZ10Y7Kr926dULZOnbsTD5bcdHaogQA+PsIYAD4++S/fOOKvx3F3bAhHaqtk10xVHtySQ8DAFXKTbAAYB+cPfM/GxWvWJufVm717M6ts5MdG1+akyTH7lpgway1X+/ctNE1/9azwQtFjTud3K1OAgBULSPAALAPNq7fkdWqdfM+nZr3OfXorK0bJo+fPGRZpSXuunv25LXFdY5t/pNvt2u/9c/T1iYAQNU6aGPh5gSAqrCu4N2WTXKTvddw4C8TMku9rjP/o13ejtVD/3niAwkHiHXjrkz23qsr1zTMOSIBoCo4BRoA/jEu7j/v6K2zXlq29LCm/bs0zaue5L88T/0CQBUSwADwj7H2/exOTX/YtGnJ9I7i11+YPXjMXxIAoOoIYAD4x3hyYvMnEwBg/+EmWAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGCAzNOgzmEJUKXqZzsMATKPAAbIPD88o20CVKkLTmuVAJBpqiUAZJqre3d6/4MPHp695K3CLQnw5TqqTq0BXfOu+z9fSwDINAdtLNycAFAV1hW827JJbgJE8urKNQ1zjkgAqApOgQYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAapM9WqHFG/fkQBhpId8euAnAFQRAQxQZQ7NqlG0+b0ECKNoy3s1s6onAFSRagkAVSSrRvVNW95LDkqya6Ut7HdiOJClY79p/W7esq12rUMTAKrIQRsLNycAVJH33/9g2/bt24p37Nj5fgIcuKpXOyQd+61Zo8Yhhzj/DqDKCGAAAABC8BkkAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAyQAAEQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAIQggAEAAAhBAAMAABCCAAYAACAEAQwAAEAIAhgAAIAQBDAAAAAhCGAAAABCEMAAAACEIIABAAAIQQADAAAQggAGAAAgBAEMAABACAIYAACAEAQwAAAAIQhgAAAAQhDAAAAAhCCAAQAACEEAAwAAEIIABgAAIAQBDAAAQAgCGAAAgBAEMAAAACEIYAAAAEIQwAAAAITw/wEAAP//R8LZ2gAAAAZJREFUAwAefNhQecXEFQAAAABJRU5ErkJggg==" alt="Operations Console sign-in page, showing username and password fields">
+        <figcaption>The sign-in screen every staff role uses — there's one door in, and what you see afterward depends on your role.</figcaption>
+      </figure>
+
+      <div class="callout warn">
+        <span class="icon">!</span>
+        <p><strong>Do this next, before anything else:</strong> once you're in, open <strong>Change password</strong> (top right) and set a real password, then delete <code>initial_admin.txt</code>. It's the only copy, and anyone who can read that file on disk can sign in as the owner.</p>
+      </div>
+
+      <p>Need more staff accounts — for a NOC engineer, a billing admin, a CSR, a technician? Create them from <strong>Staff Accounts</strong> in the console itself; see the Operations Guide.</p>
+
+      <hr class="div">
+
+      <h2 id="verify"><span class="num">05</span>Confirm it's healthy</h2>
+      <p><code>deploy.bat</code> already checks this for you and prints it at the end of the run. To check it yourself at any time, from an ordinary (non-elevated) PowerShell window:</p>
+
+      <div class="code-panel">
+        <div class="bar"><span>PowerShell</span></div>
+        <pre><code>Get-Service ISPBSSApi, ISPBSSAaaCore, ISPBSSPostgres
+
+curl.exe -sk -o NUL -w "readyz -&gt; %{http_code}`n" https://localhost/readyz</code></pre>
+      </div>
+      <p>All three services should read <span class="pill ok">Running</span>, and the health check should read <code>200</code>.</p>
+
+      <hr class="div">
+
+      <h2 id="upgrade"><span class="num">06</span>Installing a newer version later</h2>
+      <p>Run <code>deploy.bat</code> again, pointed at the new MSI. This is a genuine <strong>in-place upgrade</strong>, not an uninstall followed by a fresh install — Windows Installer replaces the old version and lays down the new one as a single operation, so your database and settings are never touched.</p>
+      <div class="code-panel">
+        <div class="bar"><span>Command Prompt</span></div>
+        <pre><code>deploy.bat "D:\path\to\ISP-BSS-Setup-1.1.0.msi"</code></pre>
+      </div>
+      <div class="callout note">
+        <span class="icon">i</span>
+        <p>Only need to change what's installed, not reach for a full teardown? A genuine wipe-and-reinstall — for troubleshooting a corrupted install — is available as an explicit extra step: <code>deploy.bat -FullReinstall</code>. Ordinary upgrades never need it.</p>
+      </div>
+
+      <h2 id="uninstall"><span class="num">07</span>Uninstalling</h2>
+      <p>From <strong>Settings → Apps</strong>, remove <strong>ISP BSS/OSS</strong> like any other Windows program, or run <code>deploy.bat -FullReinstall</code> without a follow-up install if you just want it gone. Either way, your database (<code>pgdata</code>) and configuration are left on disk afterward — uninstalling removes the software, not the data it was holding.</p>
+
+      <h2 id="trouble"><span class="num">08</span>If something goes wrong</h2>
+      <table>
+        <tr><th>You see</th><th>What's actually happening</th></tr>
+        <tr><td>A dialog listing programs to close, during install</td><td>An older version's files are in use. Let it close them, or stop the three services yourself first, then retry.</td></tr>
+        <tr><td>"Another program is being installed" <span class="pill warn">1500</span></td><td>A previous install/uninstall didn't finish cleanly. Reboot the machine to clear it, then run the installer once more — do not run uninstall and install back-to-back, which is what causes this.</td></tr>
+        <tr><td>A service won't start</td><td>Check the full run log at <code>installer\dist\install.log</code> for the exact error near the end of the file.</td></tr>
+      </table>
+
+      <footer class="doc-end">Companion document: the <a href="operations-guide.html">Operations Guide</a> covers signing in and using every screen once installation is done.</footer>
+    </div>
+  </main>
+</div>
