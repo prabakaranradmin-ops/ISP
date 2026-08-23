@@ -18,7 +18,7 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 		leaAccess bool
 		want      []string
 	}{
-		{"isp_owner", true, []string{"subscribers", "billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo", "accounts"}},
+		{"isp_owner", true, []string{"subscribers", "billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo", "accounts", "franchise"}},
 		{"noc_engineer", true, []string{"subscribers", "nas", "lea"}},
 		{"billing_admin", false, []string{"subscribers", "billing", "catalogue"}},
 		// Catalogue is deliberately absent for csr and technician: editing a

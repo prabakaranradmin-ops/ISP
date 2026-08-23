@@ -164,6 +164,11 @@ type HandlerDeps struct {
 	BulkActions BulkActionExecutor
 	Tasks       TaskEnqueuer
 	JWTSecret   string
+	// Franchises backs the owner-only Franchises screen: onboarding partners
+	// and viewing each one's (or all partners' consolidated) P&L. Same
+	// *db.RevenueStore instance as Revenue above — FranchiseStore's methods
+	// already live on that store, so no separate wiring is needed.
+	Franchises FranchiseStore
 }
 
 // Handler serves the console.
@@ -189,6 +194,7 @@ type Handler struct {
 	bulkActions       BulkActionExecutor
 	tasks             TaskEnqueuer
 	jwtSecret         string
+	franchises        FranchiseStore
 }
 
 // NewHandler constructs the console handler.
@@ -215,6 +221,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		bulkActions:       deps.BulkActions,
 		tasks:             deps.Tasks,
 		jwtSecret:         deps.JWTSecret,
+		franchises:        deps.Franchises,
 	}
 }
 
@@ -265,6 +272,14 @@ var sections = []Section{
 	// Owner-only: who has console access at all, and at what level, is an
 	// owner-level decision by definition.
 	{"accounts", "Staff Accounts", "/staff/accounts",
+		[]string{"isp_owner"}, false},
+	// Owner-only, same reasoning as Revenue: onboarding a partner and seeing
+	// the consolidated commission P&L across every partner is a business
+	// decision, not an operations task. A franchise-scoped role (lco,
+	// franchise_admin, franchise_staff) signing in here would see no
+	// sections at all today — a restricted partner-facing view is tracked
+	// separately (CRD §1.11 follow-up), not this screen widened.
+	{"franchise", "Franchises", "/staff/franchise",
 		[]string{"isp_owner"}, false},
 }
 
@@ -330,6 +345,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/demo", h.authed(h.Demo))
 	mux.Handle("POST /staff/demo/load", h.authed(h.requireCSRF(h.LoadDemoData)))
 	mux.Handle("POST /staff/demo/remove", h.authed(h.requireCSRF(h.RemoveDemoData)))
+	mux.Handle("GET /staff/franchise", h.authed(h.Franchises))
+	mux.Handle("POST /staff/franchise/new", h.authed(h.requireCSRF(h.CreateFranchiseForm)))
+	mux.Handle("GET /staff/franchise/{id}", h.authed(h.FranchiseDetail))
 	mux.Handle("GET /staff/accounts", h.authed(h.StaffAccounts))
 	mux.Handle("POST /staff/accounts/new", h.authed(h.requireCSRF(h.CreateStaffAccount)))
 	mux.Handle("POST /staff/accounts/{id}/update", h.authed(h.requireCSRF(h.UpdateStaffAccount)))

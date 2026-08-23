@@ -1,0 +1,62 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Franchises</h1>
+<p class="muted">LCO / franchise partners who resell subscriptions on commission. Onboarding a partner here does not give them a console login of their own yet &mdash; that is tracked separately.</p>
+
+{{with $d.Consolidated}}
+<div class="card">
+  <h3>Consolidated P&amp;L &mdash; all partners</h3>
+  <dl>
+    <dt>Total recharges</dt><dd class="num">&#8377;{{.TotalRecharges}}</dd>
+    <dt>Commission paid out</dt><dd class="num">&#8377;{{.CommissionEarned}}</dd>
+    <dt>Net to ISP</dt><dd class="num">&#8377;{{.NetToISP}}</dd>
+  </dl>
+</div>
+{{end}}
+
+<div class="card">
+  <h3>Partners</h3>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Name</th><th>Owner</th><th>Mobile</th><th>Commission</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+    {{range $d.Franchises}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td>{{.Name}}</td>
+        <td>{{.OwnerName}}</td>
+        <td>{{.MobileNumber}}</td>
+        <td class="num">{{.CommissionRatePct}}%</td>
+        <td><span class="pill {{badge .Status}}">{{.Status}}</span></td>
+        <td class="right"><a class="btn" href="/staff/franchise/{{.ID}}">View P&amp;L</a></td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">No franchise partners onboarded yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Onboard a partner</h3>
+  <form method="post" action="/staff/franchise/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="formgrid">
+      <label>Partner / business name
+        <input name="name" required placeholder="Anna Nagar Cable Network">
+      </label>
+      <label>Owner's name
+        <input name="owner_name" required placeholder="S. Anandan">
+      </label>
+      <label>Mobile number
+        <input name="mobile_number" required placeholder="9840012345">
+      </label>
+      <label>Commission rate (%)
+        <input name="commission_rate_pct" required placeholder="10.00" inputmode="decimal">
+      </label>
+    </div>
+    <button class="primary" type="submit">Onboard partner</button>
+  </form>
+</div>
+{{end}}

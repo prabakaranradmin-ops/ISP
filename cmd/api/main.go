@@ -312,6 +312,10 @@ func run(ctx context.Context) error {
 		BulkActions: apiHandler,
 		Tasks:       taskClient,
 		JWTSecret:   cfg.JWTSecret,
+		// Same *db.RevenueStore instance as Revenue above — it already
+		// implements FranchiseStore, so the Franchises screen needs no
+		// store of its own.
+		Franchises: database.Revenue(),
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —

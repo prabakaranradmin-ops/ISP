@@ -1,0 +1,40 @@
+{{define "content"}}
+{{$d := .Data}}
+{{with $d.PnL}}
+<h1>{{.FranchiseName}} <span class="pill {{badge .Status}}">{{.Status}}</span></h1>
+
+<div class="card">
+  <h3>Filter by date</h3>
+  <form method="get" class="searchbar">
+    <label>From <input type="date" name="from" value="{{$d.From}}"></label>
+    <label>To <input type="date" name="to" value="{{$d.To}}"></label>
+    <button class="primary" type="submit">Apply</button>
+    <a class="btn" href="?">Clear</a>
+  </form>
+</div>
+
+<div class="grid3">
+  <div class="card"><h3>Partner</h3>
+    <dl>
+      <dt>Franchise ID</dt><dd class="num">{{.FranchiseID}}</dd>
+      <dt>Commission rate</dt><dd class="num">{{.CommissionRatePct}}%</dd>
+      <dt>Subscribers</dt><dd class="num">{{.SubscriberCount}}</dd>
+    </dl>
+  </div>
+  <div class="card"><h3>Recharges in window</h3>
+    <dl>
+      <dt>Count</dt><dd class="num">{{.RechargeCount}}</dd>
+      <dt>Total</dt><dd class="num">&#8377;{{.TotalRecharges}}</dd>
+    </dl>
+  </div>
+  <div class="card"><h3>Commission</h3>
+    <dl>
+      <dt>Earned by partner</dt><dd class="num">&#8377;{{.CommissionEarned}}</dd>
+      <dt>Net to ISP</dt><dd class="num">&#8377;{{.NetToISP}}</dd>
+    </dl>
+  </div>
+</div>
+{{else}}
+<p class="empty">No data for this partner.</p>
+{{end}}
+{{end}}
