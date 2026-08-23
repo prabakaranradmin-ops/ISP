@@ -93,6 +93,17 @@ $services = @(
             API_ADDR     = ':443'
             METRICS_ADDR = ':9101'
         }
+        # Windows Services never trigger the interactive "Windows Security
+        # Alert - allow this app?" prompt that a normal foreground program
+        # gets on its first inbound connection - that prompt only fires for
+        # a program running in a logged-in user's own session. A service
+        # gets no such moment, and Windows Firewall's default inbound
+        # action is Block, so without an explicit rule here the staff
+        # console, subscriber portal and captive portal are all completely
+        # unreachable from any other machine on a real customer's network -
+        # only loopback (https://localhost on the box itself) still works,
+        # which is exactly what made this gap invisible during development.
+        FirewallRule = @{ DisplayName = 'ISP BSS API (HTTPS)'; Protocol = 'TCP'; Ports = @(443) }
     },
     @{
         Name        = $AaaServiceName
@@ -104,6 +115,16 @@ $services = @(
         # collision described above - :9102 rather than the shared default,
         # so both services can expose metrics at once.
         ExtraEnv    = @{ METRICS_ADDR = ':9102' }
+        # Same reasoning as the API rule above, for RADIUS auth/accounting
+        # instead of HTTPS. Found by an actual MikroTik CHR VM test: real
+        # PPPoE dial-in negotiated fine but every Access-Request timed out
+        # from the NAS's point of view, because Windows Firewall was
+        # silently dropping it before it ever reached this process - the
+        # only existing rule on that test machine was scoped to a leftover
+        # dev-build exe path, not the installed one, which is precisely the
+        # class of bug an installer-provisioned rule (scoped to the actual
+        # installed path) prevents from ever happening on a customer site.
+        FirewallRule = @{ DisplayName = 'ISP BSS AAA Core (RADIUS)'; Protocol = 'UDP'; Ports = @(1812, 1813) }
     }
 )
 
@@ -112,19 +133,27 @@ if ($Uninstall) {
         $existing = Get-Service -Name $svc.Name -ErrorAction SilentlyContinue
         if ($null -eq $existing) {
             Write-Host "register_services: $($svc.Name) not registered, nothing to remove"
-            continue
-        }
-        if ($DryRun) {
+        } elseif ($DryRun) {
             Write-Host "register_services: [dry run] would stop and remove $($svc.Name)"
-            continue
+        } else {
+            if ($existing.Status -eq 'Running') {
+                Stop-Service -Name $svc.Name -Force
+                $existing.WaitForStatus('Stopped', (New-TimeSpan -Seconds 30))
+            }
+            & sc.exe delete $svc.Name | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed for $($svc.Name) with exit code $LASTEXITCODE" }
+            Write-Host "register_services: removed $($svc.Name)"
         }
-        if ($existing.Status -eq 'Running') {
-            Stop-Service -Name $svc.Name -Force
-            $existing.WaitForStatus('Stopped', (New-TimeSpan -Seconds 30))
+
+        $fwRule = Get-NetFirewallRule -DisplayName $svc.FirewallRule.DisplayName -ErrorAction SilentlyContinue
+        if ($null -eq $fwRule) {
+            Write-Host "register_services: firewall rule '$($svc.FirewallRule.DisplayName)' not present, nothing to remove"
+        } elseif ($DryRun) {
+            Write-Host "register_services: [dry run] would remove firewall rule '$($svc.FirewallRule.DisplayName)'"
+        } else {
+            Remove-NetFirewallRule -DisplayName $svc.FirewallRule.DisplayName
+            Write-Host "register_services: removed firewall rule '$($svc.FirewallRule.DisplayName)'"
         }
-        & sc.exe delete $svc.Name | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed for $($svc.Name) with exit code $LASTEXITCODE" }
-        Write-Host "register_services: removed $($svc.Name)"
     }
     return
 }
@@ -271,6 +300,31 @@ foreach ($svc in $services) {
     if (-not $DryRun) {
         Start-Service -Name $svc.Name
         Write-Host "register_services: $($svc.Name) started"
+    }
+
+    # Scoped to the exe path (-Program), not just the port: an app-scoped
+    # rule is what keeps this correct across a reinstall to a different
+    # drive or folder, and is also why a rule left over from an old install
+    # path (or a dev build elsewhere on disk) does not silently cover a
+    # differently-located production binary - each install path needs, and
+    # gets, its own rule.
+    $fw = $svc.FirewallRule
+    $existingFw = Get-NetFirewallRule -DisplayName $fw.DisplayName -ErrorAction SilentlyContinue
+    if ($null -ne $existingFw) {
+        if ($DryRun) {
+            Write-Host "register_services: [dry run] would leave existing firewall rule '$($fw.DisplayName)' as-is"
+        } else {
+            Remove-NetFirewallRule -DisplayName $fw.DisplayName
+            New-NetFirewallRule -DisplayName $fw.DisplayName -Direction Inbound -Action Allow `
+                -Program $svc.Exe -Protocol $fw.Protocol -LocalPort $fw.Ports -Profile Any | Out-Null
+            Write-Host "register_services: refreshed firewall rule '$($fw.DisplayName)' -> $($svc.Exe)"
+        }
+    } elseif ($DryRun) {
+        Write-Host "register_services: [dry run] would create firewall rule '$($fw.DisplayName)' -> $($svc.Exe)"
+    } else {
+        New-NetFirewallRule -DisplayName $fw.DisplayName -Direction Inbound -Action Allow `
+            -Program $svc.Exe -Protocol $fw.Protocol -LocalPort $fw.Ports -Profile Any | Out-Null
+        Write-Host "register_services: created firewall rule '$($fw.DisplayName)' -> $($svc.Exe)"
     }
 }
 
