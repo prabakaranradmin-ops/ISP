@@ -132,6 +132,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   white-space: pre-wrap; word-break: break-word; margin: 10px 0;
 }
 .formgrid label button.btn { align-self: flex-start; margin-top: 2px; }
+#nas-server-address-warning { color: var(--warn-fg); background: var(--warn-bg); padding: 8px 12px; border-radius: 4px; }
 
 /* Tabs (console.js progressive enhancement). Panels render fully visible,
    stacked, if the script never runs — .tab-btn is only ever hidden/shown

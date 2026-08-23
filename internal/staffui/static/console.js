@@ -168,6 +168,25 @@
   // comments for why the secret is generated rather than typed twice.
 
   function initNasSecretGenerator() {
+    // A router can never reach any of these — they mean "this same
+    // computer" to whoever asks, which on the router itself is the router,
+    // not the BSS server. Loading the console via one of these (e.g. the
+    // standalone -AppMode window, which opens https://localhost/...) is
+    // common enough that this needs to be caught rather than silently
+    // producing a command block that only looks correct.
+    //
+    // Declared inside this function rather than at module scope: onReady()
+    // above calls every init* function immediately and synchronously
+    // whenever this script runs with document.readyState already past
+    // "loading" (the normal case for a <script defer> — it runs after the
+    // document is parsed, not after some later "loading" state), so a
+    // module-scope var declared *after* that onReady() call is still
+    // undefined the first time a function invoked from it runs, even
+    // though the assignment appears earlier in reading order than the call
+    // site inside this function. A same-file integration test against the
+    // real script (not just this file read back) is what caught this.
+    var LOOPBACK_HOSTNAMES = ["localhost", "127.0.0.1", "::1", ""];
+
     var genBtn = document.getElementById("nas-generate-secret");
     var secretInput = document.getElementById("nas-radius-secret");
     if (!genBtn || !secretInput) return;
@@ -176,23 +195,47 @@
     var commandsBox = document.getElementById("nas-router-commands");
     var commandsText = document.getElementById("nas-router-commands-text");
     var copyBtn = document.getElementById("nas-copy-commands");
+    var addressInput = document.getElementById("nas-server-address");
+    var addressWarning = document.getElementById("nas-server-address-warning");
+    var addressDetected = document.getElementById("nas-server-address-detected");
 
-    genBtn.addEventListener("click", function () {
-      var secret = randomSecret(24);
-      secretInput.value = secret;
-      if (!commandsBox || !commandsText) return;
+    var pageHostname = window.location.hostname;
+    var pageHostnameIsLoopback = LOOPBACK_HOSTNAMES.indexOf(pageHostname) !== -1;
+    if (addressInput && !pageHostnameIsLoopback) {
+      addressInput.value = pageHostname;
+    }
+    if (addressWarning && addressDetected) {
+      addressDetected.textContent = pageHostname || "(blank)";
+      addressWarning.hidden = !pageHostnameIsLoopback;
+    }
+
+    function updateCommands() {
+      if (!commandsBox || !commandsText || !secretInput.value) return;
 
       var vendorField = form.querySelector('[name="vendor"]');
       var vendor = vendorField ? vendorField.value : "";
       var coaField = form.querySelector('[name="coa_port"]');
       var coaPort = (coaField && coaField.value.trim()) || "1700";
-      var serverAddress = window.location.hostname;
+      var serverAddress = (addressInput && addressInput.value.trim()) || "";
+      var addressIsUsable = serverAddress !== "" && LOOPBACK_HOSTNAMES.indexOf(serverAddress) === -1;
+      if (addressWarning) addressWarning.hidden = addressIsUsable;
+      if (!addressIsUsable) {
+        serverAddress = "<FILL-IN-THIS-SERVER-S-NETWORK-ADDRESS-ABOVE>";
+      }
 
       commandsText.textContent = vendor === "mikrotik"
-        ? mikrotikCommands(serverAddress, secret, coaPort)
-        : genericNote(vendor, serverAddress, secret, coaPort);
+        ? mikrotikCommands(serverAddress, secretInput.value, coaPort)
+        : genericNote(vendor, serverAddress, secretInput.value, coaPort);
       commandsBox.hidden = false;
+    }
+
+    genBtn.addEventListener("click", function () {
+      secretInput.value = randomSecret(24);
+      updateCommands();
     });
+    if (addressInput) {
+      addressInput.addEventListener("input", updateCommands);
+    }
 
     if (copyBtn) {
       copyBtn.addEventListener("click", function () {

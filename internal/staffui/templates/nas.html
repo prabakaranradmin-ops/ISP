@@ -89,6 +89,10 @@
     <div id="nas-router-commands" class="nas-router-commands" hidden>
       <h3>Run these on the router itself</h3>
       <p class="muted">Registering here only tells this server about the router &mdash; the router still needs to be told about this server, with the identical secret above. Paste into a Winbox or SSH terminal on the router.</p>
+      <label>This server's address, as the router will reach it
+        <input id="nas-server-address" inputmode="url" placeholder="e.g. 192.168.88.254 &mdash; not localhost">
+      </label>
+      <p id="nas-server-address-warning" class="muted" hidden>&#9888; This page was opened as "<span id="nas-server-address-detected"></span>", which only means "this computer" to a router &mdash; a MikroTik cannot reach an address called that. Type this machine's real network address above instead (run <code>ipconfig</code> on this machine and use its IPv4 address).</p>
       <pre id="nas-router-commands-text" class="code-block"></pre>
       <button type="button" class="btn" id="nas-copy-commands">Copy commands</button>
     </div>
