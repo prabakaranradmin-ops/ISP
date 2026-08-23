@@ -166,6 +166,22 @@ prompt — there is no dry-run substitute for that half. `-DryRun`'s value is
 catching a wrong path or a missing prerequisite before an elevated run, not
 replacing one.
 
+## Onboarding a router (NAS)
+
+`new_nas_registration.ps1` generates a strong RADIUS secret and prints two
+copy-paste blocks: the fields for the console's Routers screen, and the
+matching RouterOS commands for the router's own side — so both ends get the
+identical secret without typing a 16+ character string twice by hand.
+
+```powershell
+.\new_nas_registration.ps1 -RouterIP 192.168.88.1 -Description 'Main office'
+```
+
+Prompts for anything not passed as a parameter. Needs no elevation — it only
+generates and prints text, it does not touch the running BSS or the router.
+See `specification_docs_v2/23_MTK_MikroTik_Integration_Guide.md` for the full
+background.
+
 ## A note on the scripts' encoding
 
 Both scripts are deliberately ASCII-only. Windows PowerShell 5.1 reads a
