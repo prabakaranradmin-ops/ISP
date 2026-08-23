@@ -63,8 +63,11 @@
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
     <div class="formgrid">
       <label>Vendor
+        <!-- Defaults to mikrotik, not whatever nas.Vendors() happens to sort
+             first (aruba) - it's the only vendor the Generate secret button
+             below produces ready-made router commands for. -->
         <select name="vendor">
-          {{range $d.Vendors}}<option value="{{.}}">{{.}}</option>{{end}}
+          {{range $d.Vendors}}<option value="{{.}}" {{if eq . "mikrotik"}}selected{{end}}>{{.}}</option>{{end}}
         </select>
       </label>
       <label>IP address
