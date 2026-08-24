@@ -366,23 +366,34 @@ new backend design work was needed.
 
 ### CRD-EXP-006 — General ledger / accounts management
 
-Today's "double-entry" (`internal/billing/wallet.go`) is a per-subscriber
-prepaid wallet ledger — correct and real, but not a chart of accounts. There
-is no way to record the ISP's own business expenses (rent, salaries,
-upstream bandwidth bills, equipment purchases already tracked in inventory)
-against revenue, so there is no P&L for the *business*, only for each
-subscriber's wallet and (since § 1.11) each franchise partner's commission.
+*(Design done 2026-08-24 — see DBD §6.2 "General ledger" for the full
+schema. Not yet built.)* Today's "double-entry" (`internal/billing/wallet.go`)
+is a per-subscriber prepaid wallet ledger — correct and real, but not a
+chart of accounts. There is no way to record the ISP's own business expenses
+(rent, salaries, upstream bandwidth bills, equipment purchases already
+tracked in inventory) against revenue, so there is no P&L for the
+*business*, only for each subscriber's wallet and (since § 1.11) each
+franchise partner's commission.
 
-- Chart of accounts (assets/liabilities/equity/income/expense, standard
-  double-entry postings)
-- Accounts payable: record and track a vendor bill (the inventory module's
-  `Purchase` records already capture *what* was bought and from whom — this
-  extends that into *when it's due* and *whether it's paid*)
-- A trial balance and a company-level P&L / balance sheet, distinct from the
-  subscriber revenue-reconciliation dashboard that already exists
-- This is real financial-software surface (audit trail, period close,
-  reversing entries) — recommend scoping it as its own detailed design pass
-  before implementation starts, not folding it into an existing module.
+The design splits this into two phases, and only the first is authorized to
+build from this document alone:
+
+- **Phase 1 (buildable now)** — `chart_of_accounts`, `gl_journal_entries`,
+  `gl_journal_lines` with a deferred trigger enforcing every entry balances,
+  a starter chart of accounts, trial balance and P&L/balance sheet reporting
+  functions, and a manual journal-entry console screen. Entirely standalone
+  — touches no existing table or code path, so it can be built and verified
+  in isolation the same way every CRD-EXP-005 screen was.
+- **Phase 2 (needs its own sign-off when scoped)** — auto-posting from
+  wallet recharges, franchise commission, and received purchase orders. Each
+  of these adds a second write next to an already-correct, live financial
+  code path (`WalletService.Post`, `CalculateAndStoreLCOCommission`, the
+  procurement lifecycle) and needs its own review of failure/consistency
+  modes — not something this design pass or a wire-up pattern should decide
+  by default.
+- Accounts payable (owed-but-unpaid tracking for a received purchase order)
+  falls naturally out of Phase 2's procurement posting rather than needing
+  separate design.
 
 ### CRD-EXP-007 — Purchase / procurement management
 

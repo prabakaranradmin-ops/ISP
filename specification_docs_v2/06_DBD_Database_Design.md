@@ -671,6 +671,146 @@ application supplies *who* and *why* when it can.
 | `result_row_count` | `INTEGER` NOT NULL | |
 | `accessed_at` | `TIMESTAMPTZ` DEFAULT NOW() | |
 
+### General ledger *(new — CRD-EXP-006, design 2026-08-24, not yet built)*
+
+Every monetary table this document already describes is correct for what it
+was built to answer: `wallet_ledgers` is a true double-entry ledger for one
+subscriber's prepaid balance, `lco_ledger` is a per-partner commission
+record, `invoices`/`payment_refunds` are billing documents. None of them
+answers "what did the business itself earn and spend this month" — there is
+no chart of accounts, no trial balance, no P&L for the ISP's own books. This
+is that design, split into two phases on purpose: Phase 1 is a real,
+standalone general ledger that touches nothing else in the schema and can be
+built and verified in isolation; Phase 2 wires it to the money-moving code
+that already exists (wallet postings, franchise commission, procurement) and
+is **not** authorized by this design alone — each integration point changes
+a live financial code path and needs its own sign-off when it is actually
+scoped, the same caution CRD-EXP-006 was flagged for in the first place.
+
+#### Phase 1 — standalone ledger
+
+##### Table: `chart_of_accounts`
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PK | |
+| `code` | `VARCHAR(20)` | UNIQUE NOT NULL | Traditional numeric code (`1000`, `4000`, ...), sorted display order for free |
+| `name` | `VARCHAR(100)` | NOT NULL | |
+| `account_type` | `VARCHAR(20)` | NOT NULL CHECK IN (`asset`,`liability`,`equity`,`income`,`expense`) | |
+| `normal_balance` | `VARCHAR(6)` | NOT NULL CHECK IN (`debit`,`credit`) | Stored, not derived, so a report never has to re-decide it per row |
+| `is_active` | `BOOLEAN` | NOT NULL DEFAULT true | Deactivated rather than deleted, matching this schema's convention everywhere else money or auth is involved |
+| `created_at` | `TIMESTAMPTZ` | DEFAULT NOW() | |
+
+Seeded on migration with a minimal starter chart — the accounts Phase 2's
+own integrations will need are named here now so a later migration only has
+to add postings, not accounts:
+
+| Code | Name | Type |
+|---|---|---|
+| 1000 | Cash / Bank | asset |
+| 1200 | Subscriber Wallet Liability | liability |
+| 2000 | Accounts Payable | liability |
+| 3000 | Owner's Equity | equity |
+| 4000 | Subscription Revenue | income |
+| 5000 | Franchise Commission Expense | expense |
+| 5100 | Operating Expenses | expense |
+
+##### Table: `gl_journal_entries`
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PK | |
+| `entry_date` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
+| `description` | `TEXT` | NOT NULL | |
+| `source_type` | `VARCHAR(30)` | NOT NULL DEFAULT `manual` | `manual` in Phase 1; Phase 2 adds `wallet_recharge`, `lco_commission`, `purchase_order` |
+| `source_id` | `INTEGER` | NULLABLE | The triggering row's id once Phase 2 exists; always NULL for a manual entry |
+| `created_by` | `VARCHAR(100)` | NOT NULL | |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
+
+##### Table: `gl_journal_lines`
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PK | |
+| `journal_entry_id` | `INTEGER` | NOT NULL FK → gl_journal_entries.id ON DELETE CASCADE | |
+| `account_id` | `INTEGER` | NOT NULL FK → chart_of_accounts.id | |
+| `debit` | `NUMERIC(14,2)` | NOT NULL DEFAULT 0 CHECK (debit >= 0) | |
+| `credit` | `NUMERIC(14,2)` | NOT NULL DEFAULT 0 CHECK (credit >= 0) | |
+
+Two more constraints than the columns above show, because "a balanced
+journal entry" is a real, enforceable guarantee, not just an application
+convention:
+
+- `CHECK (NOT (debit > 0 AND credit > 0))` — one line is a debit or a
+  credit, never both; a single line trying to be both would let a
+  transposition error cancel itself out silently.
+- `CHECK (debit > 0 OR credit > 0)` — no zero-amount no-op line.
+- A `CONSTRAINT TRIGGER ... AFTER INSERT OR UPDATE OR DELETE ... DEFERRABLE
+  INITIALLY DEFERRED` on `gl_journal_lines`, firing once per statement at
+  transaction commit, that sums `debit - credit` for every
+  `journal_entry_id` touched in the transaction and raises if any sum is
+  non-zero. Deferred rather than immediate: an application posting a
+  multi-line entry inserts its lines one at a time, and an immediate
+  per-row check would reject every entry after its first line, before the
+  balancing line has been written. This is the actual "double-entry" claim
+  for the business's own books — not assumed of the application code the
+  way `wallet_ledgers` currently is (see `WalletService.Post`'s own
+  in-application balance arithmetic, which this does not replace or audit).
+
+##### Reporting views
+
+- `v_gl_trial_balance` — one row per account: `debit_total`, `credit_total`,
+  and a signed `balance` oriented by the account's own `normal_balance`, so
+  every account reads as a positive number when it is in its expected
+  position and negative when it is not (an asset account with a credit
+  balance, for instance, which is exactly the anomaly a trial balance exists
+  to surface).
+- `v_gl_income_statement(from, to)` — income and expense accounts only,
+  summed within a date window, net income as the difference. A parameterised
+  view is not directly expressible in plain SQL `CREATE VIEW`; implemented as
+  a query function (`gl_income_statement(from date, to date)` returning a
+  table) rather than a view for that reason.
+- `v_gl_balance_sheet(as_of)` — asset/liability/equity accounts, balances as
+  of a point in time; same function-not-view reasoning.
+
+##### Console screen (Phase 1)
+
+A `Ledger` (or `Accounts`, if that name were not already taken by Staff
+Accounts — needs a distinct label) section, owner/billing_admin only,
+matching every other financial screen's gating: chart of accounts (view;
+editing which accounts exist is rare enough to not need a form in the first
+cut), a manual journal-entry form (date, description, and two or more
+account/debit-or-credit lines, rejected client- and server-side unless the
+lines balance before ever reaching the deferred trigger), a journal listing,
+and the two reports above.
+
+#### Phase 2 — auto-posting integration (not authorized by this design; scope separately)
+
+Three existing money-moving paths would each gain a journal entry, listed
+here so the shape of that future work is visible now rather than rediscovered
+later — this is a list of where the hooks belong, not permission to add them:
+
+- **Wallet recharge** (`internal/billing/wallet.go`) — a credit posts Dr Cash
+  / Bank, Cr Subscriber Wallet Liability; a debit (renewal/consumption)
+  posts Dr Subscriber Wallet Liability, Cr Subscription Revenue.
+- **Franchise commission** (`CalculateAndStoreLCOCommission`,
+  `internal/db/revenue.go`) — Dr Franchise Commission Expense, Cr Accounts
+  Payable (the partner is owed the commission, not yet paid it).
+- **Purchase order received** (`internal/procurement`, migration 042) — Dr
+  Operating Expenses (or an asset account, if the business wants CPE
+  purchases capitalised rather than expensed — a real accounting-policy
+  choice, not a technical default this design should make silently), Cr
+  Accounts Payable.
+
+Each of these touches a live, already-correct financial code path
+(`WalletService.Post`'s balance guarantee, `CalculateAndStoreLCOCommission`'s
+commission math, the procurement lifecycle just shipped) — adding a second
+write to `gl_journal_entries`/`gl_journal_lines` alongside the existing one
+is exactly the kind of change that deserves its own review of failure modes
+(what happens if the GL write fails but the wallet write already committed?
+same-transaction, or eventually-consistent via the job queue?) rather than
+being folded into this design pass.
+
 ---
 
 ## 6.3 Partitioning Strategy
