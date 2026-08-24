@@ -12,6 +12,7 @@ import (
 
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/maaransoft/isp-bss-oss/internal/revenue"
+	"github.com/maaransoft/isp-bss-oss/pkg/validate"
 )
 
 // Franchise / LCO endpoints — FR-FRN-003..006 | MDS §4.10 | API §7.
@@ -109,6 +110,16 @@ func (h *Handler) CreateFranchise(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.MobileNumber == "" {
 		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "mobile_number is required")
+		return
+	}
+	// Validated here rather than left to chk_franchises_mobile_e164
+	// (migration 020): the same reasoning as CreateLead's own check
+	// (internal/api/crm.go) — a bad format would otherwise surface as a raw
+	// 500 from a CHECK constraint the caller cannot see, on a value most
+	// callers will type in local (non-E.164) format by default.
+	if !validate.E164(req.MobileNumber) {
+		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION",
+			"mobile_number must be E.164 format (e.g. +919876543210)")
 		return
 	}
 

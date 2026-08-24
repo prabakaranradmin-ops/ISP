@@ -10,6 +10,7 @@ import (
 
 	"github.com/maaransoft/isp-bss-oss/internal/hotspot"
 	"github.com/maaransoft/isp-bss-oss/internal/revenue"
+	"github.com/maaransoft/isp-bss-oss/pkg/validate"
 	"github.com/rs/zerolog/log"
 )
 
@@ -120,6 +121,16 @@ func (h *Handler) CreateFranchiseForm(w http.ResponseWriter, r *http.Request) {
 		h.renderFranchises(w, r, s, "", "Mobile number is required.")
 		return
 	}
+	// Mirrors internal/api/franchises.go's own check (chk_franchises_mobile_e164,
+	// migration 020): without this, a mobile number typed in the local
+	// format everyone actually types was surfacing as a nonsensical
+	// commission-rate error below — found live, onboarding a real partner
+	// during an end-to-end test with "9800000000" instead of
+	// "+919800000000".
+	if !validate.E164(mobile) {
+		h.renderFranchises(w, r, s, "", "Mobile number must be E.164 format, e.g. +919876543210.")
+		return
+	}
 
 	created, err := h.franchises.CreateFranchise(r.Context(), revenue.CreateFranchiseRequest{
 		Name:              name,
@@ -129,9 +140,11 @@ func (h *Handler) CreateFranchiseForm(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Error().Err(err).Str("name", name).Msg("staffui: create franchise failed")
-		// Mirrors the API's own validation (commission_rate_pct must parse as
-		// 0-100): the console's job is to say so in the same terms a form-filler
-		// understands, not to leak "decimal.NewFromString: can't convert".
+		// Name, owner name, mobile format and (via CreateFranchise's own
+		// parse) the commission rate's shape are all checked above or by
+		// the caller before this point — what reaches here in practice is
+		// the commission rate outside 0-100, the one thing this message
+		// still tells the operator to check.
 		h.renderFranchises(w, r, s, "", "Could not onboard that partner — check the commission rate is a number between 0 and 100.")
 		return
 	}
