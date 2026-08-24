@@ -3,6 +3,7 @@ package staffui
 import (
 	"bytes"
 	"embed"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -32,6 +33,20 @@ var funcMap = template.FuncMap{
 	"badge":       badgeClass,
 	"gbytes":      gbytes,
 	"shortcutFor": shortcutFor,
+	// optHours/optPct format a nil-able *float64 straight to one decimal
+	// place, or an em dash — used by the reports screen, where nil means
+	// "nothing in this group was resolved/billed" rather than zero (see
+	// internal/reporting/rows.go's own comments on why those fields are
+	// pointers, not bare float64s).
+	"optHours": optFloat1,
+	"optPct":   optFloat1,
+}
+
+func optFloat1(f *float64) string {
+	if f == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%.1f", *f)
 }
 
 // sectionShortcuts maps a Section.Key to the letter console.js's "g <letter>"
@@ -50,6 +65,7 @@ var sectionShortcuts = map[string]string{
 	"demo":        "d",
 	"franchise":   "f",
 	"inventory":   "i",
+	"reports":     "p",
 }
 
 func shortcutFor(key string) string { return sectionShortcuts[key] }
@@ -85,7 +101,7 @@ var pageNames = []string{
 	"login", "subscribers", "subscriber_detail", "subscriber_new",
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
-	"inventory",
+	"inventory", "reports",
 }
 
 var pages = func() map[string]*template.Template {

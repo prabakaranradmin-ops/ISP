@@ -1,0 +1,107 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Reports</h1>
+<p class="muted">General business analytics &mdash; not tax filing (see Billing &rarr; GSTR-1 for that).</p>
+
+<div class="tabbar" role="tablist">
+  <a class="tab-btn {{if eq $d.Active "plan-mix"}}on{{end}}" href="?report=plan-mix">Plan mix</a>
+  <a class="tab-btn {{if eq $d.Active "growth"}}on{{end}}" href="?report=growth">Growth &amp; churn</a>
+  <a class="tab-btn {{if eq $d.Active "ticket-resolution"}}on{{end}}" href="?report=ticket-resolution">Ticket resolution</a>
+  <a class="tab-btn {{if eq $d.Active "collection"}}on{{end}}" href="?report=collection">Collections</a>
+</div>
+
+{{if ne $d.Active "plan-mix"}}
+<form class="searchbar" method="get">
+  <input type="hidden" name="report" value="{{$d.Active}}">
+  <label>Months <input name="months" type="number" min="1" max="120" value="{{$d.Months}}"></label>
+  <button class="primary" type="submit">Apply</button>
+</form>
+{{end}}
+
+{{if eq $d.Active "plan-mix"}}
+<div class="card">
+  <h3>Plan mix &mdash; current snapshot</h3>
+  <table>
+    <thead><tr><th>Plan</th><th class="right">Price</th><th class="right">Total</th><th class="right">Active</th><th class="right">Suspended</th><th class="right">MRR</th></tr></thead>
+    <tbody>
+    {{range $d.PlanMix}}
+      <tr>
+        <td>{{.PlanName}}</td>
+        <td class="right num">&#8377;{{money .Price}}</td>
+        <td class="right num">{{.TotalSubscribers}}</td>
+        <td class="right num">{{.ActiveSubscribers}}</td>
+        <td class="right num">{{.SuspendedSubscribers}}</td>
+        <td class="right num">&#8377;{{money .MRR}}</td>
+      </tr>
+    {{else}}<tr><td colspan="6" class="empty">No plans with subscribers yet.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Active "growth"}}
+<div class="card">
+  <h3>Growth &amp; churn by month</h3>
+  <table>
+    <thead><tr><th>Month</th><th class="right">New</th><th class="right">Reactivated</th><th class="right">Suspended</th><th class="right">Churned</th><th class="right">Net growth</th></tr></thead>
+    <tbody>
+    {{range $d.Growth}}
+      <tr>
+        <td>{{.Month.Format "Jan 2006"}}</td>
+        <td class="right num">{{.NewConnections}}</td>
+        <td class="right num">{{.Reactivations}}</td>
+        <td class="right num">{{.Suspended}}</td>
+        <td class="right num">{{.Churned}}</td>
+        <td class="right num">{{.NetGrowth}}</td>
+      </tr>
+    {{else}}<tr><td colspan="6" class="empty">No data in this window.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Active "ticket-resolution"}}
+<div class="card">
+  <h3>Ticket resolution by month</h3>
+  <table>
+    <thead><tr><th>Month</th><th>Category</th><th>Priority</th><th class="right">Raised</th><th class="right">Resolved</th><th class="right">Reopens</th><th class="right">Median hrs</th><th class="right">Within SLA</th></tr></thead>
+    <tbody>
+    {{range $d.TicketResolution}}
+      <tr>
+        <td>{{.Month.Format "Jan 2006"}}</td>
+        <td>{{.Category}}</td>
+        <td>{{.Priority}}</td>
+        <td class="right num">{{.Raised}}</td>
+        <td class="right num">{{.Resolved}}</td>
+        <td class="right num">{{.Reopens}}</td>
+        <td class="right num">{{optHours .MedianResolutionHours}}</td>
+        <td class="right num">{{.ResolvedWithinSLA}}</td>
+      </tr>
+    {{else}}<tr><td colspan="8" class="empty">No tickets in this window.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Active "collection"}}
+<div class="card">
+  <h3>Collections by franchise, by month</h3>
+  <table>
+    <thead><tr><th>Franchise</th><th>Month</th><th class="right">Billed</th><th class="right">Collected</th><th class="right">Rate</th><th class="right">Commission</th><th class="right">Paying subs</th></tr></thead>
+    <tbody>
+    {{range $d.Collection}}
+      <tr>
+        <td>{{.FranchiseName}}</td>
+        <td>{{.Month.Format "Jan 2006"}}</td>
+        <td class="right num">&#8377;{{money .Billed}}</td>
+        <td class="right num">&#8377;{{money .Collected}}</td>
+        <td class="right num">{{optPct .CollectionRatePct}}%</td>
+        <td class="right num">&#8377;{{money .Commission}}</td>
+        <td class="right num">{{.PayingSubscribers}}</td>
+      </tr>
+    {{else}}<tr><td colspan="7" class="empty">No franchise activity in this window.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}

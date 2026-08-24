@@ -318,6 +318,8 @@ func run(ctx context.Context) error {
 		Franchises: database.Revenue(),
 		// Same *db.InventoryStore instance already wired for internal/api.
 		Inventory: database.Inventory(),
+		// Same *db.ReportingStore instance already wired for internal/api.
+		Reporting: database.Reporting(),
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —

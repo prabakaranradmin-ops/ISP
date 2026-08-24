@@ -173,6 +173,9 @@ type HandlerDeps struct {
 	// issue/return, and (owner/billing only) device-type and purchase
 	// management.
 	Inventory InventoryStore
+	// Reporting backs the Reports screen: plan mix, growth/churn, ticket
+	// resolution and franchise collection performance.
+	Reporting ReportingStore
 }
 
 // Handler serves the console.
@@ -200,6 +203,7 @@ type Handler struct {
 	jwtSecret         string
 	franchises        FranchiseStore
 	inventory         InventoryStore
+	reporting         ReportingStore
 }
 
 // NewHandler constructs the console handler.
@@ -228,6 +232,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		jwtSecret:         deps.JWTSecret,
 		franchises:        deps.Franchises,
 		inventory:         deps.Inventory,
+		reporting:         deps.Reporting,
 	}
 }
 
@@ -296,6 +301,10 @@ var sections = []Section{
 	// touch physical hardware.
 	{"inventory", "Inventory", "/staff/inventory",
 		[]string{"isp_owner", "noc_engineer", "technician", "billing_admin"}, false},
+	// Same reach as Revenue: growth, plan-mix and collection performance are
+	// financial/business analytics, not day-to-day operations.
+	{"reports", "Reports", "/staff/reports",
+		[]string{"isp_owner", "billing_admin"}, false},
 }
 
 // AllowedSections returns the sections a given operator may use.
@@ -369,6 +378,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/inventory/devices/{serial}/issue", h.authed(h.requireCSRF(h.IssueDeviceForm)))
 	mux.Handle("POST /staff/inventory/devices/{serial}/return", h.authed(h.requireCSRF(h.ReturnDeviceForm)))
 	mux.Handle("POST /staff/inventory/purchases/new", h.authed(h.requireCSRF(h.RecordPurchaseForm)))
+	mux.Handle("GET /staff/reports", h.authed(h.Reports))
 	mux.Handle("GET /staff/accounts", h.authed(h.StaffAccounts))
 	mux.Handle("POST /staff/accounts/new", h.authed(h.requireCSRF(h.CreateStaffAccount)))
 	mux.Handle("POST /staff/accounts/{id}/update", h.authed(h.requireCSRF(h.UpdateStaffAccount)))
