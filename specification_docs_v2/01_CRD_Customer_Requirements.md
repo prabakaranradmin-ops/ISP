@@ -366,24 +366,32 @@ new backend design work was needed.
 
 ### CRD-EXP-006 — General ledger / accounts management
 
-*(Design done 2026-08-24 — see DBD §6.2 "General ledger" for the full
-schema. Not yet built.)* Today's "double-entry" (`internal/billing/wallet.go`)
-is a per-subscriber prepaid wallet ledger — correct and real, but not a
-chart of accounts. There is no way to record the ISP's own business expenses
-(rent, salaries, upstream bandwidth bills, equipment purchases already
-tracked in inventory) against revenue, so there is no P&L for the
-*business*, only for each subscriber's wallet and (since § 1.11) each
-franchise partner's commission.
+*(Phase 1 done 2026-08-24 — see DBD §6.2 "General ledger" for the schema.
+Phase 2 not built, and not authorized by this design.)* Today's
+"double-entry" (`internal/billing/wallet.go`) is a per-subscriber prepaid
+wallet ledger — correct and real, but not a chart of accounts. Before this,
+there was no way to record the ISP's own business expenses (rent, salaries,
+upstream bandwidth bills, equipment purchases already tracked in inventory)
+against revenue, so there was no P&L for the *business*, only for each
+subscriber's wallet and (since § 1.11) each franchise partner's commission.
 
-The design splits this into two phases, and only the first is authorized to
-build from this document alone:
+The design splits this into two phases:
 
-- **Phase 1 (buildable now)** — `chart_of_accounts`, `gl_journal_entries`,
-  `gl_journal_lines` with a deferred trigger enforcing every entry balances,
-  a starter chart of accounts, trial balance and P&L/balance sheet reporting
-  functions, and a manual journal-entry console screen. Entirely standalone
-  — touches no existing table or code path, so it can be built and verified
-  in isolation the same way every CRD-EXP-005 screen was.
+- **Phase 1 (done)** — `chart_of_accounts`, `gl_journal_entries`,
+  `gl_journal_lines` (migration `043_create_general_ledger.sql`) with a
+  deferred trigger (`trg_gl_journal_balanced`) enforcing every entry
+  balances, a starter chart of accounts, trial balance
+  (`v_gl_trial_balance`) and income-statement/balance-sheet reporting
+  functions, a manual journal-entry console screen
+  (`internal/staffui/ledger.go`), and API routes at `/api/v1/ledger/*`
+  (`internal/api/ledger.go`). Standalone as designed — touches no existing
+  table or code path. One real bug found and fixed while implementing the
+  reporting functions: an early draft filtered the date window in the
+  entries join's `ON` clause, which does not restrict which lines get
+  summed (a line's `journal_entry_id` always resolves to some entry) and
+  would have silently reported all-time totals as if they were the
+  requested period; fixed by moving the date check inside the `SUM`'s
+  `CASE` instead.
 - **Phase 2 (needs its own sign-off when scoped)** — auto-posting from
   wallet recharges, franchise commission, and received purchase orders. Each
   of these adds a second write next to an already-correct, live financial
@@ -488,7 +496,8 @@ has a specific reason a bought-in HR system will not work for it.
 | CRD-EXP-005 (5 console screens) | Yes, fully | Low — established pattern | **Done (2026-08-24)** |
 | Franchise-partner self-service login (§ CRD-EXP-005 follow-up) | Yes, fully | Low | **Done (2026-08-24)** |
 | CRD-EXP-007 (procurement lifecycle, no ledger posting) | Yes, fully | Medium | **Done (2026-08-24)** |
-| CRD-EXP-006 (GL/accounts) | No | High — real financial-software design | P2 |
+| CRD-EXP-006 Phase 1 (standalone GL) | Yes, fully | Medium | **Done (2026-08-24)** |
+| CRD-EXP-006 Phase 2 (auto-posting integration) | No | High — touches 3 live financial code paths | Needs its own sign-off when scoped |
 | CRD-EXP-010 (voucher reseller settlement) | Partial (attribution yes, commission no) | Medium, but needs a ledger-schema decision first | P2 — same care as CRD-EXP-006, not a P3 wire-up |
 | CRD-EXP-008 (network diagram) | No | Medium | P4 — no outcome in § 1.1 depends on it |
 | CRD-EXP-011 (HR/payroll) | No | High, and arguably not this product's job | P4 — recommend integration over build |
