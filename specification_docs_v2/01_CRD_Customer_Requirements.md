@@ -317,43 +317,47 @@ checklist with no sequencing.
 
 ### CRD-EXP-005 — Finish wiring what § 1.11 Phase 3 already built
 
-Four Phase 3 items have working, tested backends with no console screen —
-the same "built but unreachable" gap the franchise module had, now found in
-four more places. All four follow the exact pattern `internal/staffui/nas.go`
-and (as of 2026-08-24) `internal/staffui/franchise.go` already establish:
-a thin `staffui` handler over an existing store interface, one new
-`Section` entry, one or two templates. No new backend design work — this is
-console-screen labor, sequenced first because it is the fastest path to
-closing a real, already-built gap.
+*(Status 2026-08-24: done.)* Five Phase 3 items had working, tested backends
+with no console screen — the same "built but unreachable" gap the franchise
+module had, found in five more places. All five followed the exact pattern
+`internal/staffui/nas.go` established: a thin `staffui` handler over an
+existing store interface, one new `Section` entry, one or two templates. No
+new backend design work was needed.
 
-- **Franchise partner self-service login** — `lco`, `franchise_admin` and
-  `franchise_staff` roles exist and are scoped correctly at the API
-  (`internal/api/franchises.go`'s `callerFranchiseScope`), but
-  `AllowedSections` (`internal/staffui/staffui.go`) maps none of them to any
-  section, so such an account signs in to an empty console today. Needs its
-  own restricted section set (own subscribers, own P&L, nothing
-  cross-partner) — not the owner's `franchise` section widened.
-- **Inventory / CPE console screen** — `internal/inventory/inventory.go` and
-  `internal/api/inventory.go` fully track device types, serials, issue/
-  return status and vendor purchases (`/api/v1/cpe/types`, `/cpe/devices`,
-  `/cpe/devices/{serial}/issue|return`, `/cpe/stock`, `/cpe/purchases`); no
-  console screen exists.
-- **General reporting console screen** — `internal/reporting/rows.go`'s four
-  reports (plan-mix, growth/churn, ticket resolution, per-franchise
-  collections) are routed at `/api/v1/reports/{report}` with CSV export; only
-  GSTR-1 (a fifth, tax-specific report) has a console screen today.
-- **Task management console screen** — ad hoc field-task assignment
-  (`/api/v1/field-tasks`, migration `026_create_task_approval_workflows.sql`)
-  and second-approver sign-off (`internal/api/workflow.go`) both work and are
-  tested; neither has a console screen.
-- **Ticket SLA/priority visible in the console** — `023_create_sla_engine.sql`
-  added `priority`, `sla_response_due_at`, `sla_resolution_due_at` to
-  `tickets`, with breach scanning in `internal/tickets/sla_scanner.go` and
-  full exposure via the API's `TicketRecord`. The console's Tickets screen
-  (`internal/staffui/screens.go`) renders `portal.TicketEntry`, a narrower
-  type with no priority or due-by fields — so the data exists and is
-  correctly computed, but no operator can see it without calling the API
-  directly.
+- **Franchises console screen** — done (`internal/staffui/franchise.go`):
+  onboard a partner, view any partner's or the consolidated P&L. Still open:
+  a restricted **franchise partner self-service login** — `lco`,
+  `franchise_admin` and `franchise_staff` roles exist and are scoped
+  correctly at the API (`internal/api/franchises.go`'s
+  `callerFranchiseScope`), but `AllowedSections`
+  (`internal/staffui/staffui.go`) maps none of them to any section, so such
+  an account signs in to an empty console today. Needs its own restricted
+  section set (own subscribers, own P&L, nothing cross-partner) — not the
+  owner's `franchise` section widened. Tracked as its own follow-up, not
+  part of CRD-EXP-005 as shipped.
+- **Inventory console screen** — done (`internal/staffui/inventory.go`):
+  stock levels and the device roster (with inline issue/return) for owner,
+  NOC, technician and billing admin; device-type and purchase management
+  gated to owner/billing admin.
+- **Reports console screen** — done (`internal/staffui/reports.go`): plan
+  mix, growth/churn, ticket resolution and per-franchise collections, as
+  server-rendered tabs. GSTR-1 keeps its own separate screen (tax filing,
+  not general analytics). No franchise-scoped filter yet — needs the same
+  franchise-partner console identity CRD-EXP-005's own follow-up above does.
+- **Tasks console screen** — done (`internal/staffui/tasks.go`): the field-
+  task queue (staff-wide visibility, csr/technician/owner can dispatch) and
+  the pending-approvals panel (billing_admin/owner only). Approving a
+  request delegates to a new `api.Handler.ExecuteApprovedRequest(ctx, id,
+  actor)` method — extracted from `ApproveRequest`'s HTTP handler so the
+  wallet-credit/refund/terminate execution logic exists in exactly one
+  place, not reimplemented in `staffui`.
+- **Ticket priority/SLA visible in the console** — done: `portal.TicketEntry`
+  (shared by the subscriber portal and the staff console — `staffTicketStore`
+  wraps the same `PortalStore.ListTickets` for both) now carries `Priority`,
+  `SLAResponseDueAt` and `SLAResolutionDueAt`, selected by the one query both
+  callers use. Only the staff Tickets template renders them; the subscriber
+  portal is unchanged, matching `CreateTicket`'s existing rule that a
+  subscriber never sets their own priority.
 
 ### CRD-EXP-006 — General ledger / accounts management
 
@@ -442,7 +446,7 @@ has a specific reason a bought-in HR system will not work for it.
 
 | Item | Backend exists? | Effort to close | Recommended priority |
 |---|---|---|---|
-| CRD-EXP-005 (5 console screens) | Yes, fully | Low — established pattern | P1, do first |
+| CRD-EXP-005 (5 console screens) | Yes, fully | Low — established pattern | **Done (2026-08-24)** |
 | CRD-EXP-006 (GL/accounts) | No | High — real financial-software design | P2 |
 | CRD-EXP-007 (procurement) | Partial (CPE-only) | Medium | P3, after CRD-EXP-006 |
 | CRD-EXP-010 (voucher reseller tier) | Partial (vouchers yes, tier no) | Medium — extend franchise pattern | P3 |
