@@ -198,6 +198,9 @@ type HandlerDeps struct {
 	FieldTasks       FieldTaskStore
 	Approvals        ApprovalStore
 	ApprovalExecutor ApprovalExecutor
+	// Procurement backs the Procurement screen: general purchase orders,
+	// distinct from Inventory's CPE-restocking purchases.
+	Procurement ProcurementStore
 }
 
 // Handler serves the console.
@@ -229,6 +232,7 @@ type Handler struct {
 	fieldTasks        FieldTaskStore
 	approvals         ApprovalStore
 	approvalExecutor  ApprovalExecutor
+	procurement       ProcurementStore
 }
 
 // NewHandler constructs the console handler.
@@ -261,6 +265,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		fieldTasks:        deps.FieldTasks,
 		approvals:         deps.Approvals,
 		approvalExecutor:  deps.ApprovalExecutor,
+		procurement:       deps.Procurement,
 	}
 }
 
@@ -329,6 +334,10 @@ var sections = []Section{
 		[]string{"lco", "franchise_admin", "franchise_staff"}, false},
 	{"my-pnl", "My P&L", "/staff/my-pnl",
 		[]string{"lco", "franchise_admin", "franchise_staff"}, false},
+	// Same reach as Inventory's own purchase/device-type gating: a spend
+	// decision is procurement, whatever it is being spent on.
+	{"procurement", "Procurement", "/staff/procurement",
+		[]string{"isp_owner", "billing_admin"}, false},
 	// Technicians handle hardware day to day (issue/return); NOC engineers
 	// track it against the network estate; purchases and device-type
 	// changes are procurement, gated inside the screen itself to
@@ -419,6 +428,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/franchise/{id}", h.authed(h.FranchiseDetail))
 	mux.Handle("GET /staff/my-subscribers", h.authed(h.MySubscribers))
 	mux.Handle("GET /staff/my-pnl", h.authed(h.MyPnL))
+	mux.Handle("GET /staff/procurement", h.authed(h.Procurement))
+	mux.Handle("POST /staff/procurement/new", h.authed(h.requireCSRF(h.CreatePurchaseOrderForm)))
+	mux.Handle("POST /staff/procurement/{id}/decide", h.authed(h.requireCSRF(h.DecidePurchaseOrderForm)))
+	mux.Handle("POST /staff/procurement/{id}/fulfilment", h.authed(h.requireCSRF(h.UpdateFulfilmentForm)))
 	mux.Handle("GET /staff/inventory", h.authed(h.Inventory))
 	mux.Handle("POST /staff/inventory/types/new", h.authed(h.requireCSRF(h.CreateDeviceTypeForm)))
 	mux.Handle("POST /staff/inventory/devices/new", h.authed(h.requireCSRF(h.CreateDeviceForm)))

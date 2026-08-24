@@ -112,6 +112,7 @@ type Handler struct {
 	nas             NASQuerier
 	reports         ReportQuerier
 	archives        ArchiveLookup
+	procurement     ProcurementQuerier
 	// subscriberLister backs revenue.ListSubscribersHandler, which is a
 	// plain http.HandlerFunc rather than a method on Handler — so the
 	// dependency is held here and passed to it at route-registration time.
@@ -169,6 +170,7 @@ type HandlerDeps struct {
 	NAS              NASQuerier
 	Reports          ReportQuerier
 	Archives         ArchiveLookup
+	Procurement      ProcurementQuerier
 
 	// Health serves GET /api/v1/subscribers/{id}/health (FR-OBS-004). The
 	// implementation lives in internal/health, which cannot be imported here
@@ -223,6 +225,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		nas:              deps.NAS,
 		reports:          deps.Reports,
 		archives:         deps.Archives,
+		procurement:      deps.Procurement,
 		health:           deps.Health,
 
 		razorpayWebhookSecret: deps.RazorpayWebhookSecret,
@@ -379,6 +382,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		admin(http.HandlerFunc(h.ListPurchases)))
 	mux.Handle("POST /api/v1/cpe/purchases",
 		admin(http.HandlerFunc(h.RecordPurchase)))
+
+	// General procurement (CRD-EXP-007) — purchase orders for anything, not
+	// just CPE restocking above. Owner/billing_admin end to end: requesting,
+	// deciding and updating fulfilment are all a spend decision, not
+	// day-to-day operations.
+	mux.Handle("POST /api/v1/procurement/orders",
+		admin(http.HandlerFunc(h.CreatePurchaseOrder)))
+	mux.Handle("GET /api/v1/procurement/orders",
+		admin(http.HandlerFunc(h.ListPurchaseOrders)))
+	mux.Handle("POST /api/v1/procurement/orders/{id}/decide",
+		admin(http.HandlerFunc(h.DecidePurchaseOrder)))
+	mux.Handle("POST /api/v1/procurement/orders/{id}/fulfilment",
+		admin(http.HandlerFunc(h.UpdateFulfilmentStatus)))
 
 	// TR-069 remote control (FR-CPE-003 | MDS §4.19). NOC and technicians:
 	// these are field-operations actions, and every one of them queues an

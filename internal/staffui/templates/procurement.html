@@ -1,0 +1,100 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Procurement</h1>
+<p class="muted">Purchase orders for anything that isn't CPE restocking (see Inventory for that). Not posted to any ledger yet &mdash; that depends on general-ledger accounting, which doesn't exist in this deployment.</p>
+
+<div class="card">
+  <h3>Purchase orders</h3>
+  <form class="searchbar" method="get" action="/staff/procurement">
+    <select name="status" onchange="this.form.submit()">
+      <option value="" {{if eq $d.StatusFilter ""}}selected{{end}}>All statuses</option>
+      <option value="requested" {{if eq $d.StatusFilter "requested"}}selected{{end}}>Requested</option>
+      <option value="approved" {{if eq $d.StatusFilter "approved"}}selected{{end}}>Approved</option>
+      <option value="rejected" {{if eq $d.StatusFilter "rejected"}}selected{{end}}>Rejected</option>
+      <option value="ordered" {{if eq $d.StatusFilter "ordered"}}selected{{end}}>Ordered</option>
+      <option value="received" {{if eq $d.StatusFilter "received"}}selected{{end}}>Received</option>
+      <option value="cancelled" {{if eq $d.StatusFilter "cancelled"}}selected{{end}}>Cancelled</option>
+    </select>
+    <noscript><button class="btn" type="submit">Filter</button></noscript>
+  </form>
+  <table>
+    <thead><tr><th>ID</th><th>Description</th><th>Vendor</th><th>Category</th><th class="right">Amount</th><th>Status</th><th>Requested by</th><th class="right">Action</th></tr></thead>
+    <tbody>
+    {{range $d.Orders}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td>{{.Description}}</td>
+        <td>{{.Vendor}}</td>
+        <td>{{.Category}}</td>
+        <td class="right num">&#8377;{{.Amount}}</td>
+        <td><span class="pill {{badge .Status}}">{{.Status}}</span></td>
+        <td>{{.RequestedBy}}</td>
+        <td class="right">
+          {{if eq .Status "requested"}}
+          <details>
+            <summary class="btn">Decide</summary>
+            <form method="post" action="/staff/procurement/{{.ID}}/decide" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <select name="decision">
+                <option value="approve">Approve</option>
+                <option value="reject">Reject</option>
+              </select>
+              <input name="reason" placeholder="Reason (required to reject)">
+              <button type="submit">Confirm</button>
+            </form>
+          </details>
+          {{else if eq .Status "approved"}}
+          <details>
+            <summary class="btn">Fulfilment</summary>
+            <form method="post" action="/staff/procurement/{{.ID}}/fulfilment" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <select name="status">
+                <option value="ordered">Ordered</option>
+                <option value="received">Received</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+              <button type="submit">Update</button>
+            </form>
+          </details>
+          {{else if eq .Status "ordered"}}
+          <form method="post" action="/staff/procurement/{{.ID}}/fulfilment" class="inline">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="hidden" name="status" value="received">
+            <button type="submit">Mark received</button>
+          </form>
+          {{else}}<span class="muted">&mdash;</span>{{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="8" class="empty">No purchase orders yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>File a purchase order</h3>
+  <form method="post" action="/staff/procurement/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="formgrid">
+      <label>Description
+        <input name="description" required placeholder="What is this for?">
+      </label>
+      <label>Vendor
+        <input name="vendor" required placeholder="Supplier or provider name">
+      </label>
+      <label>Category
+        <select name="category">
+          <option value="hardware">Hardware</option>
+          <option value="services">Services</option>
+          <option value="other" selected>Other</option>
+        </select>
+      </label>
+      <label>Amount
+        <input name="amount" required placeholder="15000.00">
+      </label>
+    </div>
+    <button class="primary" type="submit">File for approval</button>
+  </form>
+</div>
+{{end}}

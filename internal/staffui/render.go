@@ -153,7 +153,7 @@ var pageNames = []string{
 	"login", "subscribers", "subscriber_detail", "subscriber_new",
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
-	"inventory", "reports", "tasks", "my_subscribers",
+	"inventory", "reports", "tasks", "my_subscribers", "procurement",
 }
 
 var pages = func() map[string]*template.Template {
