@@ -1,0 +1,177 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Inventory</h1>
+<p class="muted">CPE devices &mdash; routers and ONUs issued to subscribers, tracked from purchase to return.</p>
+
+<div class="card">
+  <h3>Stock levels</h3>
+  <table>
+    <thead><tr><th>Device type</th><th>Vendor</th><th>In stock</th><th>Issued</th><th>Faulty</th><th>Reorder at</th><th></th></tr></thead>
+    <tbody>
+    {{range $d.StockLevels}}
+      <tr>
+        <td>{{.DeviceType}}</td>
+        <td>{{.Vendor}}</td>
+        <td class="num">{{.InStock}}</td>
+        <td class="num">{{.Issued}}</td>
+        <td class="num">{{.Faulty}}</td>
+        <td class="num">{{.ReorderThreshold}}</td>
+        <td>{{if .IsLow}}<span class="pill bad">low stock</span>{{else}}<span class="pill ok">ok</span>{{end}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">No device types yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Devices</h3>
+  <form class="searchbar" method="get" action="/staff/inventory">
+    <select name="status" onchange="this.form.submit()">
+      <option value="" {{if eq $d.StatusFilter ""}}selected{{end}}>All statuses</option>
+      <option value="in_stock" {{if eq $d.StatusFilter "in_stock"}}selected{{end}}>In stock</option>
+      <option value="issued" {{if eq $d.StatusFilter "issued"}}selected{{end}}>Issued</option>
+      <option value="returned" {{if eq $d.StatusFilter "returned"}}selected{{end}}>Returned</option>
+      <option value="faulty" {{if eq $d.StatusFilter "faulty"}}selected{{end}}>Faulty</option>
+    </select>
+    <noscript><button class="btn" type="submit">Filter</button></noscript>
+  </form>
+  <table>
+    <thead><tr><th>Serial</th><th>Type</th><th>MAC</th><th>Status</th><th>Subscriber</th><th>Location</th><th class="right">Action</th></tr></thead>
+    <tbody>
+    {{range $d.Devices}}
+      <tr>
+        <td>{{.SerialNumber}}</td>
+        <td>{{.DeviceType}}</td>
+        <td>{{if .MACAddress}}{{.MACAddress}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td><span class="pill {{badge .Status}}">{{.Status}}</span></td>
+        <td>{{if .SubscriberID}}<a href="/staff/subscribers/{{.SubscriberID}}">#{{.SubscriberID}}</a>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td>{{if .Location}}{{.Location}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="right">
+          {{if eq .Status "in_stock"}}
+          <details>
+            <summary class="btn">Issue</summary>
+            <form method="post" action="/staff/inventory/devices/{{.SerialNumber}}/issue" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input name="subscriber_id" placeholder="Subscriber id" inputmode="numeric" required>
+              <button type="submit">Issue</button>
+            </form>
+          </details>
+          {{else if eq .Status "issued"}}
+          <details>
+            <summary class="btn">Return</summary>
+            <form method="post" action="/staff/inventory/devices/{{.SerialNumber}}/return" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <select name="status">
+                <option value="returned">Returned (inspect)</option>
+                <option value="faulty">Faulty</option>
+              </select>
+              <button type="submit">Confirm</button>
+            </form>
+          </details>
+          {{else}}<span class="muted">&mdash;</span>{{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">No devices match this filter.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Register a device</h3>
+  <form method="post" action="/staff/inventory/devices/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="formgrid">
+      <label>Device type
+        <select name="device_type_id">
+          {{range $d.DeviceTypes}}<option value="{{.ID}}">{{.Vendor}} {{.Name}}</option>{{end}}
+        </select>
+      </label>
+      <label>Serial number
+        <input name="serial_number" required placeholder="SN-2026-00042">
+      </label>
+      <label>MAC address
+        <input name="mac_address" placeholder="Optional">
+      </label>
+      <label>Location
+        <input name="location" placeholder="Warehouse, van, or site">
+      </label>
+    </div>
+    <button class="primary" type="submit">Register device</button>
+  </form>
+</div>
+
+{{if $d.ShowProcurement}}
+<div class="card">
+  <h3>Add a device type</h3>
+  <form method="post" action="/staff/inventory/types/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="formgrid">
+      <label>Name
+        <input name="name" required placeholder="hAP ac2">
+      </label>
+      <label>Vendor
+        <input name="vendor" required placeholder="MikroTik">
+      </label>
+      <label>Reorder threshold
+        <input name="reorder_threshold" inputmode="numeric" placeholder="5">
+      </label>
+    </div>
+    <button class="primary" type="submit">Add device type</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Purchases</h3>
+  <table>
+    <thead><tr><th>When</th><th>Device type</th><th>Vendor</th><th class="right">Qty</th><th class="right">Unit cost</th><th class="right">Total</th><th>Invoice ref</th><th>By</th></tr></thead>
+    <tbody>
+    {{range $d.Purchases}}
+      <tr>
+        <td>{{datetime .PurchasedAt}}</td>
+        <td>{{.DeviceTypeID}}</td>
+        <td>{{.Vendor}}</td>
+        <td class="right num">{{.Quantity}}</td>
+        <td class="right num">&#8377;{{.UnitCostStr}}</td>
+        <td class="right num">&#8377;{{.TotalCostStr}}</td>
+        <td>{{if .InvoiceRef}}{{.InvoiceRef}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td>{{.PurchasedBy}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="8" class="empty">No purchases recorded yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Record a purchase</h3>
+  <form method="post" action="/staff/inventory/purchases/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="formgrid">
+      <label>Device type
+        <select name="device_type_id">
+          {{range $d.DeviceTypes}}<option value="{{.ID}}">{{.Vendor}} {{.Name}}</option>{{end}}
+        </select>
+      </label>
+      <label>Vendor
+        <input name="vendor" required placeholder="Supplier name">
+      </label>
+      <label>Quantity
+        <input name="quantity" inputmode="numeric" required placeholder="20">
+      </label>
+      <label>Unit cost
+        <input name="unit_cost" required placeholder="1250.00">
+      </label>
+      <label>Invoice reference
+        <input name="invoice_ref" placeholder="Optional">
+      </label>
+    </div>
+    <button class="primary" type="submit">Record purchase</button>
+  </form>
+</div>
+{{end}}
+{{end}}

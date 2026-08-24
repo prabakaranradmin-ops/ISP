@@ -169,6 +169,10 @@ type HandlerDeps struct {
 	// *db.RevenueStore instance as Revenue above — FranchiseStore's methods
 	// already live on that store, so no separate wiring is needed.
 	Franchises FranchiseStore
+	// Inventory backs the Inventory screen: CPE stock levels, device
+	// issue/return, and (owner/billing only) device-type and purchase
+	// management.
+	Inventory InventoryStore
 }
 
 // Handler serves the console.
@@ -195,6 +199,7 @@ type Handler struct {
 	tasks             TaskEnqueuer
 	jwtSecret         string
 	franchises        FranchiseStore
+	inventory         InventoryStore
 }
 
 // NewHandler constructs the console handler.
@@ -222,6 +227,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		tasks:             deps.Tasks,
 		jwtSecret:         deps.JWTSecret,
 		franchises:        deps.Franchises,
+		inventory:         deps.Inventory,
 	}
 }
 
@@ -281,6 +287,15 @@ var sections = []Section{
 	// separately (CRD §1.11 follow-up), not this screen widened.
 	{"franchise", "Franchises", "/staff/franchise",
 		[]string{"isp_owner"}, false},
+	// Technicians handle hardware day to day (issue/return); NOC engineers
+	// track it against the network estate; purchases and device-type
+	// changes are procurement, gated inside the screen itself to
+	// isp_owner/billing_admin rather than by hiding the whole section from
+	// billing_admin (who has no other reason to see hardware otherwise, but
+	// does need to record what was bought). CSR is excluded: they don't
+	// touch physical hardware.
+	{"inventory", "Inventory", "/staff/inventory",
+		[]string{"isp_owner", "noc_engineer", "technician", "billing_admin"}, false},
 }
 
 // AllowedSections returns the sections a given operator may use.
@@ -348,6 +363,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/franchise", h.authed(h.Franchises))
 	mux.Handle("POST /staff/franchise/new", h.authed(h.requireCSRF(h.CreateFranchiseForm)))
 	mux.Handle("GET /staff/franchise/{id}", h.authed(h.FranchiseDetail))
+	mux.Handle("GET /staff/inventory", h.authed(h.Inventory))
+	mux.Handle("POST /staff/inventory/types/new", h.authed(h.requireCSRF(h.CreateDeviceTypeForm)))
+	mux.Handle("POST /staff/inventory/devices/new", h.authed(h.requireCSRF(h.CreateDeviceForm)))
+	mux.Handle("POST /staff/inventory/devices/{serial}/issue", h.authed(h.requireCSRF(h.IssueDeviceForm)))
+	mux.Handle("POST /staff/inventory/devices/{serial}/return", h.authed(h.requireCSRF(h.ReturnDeviceForm)))
+	mux.Handle("POST /staff/inventory/purchases/new", h.authed(h.requireCSRF(h.RecordPurchaseForm)))
 	mux.Handle("GET /staff/accounts", h.authed(h.StaffAccounts))
 	mux.Handle("POST /staff/accounts/new", h.authed(h.requireCSRF(h.CreateStaffAccount)))
 	mux.Handle("POST /staff/accounts/{id}/update", h.authed(h.requireCSRF(h.UpdateStaffAccount)))

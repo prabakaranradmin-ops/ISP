@@ -49,6 +49,7 @@ var sectionShortcuts = map[string]string{
 	"lea":         "l",
 	"demo":        "d",
 	"franchise":   "f",
+	"inventory":   "i",
 }
 
 func shortcutFor(key string) string { return sectionShortcuts[key] }
@@ -57,11 +58,11 @@ func shortcutFor(key string) string { return sectionShortcuts[key] }
 // list rather than having to be read word by word.
 func badgeClass(status string) string {
 	switch status {
-	case "active", "resolved", "closed", "sent", "delivered":
+	case "active", "resolved", "closed", "sent", "delivered", "in_stock":
 		return "ok"
-	case "grace_period", "open", "in_progress", "remind_7d", "remind_3d", "remind_1d":
+	case "grace_period", "open", "in_progress", "remind_7d", "remind_3d", "remind_1d", "issued", "returned":
 		return "warn"
-	case "soft_suspended", "hard_suspended", "terminated", "failed":
+	case "soft_suspended", "hard_suspended", "terminated", "failed", "faulty":
 		return "bad"
 	default:
 		return "neutral"
@@ -84,6 +85,7 @@ var pageNames = []string{
 	"login", "subscribers", "subscriber_detail", "subscriber_new",
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
+	"inventory",
 }
 
 var pages = func() map[string]*template.Template {

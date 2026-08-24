@@ -316,6 +316,8 @@ func run(ctx context.Context) error {
 		// implements FranchiseStore, so the Franchises screen needs no
 		// store of its own.
 		Franchises: database.Revenue(),
+		// Same *db.InventoryStore instance already wired for internal/api.
+		Inventory: database.Inventory(),
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —
