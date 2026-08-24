@@ -320,6 +320,13 @@ func run(ctx context.Context) error {
 		Inventory: database.Inventory(),
 		// Same *db.ReportingStore instance already wired for internal/api.
 		Reporting: database.Reporting(),
+		// Same *db.WorkflowStore instance already wired for internal/api.
+		FieldTasks: database.Workflow(),
+		Approvals:  database.Workflow(),
+		// The API handler itself, same as SubscriberCreator/BulkActions:
+		// approving a request runs real wallet-credit/refund/terminate
+		// logic behind stores only internal/api holds.
+		ApprovalExecutor: apiHandler,
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —

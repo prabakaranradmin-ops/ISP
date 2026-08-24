@@ -1,0 +1,111 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Tasks</h1>
+<p class="muted">Ad hoc field work, tracked separately from the ticket queue, plus any sensitive action waiting on a second approver.</p>
+
+{{if $d.ShowApprovals}}
+<div class="card">
+  <h3>Pending approvals</h3>
+  <p class="muted">Wallet credits, refunds and terminations wait here until a different staff member than the requester decides them.</p>
+  <table>
+    <thead><tr><th>ID</th><th>Action</th><th>Subscriber</th><th class="right">Amount</th><th>Reason</th><th>Requested by</th><th>Filed</th><th class="right">Decide</th></tr></thead>
+    <tbody>
+    {{range $d.Approvals}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td>{{.ActionType}}</td>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">#{{.SubscriberID}}</a></td>
+        <td class="right num">{{if .Amount}}&#8377;{{end}}{{optMoney .Amount}}</td>
+        <td>{{.Reason}}</td>
+        <td>{{.RequestedBy}}</td>
+        <td>{{datetime .CreatedAt}}</td>
+        <td class="right">
+          <form method="post" action="/staff/tasks/approvals/{{.ID}}/approve" class="inline">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <button type="submit">Approve</button>
+          </form>
+          <details>
+            <summary class="btn">Reject</summary>
+            <form method="post" action="/staff/tasks/approvals/{{.ID}}/reject" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input name="reason" placeholder="Reason" required>
+              <button type="submit">Confirm</button>
+            </form>
+          </details>
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="8" class="empty">No approvals pending.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+<div class="card">
+  <h3>Field tasks</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Title</th><th>Subscriber</th><th>Assigned to</th><th>Status</th><th>Due</th>{{if $d.ShowFieldTaskActions}}<th class="right">Update</th>{{end}}</tr></thead>
+    <tbody>
+    {{range $d.FieldTasks}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td>{{.Title}}</td>
+        <td>{{if .SubscriberID}}<a href="/staff/subscribers/{{.SubscriberID}}">#{{.SubscriberID}}</a>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td>{{.AssignedTo}}</td>
+        <td><span class="pill {{badge .Status}}">{{.Status}}</span></td>
+        <td>{{optDate .DueDate}}</td>
+        {{if $d.ShowFieldTaskActions}}
+        <td class="right">
+          <details>
+            <summary class="btn">Update</summary>
+            <form method="post" action="/staff/tasks/field/{{.ID}}/update" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <select name="status">
+                <option value="">Status unchanged</option>
+                <option value="open">Open</option>
+                <option value="in_progress">In progress</option>
+                <option value="completed">Completed</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+              <input name="assigned_to" placeholder="Reassign to (optional)">
+              <button type="submit">Save</button>
+            </form>
+          </details>
+        </td>
+        {{end}}
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">No field tasks yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{if $d.ShowFieldTaskActions}}
+<div class="card">
+  <h3>Assign a field task</h3>
+  <form method="post" action="/staff/tasks/field/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="formgrid">
+      <label>Title
+        <input name="title" required placeholder="Re-check ONU signal at site">
+      </label>
+      <label>Assign to
+        <input name="assigned_to" required placeholder="Staff username">
+      </label>
+      <label>Subscriber id
+        <input name="subscriber_id" inputmode="numeric" placeholder="Optional">
+      </label>
+      <label>Due date
+        <input name="due_date" type="date" placeholder="Optional">
+      </label>
+    </div>
+    <label>Description
+      <textarea name="description" rows="2" placeholder="Optional detail"></textarea>
+    </label>
+    <button class="primary" type="submit">Assign task</button>
+  </form>
+</div>
+{{end}}
+{{end}}

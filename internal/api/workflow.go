@@ -162,25 +162,51 @@ func (h *Handler) ApproveRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claimed, err := h.approvals.ClaimApprovalRequest(r.Context(), id, actor)
+	executed, err := h.ExecuteApprovedRequest(r.Context(), id, actor)
 	if err != nil {
+		if errors.Is(err, workflow.ErrAlreadyDecided) {
+			// Lost the race: another decision claimed this request between
+			// the read above and the conditional update inside it.
+			writeError(w, http.StatusConflict, "ERR_ALREADY_DECIDED", err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not claim approval request")
 		return
 	}
-	if claimed == nil {
-		// Lost the race: another decision claimed this request between the
-		// read above and this conditional update.
-		writeError(w, http.StatusConflict, "ERR_ALREADY_DECIDED", workflow.ErrAlreadyDecided.Error())
-		return
+
+	writeJSON(w, http.StatusOK, toApprovalResponse(executed))
+}
+
+// ExecuteApprovedRequest claims approval id as actor and, if the claim
+// lands, runs the action it authorizes and records the outcome. This is
+// the part of ApproveRequest that must never be duplicated — the atomic
+// claim and the wallet-credit/refund/terminate execution behind it — so it
+// is exposed as a plain method rather than left inline in the HTTP handler,
+// letting the staff console call exactly this and nothing rebuilt.
+//
+// The caller is responsible for the same pre-checks ApproveRequest makes
+// first (existence, workflow.ValidateDecision): this assumes the request is
+// still decidable and only guards against having lost the claim race.
+func (h *Handler) ExecuteApprovedRequest(ctx context.Context, id int, actor string) (*workflow.ApprovalRequest, error) {
+	if h.approvals == nil {
+		return nil, errors.New("approval store not configured")
 	}
 
-	executed := h.executeApprovedAction(r, claimed)
+	claimed, err := h.approvals.ClaimApprovalRequest(ctx, id, actor)
+	if err != nil {
+		return nil, err
+	}
+	if claimed == nil {
+		return nil, workflow.ErrAlreadyDecided
+	}
 
-	middleware.Audit(r.Context(), "approval.approve", strconv.Itoa(id), map[string]any{
+	executed := h.executeApprovedAction(ctx, claimed)
+
+	middleware.Audit(ctx, "approval.approve", strconv.Itoa(id), map[string]any{
 		"action_type": string(claimed.ActionType), "subscriber_id": claimed.SubscriberID,
 		"requested_by": claimed.RequestedBy, "status": string(executed.Status),
 	})
-	writeJSON(w, http.StatusOK, toApprovalResponse(executed))
+	return executed, nil
 }
 
 // executeApprovedAction runs the action a claimed request authorized and
@@ -191,8 +217,8 @@ func (h *Handler) ApproveRequest(w http.ResponseWriter, r *http.Request) {
 // "your approval landed, and the action it authorized failed" — carried in
 // the returned status/execution_error, not a 500 that would suggest the
 // decision itself did not stick.
-func (h *Handler) executeApprovedAction(r *http.Request, req *workflow.ApprovalRequest) *workflow.ApprovalRequest {
-	ledgerEntryID, execErr := h.performGatedAction(r, req)
+func (h *Handler) executeApprovedAction(ctx context.Context, req *workflow.ApprovalRequest) *workflow.ApprovalRequest {
+	ledgerEntryID, execErr := h.performGatedAction(ctx, req)
 
 	finalStatus := workflow.StatusExecuted
 	var execErrStr *string
@@ -208,7 +234,7 @@ func (h *Handler) executeApprovedAction(r *http.Request, req *workflow.ApprovalR
 		billing.LifecycleActionsTotal.WithLabelValues(string(req.ActionType) + "_approved").Inc()
 	}
 
-	if err := h.approvals.FinalizeApprovalExecution(r.Context(), req.ID, finalStatus, execErrStr, ledgerEntryID); err != nil {
+	if err := h.approvals.FinalizeApprovalExecution(ctx, req.ID, finalStatus, execErrStr, ledgerEntryID); err != nil {
 		// The action itself already ran; failing to record that is a
 		// reconciliation problem, not a reason to claim it did not happen.
 		log.Error().Err(err).Int("approval_id", req.ID).Msg("api: could not record approval execution outcome")
@@ -253,9 +279,7 @@ func auditGatedAction(ctx context.Context, req *workflow.ApprovalRequest, detail
 		strconv.Itoa(req.SubscriberID), detail)
 }
 
-func (h *Handler) performGatedAction(r *http.Request, req *workflow.ApprovalRequest) (*int, error) {
-	ctx := r.Context()
-
+func (h *Handler) performGatedAction(ctx context.Context, req *workflow.ApprovalRequest) (*int, error) {
 	switch req.ActionType {
 	case workflow.ActionWalletCredit, workflow.ActionRefund:
 		if h.walletSvc == nil {

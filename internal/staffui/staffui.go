@@ -176,6 +176,14 @@ type HandlerDeps struct {
 	// Reporting backs the Reports screen: plan mix, growth/churn, ticket
 	// resolution and franchise collection performance.
 	Reporting ReportingStore
+	// FieldTasks and Approvals back the two halves of the Tasks screen.
+	// ApprovalExecutor is the api.Handler instance itself (same pattern as
+	// SubscriberCreator/BulkActions above): approving a request executes
+	// real wallet/termination logic that lives behind stores only
+	// internal/api holds, so the console delegates rather than reimplements.
+	FieldTasks       FieldTaskStore
+	Approvals        ApprovalStore
+	ApprovalExecutor ApprovalExecutor
 }
 
 // Handler serves the console.
@@ -204,6 +212,9 @@ type Handler struct {
 	franchises        FranchiseStore
 	inventory         InventoryStore
 	reporting         ReportingStore
+	fieldTasks        FieldTaskStore
+	approvals         ApprovalStore
+	approvalExecutor  ApprovalExecutor
 }
 
 // NewHandler constructs the console handler.
@@ -233,6 +244,9 @@ func NewHandler(deps HandlerDeps) *Handler {
 		franchises:        deps.Franchises,
 		inventory:         deps.Inventory,
 		reporting:         deps.Reporting,
+		fieldTasks:        deps.FieldTasks,
+		approvals:         deps.Approvals,
+		approvalExecutor:  deps.ApprovalExecutor,
 	}
 }
 
@@ -305,6 +319,14 @@ var sections = []Section{
 	// financial/business analytics, not day-to-day operations.
 	{"reports", "Reports", "/staff/reports",
 		[]string{"isp_owner", "billing_admin"}, false},
+	// Field-task visibility is staff-wide (matches the API's own staffRead
+	// gate on GET /field-tasks); dispatching/updating tasks and deciding
+	// approvals are each gated further inside the screen itself, not by
+	// hiding the whole section — a billing_admin needs to see the field
+	// queue even though only csr/technician/owner can dispatch it, and vice
+	// versa for approvals.
+	{"tasks", "Tasks", "/staff/tasks",
+		[]string{"isp_owner", "noc_engineer", "billing_admin", "csr", "technician"}, false},
 }
 
 // AllowedSections returns the sections a given operator may use.
@@ -379,6 +401,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/inventory/devices/{serial}/return", h.authed(h.requireCSRF(h.ReturnDeviceForm)))
 	mux.Handle("POST /staff/inventory/purchases/new", h.authed(h.requireCSRF(h.RecordPurchaseForm)))
 	mux.Handle("GET /staff/reports", h.authed(h.Reports))
+	mux.Handle("GET /staff/tasks", h.authed(h.Tasks))
+	mux.Handle("POST /staff/tasks/field/new", h.authed(h.requireCSRF(h.CreateFieldTaskForm)))
+	mux.Handle("POST /staff/tasks/field/{id}/update", h.authed(h.requireCSRF(h.UpdateFieldTaskForm)))
+	mux.Handle("POST /staff/tasks/approvals/{id}/approve", h.authed(h.requireCSRF(h.ApproveTaskRequest)))
+	mux.Handle("POST /staff/tasks/approvals/{id}/reject", h.authed(h.requireCSRF(h.RejectTaskRequest)))
 	mux.Handle("GET /staff/accounts", h.authed(h.StaffAccounts))
 	mux.Handle("POST /staff/accounts/new", h.authed(h.requireCSRF(h.CreateStaffAccount)))
 	mux.Handle("POST /staff/accounts/{id}/update", h.authed(h.requireCSRF(h.UpdateStaffAccount)))

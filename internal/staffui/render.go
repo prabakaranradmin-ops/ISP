@@ -40,6 +40,36 @@ var funcMap = template.FuncMap{
 	// pointers, not bare float64s).
 	"optHours": optFloat1,
 	"optPct":   optFloat1,
+	// optMoney formats a nil-able *decimal.Decimal (workflow.ApprovalRequest's
+	// Amount is nil for a terminate request, which has no money attached).
+	"optMoney": optMoney,
+	// optDate/optString support the Tasks screen's nilable due-date and
+	// decided-by/reason fields without a template-side type mismatch (a
+	// template function can't accept a pointer where it declared a value
+	// type, unlike printing a pointer directly).
+	"optDate":   optDate,
+	"optString": optString,
+}
+
+func optMoney(d *decimal.Decimal) string {
+	if d == nil {
+		return "—"
+	}
+	return d.StringFixed(2)
+}
+
+func optDate(t *time.Time) string {
+	if t == nil {
+		return "—"
+	}
+	return t.Format("02 Jan 2006")
+}
+
+func optString(s *string) string {
+	if s == nil || *s == "" {
+		return "—"
+	}
+	return *s
 }
 
 func optFloat1(f *float64) string {
@@ -66,6 +96,7 @@ var sectionShortcuts = map[string]string{
 	"franchise":   "f",
 	"inventory":   "i",
 	"reports":     "p",
+	"tasks":       "k",
 }
 
 func shortcutFor(key string) string { return sectionShortcuts[key] }
@@ -74,11 +105,11 @@ func shortcutFor(key string) string { return sectionShortcuts[key] }
 // list rather than having to be read word by word.
 func badgeClass(status string) string {
 	switch status {
-	case "active", "resolved", "closed", "sent", "delivered", "in_stock":
+	case "active", "resolved", "closed", "sent", "delivered", "in_stock", "completed", "executed", "approved":
 		return "ok"
-	case "grace_period", "open", "in_progress", "remind_7d", "remind_3d", "remind_1d", "issued", "returned":
+	case "grace_period", "open", "in_progress", "remind_7d", "remind_3d", "remind_1d", "issued", "returned", "pending":
 		return "warn"
-	case "soft_suspended", "hard_suspended", "terminated", "failed", "faulty":
+	case "soft_suspended", "hard_suspended", "terminated", "failed", "faulty", "cancelled", "rejected", "execution_failed":
 		return "bad"
 	default:
 		return "neutral"
@@ -101,7 +132,7 @@ var pageNames = []string{
 	"login", "subscribers", "subscriber_detail", "subscriber_new",
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
-	"inventory", "reports",
+	"inventory", "reports", "tasks",
 }
 
 var pages = func() map[string]*template.Template {
