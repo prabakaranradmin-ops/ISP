@@ -41,6 +41,19 @@ type DeviceSummary struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// NetworkHealthRow is one registered NAS device's live standing (CRD-EXP-008)
+// — a cross-device view neither the per-subscriber health panel nor the
+// Routers screen's per-device list gives today: how many sessions are
+// actually active on it right now, read from the same
+// subscriber_session_history rows the health panel already trusts.
+type NetworkHealthRow struct {
+	ID             int    `json:"id"`
+	IP             string `json:"ip"`
+	Vendor         string `json:"vendor"`
+	Description    string `json:"description,omitempty"`
+	ActiveSessions int    `json:"active_sessions"`
+}
+
 // NewNASDevice is a NAS to register.
 //
 // The secret arrives already encrypted. Neither this package nor the store

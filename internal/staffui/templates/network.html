@@ -1,0 +1,30 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Network Map</h1>
+<p class="muted">The registered NAS estate at a glance &mdash; every router, and how many sessions are live on it right now. Add or edit devices from Routers; this is a read-only view.</p>
+
+<div class="grid3">
+  <div class="card"><h3>{{$d.TotalOnline}}</h3><p class="muted">subscribers online, across all devices</p></div>
+  <div class="card"><h3>{{len $d.Devices}}</h3><p class="muted">registered NAS devices</p></div>
+</div>
+
+<div class="card">
+  <table>
+    <thead><tr><th>ID</th><th>IP</th><th>Vendor</th><th>Description</th><th class="right">Active sessions</th><th>Status</th></tr></thead>
+    <tbody>
+    {{range $d.Devices}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td>{{.IP}}</td>
+        <td>{{.Vendor}}</td>
+        <td>{{if .Description}}{{.Description}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="right num">{{.ActiveSessions}}</td>
+        <td>{{if .ActiveSessions}}<span class="pill ok">active</span>{{else}}<span class="pill neutral">idle</span>{{end}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">No NAS devices registered yet &mdash; add one from Routers.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

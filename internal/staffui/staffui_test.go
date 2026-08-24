@@ -18,8 +18,8 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 		leaAccess bool
 		want      []string
 	}{
-		{"isp_owner", true, []string{"subscribers", "billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo", "accounts", "franchise", "procurement", "ledger", "inventory", "reports", "tasks"}},
-		{"noc_engineer", true, []string{"subscribers", "nas", "lea", "inventory", "tasks"}},
+		{"isp_owner", true, []string{"subscribers", "billing", "tickets", "revenue", "catalogue", "nas", "network", "lea", "demo", "accounts", "franchise", "procurement", "ledger", "inventory", "reports", "tasks"}},
+		{"noc_engineer", true, []string{"subscribers", "nas", "network", "lea", "inventory", "tasks"}},
 		{"billing_admin", false, []string{"subscribers", "billing", "catalogue", "procurement", "ledger", "inventory", "reports", "tasks"}},
 		// Catalogue is deliberately absent for csr and technician: editing a
 		// tariff re-prices every subscriber on it and a GST change alters

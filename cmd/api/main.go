@@ -335,6 +335,8 @@ func run(ctx context.Context) error {
 		GeneralLedger: database.Ledger(),
 		// Same *db.HotspotStore instance already wired for internal/api.
 		VoucherCommissions: database.Hotspot(),
+		// Same *db.NASStore instance already wired as NAS above.
+		NetworkHealth: database.NAS(),
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —

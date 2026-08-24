@@ -207,6 +207,8 @@ type HandlerDeps struct {
 	// VoucherCommissions backs the voucher-settlement half of the
 	// Franchise/My P&L screens (CRD-EXP-010).
 	VoucherCommissions VoucherCommissionStore
+	// NetworkHealth backs the Network Map screen (CRD-EXP-008).
+	NetworkHealth NetworkHealthStore
 }
 
 // Handler serves the console.
@@ -241,6 +243,7 @@ type Handler struct {
 	procurement        ProcurementStore
 	generalLedger      GeneralLedgerStore
 	voucherCommissions VoucherCommissionStore
+	networkHealth      NetworkHealthStore
 }
 
 // NewHandler constructs the console handler.
@@ -276,6 +279,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		procurement:        deps.Procurement,
 		generalLedger:      deps.GeneralLedger,
 		voucherCommissions: deps.VoucherCommissions,
+		networkHealth:      deps.NetworkHealth,
 	}
 }
 
@@ -316,6 +320,10 @@ var sections = []Section{
 	// below: the owner and whoever configures the NAS estate, not billing
 	// or the front desk.
 	{"nas", "Routers", "/staff/nas",
+		[]string{"isp_owner", "noc_engineer"}, false},
+	// Same reach as Routers: a cross-device view of the same estate, not a
+	// new kind of access.
+	{"network", "Network Map", "/staff/network",
 		[]string{"isp_owner", "noc_engineer"}, false},
 	{"lea", "LEA Lookup", "/staff/lea",
 		[]string{"isp_owner", "noc_engineer"}, true},
@@ -425,6 +433,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/catalogue/plans", h.authed(h.requireCSRF(h.CreatePlan)))
 	mux.Handle("POST /staff/catalogue/gst", h.authed(h.requireCSRF(h.CreateGSTRate)))
 	mux.Handle("GET /staff/nas", h.authed(h.NAS))
+	mux.Handle("GET /staff/network", h.authed(h.NetworkMap))
 	mux.Handle("POST /staff/nas/new", h.authed(h.requireCSRF(h.CreateNASDeviceForm)))
 	mux.Handle("POST /staff/nas/{id}/update", h.authed(h.requireCSRF(h.UpdateNASDeviceForm)))
 	mux.Handle("GET /staff/billing", h.authed(h.Billing))

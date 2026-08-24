@@ -140,6 +140,41 @@ func (s *NASStore) ListNASDeviceSummaries(ctx context.Context) ([]nas.DeviceSumm
 	return out, nil
 }
 
+// GetNetworkHealth reports every registered NAS device alongside how many
+// sessions are active on it right now (CRD-EXP-008). LEFT JOIN so a device
+// with zero active sessions still gets a row — the point is to see the
+// whole registered estate at a glance, not just the busy half of it. Reads
+// subscriber_session_history the same way the health panel already does
+// (stop_time IS NULL means still connected); no new table, no migration.
+func (s *NASStore) GetNetworkHealth(ctx context.Context) ([]nas.NetworkHealthRow, error) {
+	const q = `
+		SELECT n.id, host(n.ip), n.vendor, COALESCE(n.description, ''),
+		       COUNT(h.id) FILTER (WHERE h.stop_time IS NULL)
+		  FROM nas_devices n
+		  LEFT JOIN subscriber_session_history h ON h.nas_ip_address = n.ip AND h.stop_time IS NULL
+		 GROUP BY n.id, n.ip, n.vendor, n.description
+		 ORDER BY n.id`
+
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("db: network health: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]nas.NetworkHealthRow, 0, 16)
+	for rows.Next() {
+		var r nas.NetworkHealthRow
+		if err := rows.Scan(&r.ID, &r.IP, &r.Vendor, &r.Description, &r.ActiveSessions); err != nil {
+			return nil, fmt.Errorf("db: scan network health row: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate network health: %w", err)
+	}
+	return out, nil
+}
+
 // ListPlanNASProfiles returns every plan-to-vendor-profile mapping, for
 // nas.Resolver's cache (the same small-dataset, refresh-on-interval
 // reasoning as ListNASDevices — a handful of plans times a handful of
