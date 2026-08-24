@@ -527,7 +527,8 @@ func (s *PortalStore) ListNotifications(ctx context.Context, subscriberID, limit
 // ListTickets returns the subscriber's own tickets, newest first.
 func (s *PortalStore) ListTickets(ctx context.Context, subscriberID int) ([]portal.TicketEntry, error) {
 	const q = `
-		SELECT id, category, description, status, created_at
+		SELECT id, category, description, status, priority,
+		       sla_response_due_at, sla_resolution_due_at, created_at
 		FROM tickets
 		WHERE subscriber_id = $1
 		ORDER BY created_at DESC`
@@ -541,7 +542,8 @@ func (s *PortalStore) ListTickets(ctx context.Context, subscriberID int) ([]port
 	tickets := make([]portal.TicketEntry, 0, 8)
 	for rows.Next() {
 		var t portal.TicketEntry
-		if err := rows.Scan(&t.ID, &t.Category, &t.Description, &t.Status, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Category, &t.Description, &t.Status, &t.Priority,
+			&t.SLAResponseDueAt, &t.SLAResolutionDueAt, &t.CreatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan ticket row: %w", err)
 		}
 		tickets = append(tickets, t)

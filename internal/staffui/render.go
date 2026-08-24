@@ -47,8 +47,9 @@ var funcMap = template.FuncMap{
 	// decided-by/reason fields without a template-side type mismatch (a
 	// template function can't accept a pointer where it declared a value
 	// type, unlike printing a pointer directly).
-	"optDate":   optDate,
-	"optString": optString,
+	"optDate":     optDate,
+	"optDatetime": optDatetime,
+	"optString":   optString,
 }
 
 func optMoney(d *decimal.Decimal) string {
@@ -63,6 +64,13 @@ func optDate(t *time.Time) string {
 		return "—"
 	}
 	return t.Format("02 Jan 2006")
+}
+
+func optDatetime(t *time.Time) string {
+	if t == nil {
+		return "—"
+	}
+	return t.Format("02 Jan 2006 15:04")
 }
 
 func optString(s *string) string {
@@ -105,11 +113,11 @@ func shortcutFor(key string) string { return sectionShortcuts[key] }
 // list rather than having to be read word by word.
 func badgeClass(status string) string {
 	switch status {
-	case "active", "resolved", "closed", "sent", "delivered", "in_stock", "completed", "executed", "approved":
+	case "active", "resolved", "closed", "sent", "delivered", "in_stock", "completed", "executed", "approved", "low":
 		return "ok"
-	case "grace_period", "open", "in_progress", "remind_7d", "remind_3d", "remind_1d", "issued", "returned", "pending":
+	case "grace_period", "open", "in_progress", "remind_7d", "remind_3d", "remind_1d", "issued", "returned", "pending", "medium", "high":
 		return "warn"
-	case "soft_suspended", "hard_suspended", "terminated", "failed", "faulty", "cancelled", "rejected", "execution_failed":
+	case "soft_suspended", "hard_suspended", "terminated", "failed", "faulty", "cancelled", "rejected", "execution_failed", "critical":
 		return "bad"
 	default:
 		return "neutral"

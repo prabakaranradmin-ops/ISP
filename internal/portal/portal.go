@@ -144,12 +144,25 @@ type NotificationEntry struct {
 }
 
 // TicketEntry is one row from the tickets table.
+//
+// Priority and the two SLA due-by times are populated (migration
+// 023_create_sla_engine.sql, resolveTicketSLA at ticket creation) whether or
+// not a reader ever looks at them — ListTickets did not select them at all
+// until the staff console's Tickets screen needed to show them (CRD-EXP-005),
+// which is why this shared type, used by both the subscriber portal and the
+// staff console, carries fields the portal's own templates simply do not
+// render: a subscriber does not set their own priority (see CreateTicket's
+// own comment), but that is a rendering choice, not a reason to fetch a
+// narrower row for one of the two callers.
 type TicketEntry struct {
-	ID          int       `json:"id"`
-	Category    string    `json:"category"`
-	Description string    `json:"description"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID                 int        `json:"id"`
+	Category           string     `json:"category"`
+	Description        string     `json:"description"`
+	Status             string     `json:"status"`
+	Priority           string     `json:"priority"`
+	SLAResponseDueAt   *time.Time `json:"sla_response_due_at,omitempty"`
+	SLAResolutionDueAt *time.Time `json:"sla_resolution_due_at,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 // TicketCreateRequest is the body for POST /portal/tickets.

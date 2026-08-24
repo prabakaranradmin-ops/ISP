@@ -8,12 +8,15 @@
 {{if $d.Looked}}
 <div class="card"><h3>Tickets for subscriber {{$d.SubscriberID}}</h3>
   <table>
-    <thead><tr><th>ID</th><th>Category</th><th>Description</th><th>Status</th><th>Filed</th><th>Change status</th></tr></thead>
+    <thead><tr><th>ID</th><th>Category</th><th>Description</th><th>Priority</th><th>Status</th><th>Response due</th><th>Resolve by</th><th>Filed</th><th>Change status</th></tr></thead>
     <tbody>
     {{range $d.Tickets}}
       <tr>
         <td class="num">{{.ID}}</td><td>{{.Category}}</td><td>{{.Description}}</td>
+        <td><span class="pill {{badge .Priority}}">{{.Priority}}</span></td>
         <td><span class="pill {{badge .Status}}">{{.Status}}</span></td>
+        <td>{{optDatetime .SLAResponseDueAt}}</td>
+        <td>{{optDatetime .SLAResolutionDueAt}}</td>
         <td>{{datetime .CreatedAt}}</td>
         <td>
           <form method="post" action="/staff/tickets/{{.ID}}/status" class="inline">
@@ -26,7 +29,7 @@
           </form>
         </td>
       </tr>
-    {{else}}<tr><td colspan="6" class="empty">No tickets for this subscriber.</td></tr>{{end}}
+    {{else}}<tr><td colspan="9" class="empty">No tickets for this subscriber.</td></tr>{{end}}
     </tbody>
   </table>
 </div>
