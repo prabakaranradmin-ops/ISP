@@ -235,11 +235,13 @@ func (d *RadiusDaemon) acctStart(ctx context.Context, r *radius.Request, session
 	// record of truth — a failure here is logged, not retried or treated as
 	// the accounting request failing.
 	if d.liveSessions != nil {
+		const bytesPerGB = 1024 * 1024 * 1024
 		err := d.liveSessions.Put(ctx, LiveSession{
 			SessionID:    sessionID,
 			SubscriberID: sub.ID,
 			NasIP:        nasIP,
 			AssignedIP:   assignedIP,
+			BytesTotal:   int64(sub.VolumeGB) * bytesPerGB,
 			SpeedProfile: sub.RateLimitStr,
 			FUPThrottled: sub.FUPActive,
 		})

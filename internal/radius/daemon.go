@@ -123,6 +123,10 @@ type Subscriber struct {
 	// against PasswordHash is the only method available to them, which is
 	// the default for everybody.
 	NTHash []byte
+	// VolumeGB is the billed plan's data quota (0 = unlimited), sourced from
+	// plans.volume_gb. Carried through purely so acctStart can populate
+	// LiveSession.BytesTotal for the portal's live-usage panel.
+	VolumeGB int
 }
 
 // radiusJob bundles the ResponseWriter and Request so both can pass through the worker queue.
@@ -205,6 +209,7 @@ type LiveSession struct {
 	SubscriberID int
 	NasIP        string
 	AssignedIP   string
+	BytesTotal   int64 // plan quota in bytes; 0 = unlimited
 	SpeedProfile string
 	FUPThrottled bool
 }

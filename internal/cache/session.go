@@ -111,14 +111,15 @@ func (s *SessionStore) Put(ctx context.Context, sess radius.LiveSession) error {
 		INSERT INTO live_sessions
 			(subscriber_id, session_id, nas_ip, assigned_ip, bytes_in, bytes_out,
 			 bytes_total, speed_profile, fup_throttled, started_at, updated_at)
-		VALUES ($1, $2, $3, $4, 0, 0, 0, $5, $6, now(), now())
+		VALUES ($1, $2, $3, $4, 0, 0, $5, $6, $7, now(), now())
 		ON CONFLICT (subscriber_id) DO UPDATE SET
 			session_id = EXCLUDED.session_id, nas_ip = EXCLUDED.nas_ip,
 			assigned_ip = EXCLUDED.assigned_ip, bytes_in = 0, bytes_out = 0,
+			bytes_total = EXCLUDED.bytes_total,
 			speed_profile = EXCLUDED.speed_profile, fup_throttled = EXCLUDED.fup_throttled,
 			started_at = EXCLUDED.started_at, updated_at = now()`
 	if _, err := s.pool.Exec(ctx, q, sess.SubscriberID, sess.SessionID, sess.NasIP,
-		sess.AssignedIP, sess.SpeedProfile, sess.FUPThrottled); err != nil {
+		sess.AssignedIP, sess.BytesTotal, sess.SpeedProfile, sess.FUPThrottled); err != nil {
 		return fmt.Errorf("cache: store session for subscriber %d: %w", sess.SubscriberID, err)
 	}
 	return nil
