@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/hotspot"
 	"github.com/maaransoft/isp-bss-oss/internal/revenue"
 	"github.com/rs/zerolog/log"
 )
@@ -37,6 +38,18 @@ type franchiseListData struct {
 type franchiseDetailData struct {
 	PnL      *revenue.FranchisePnL
 	From, To string
+	Vouchers *hotspot.VoucherCommissionSummary
+}
+
+// VoucherCommissionStore backs the voucher-settlement half of the
+// Franchise/My P&L screens (CRD-EXP-010) — a franchise partner's earnings
+// from reselling vouchers, tracked separately from subscription-recharge
+// commission (FranchiseStore.GetFranchisePnL) rather than merged into the
+// same figure; see migration 044's own comment on why the two ledgers are
+// not one. Satisfied by *db.HotspotStore, the same instance already used
+// for hotspot administration.
+type VoucherCommissionStore interface {
+	GetVoucherCommissionSummary(ctx context.Context, franchiseID int) (*hotspot.VoucherCommissionSummary, error)
 }
 
 // Franchises lists onboarded partners, the consolidated P&L across all of
@@ -167,8 +180,25 @@ func (h *Handler) FranchiseDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.Data = franchiseDetailData{PnL: pnl, From: fromStr, To: toStr}
+	d.Data = franchiseDetailData{PnL: pnl, From: fromStr, To: toStr, Vouchers: h.voucherSummaryOrNil(r, id)}
 	h.render(w, "franchise_detail", d)
+}
+
+// voucherSummaryOrNil loads the voucher-commission summary alongside a
+// franchise's recharge-based P&L. Best-effort: a failure here logs and
+// leaves the field nil rather than failing the whole page, since the
+// recharge P&L above is the page's primary content and voucher commission
+// is this session's newest, least-exercised addition to it.
+func (h *Handler) voucherSummaryOrNil(r *http.Request, franchiseID int) *hotspot.VoucherCommissionSummary {
+	if h.voucherCommissions == nil {
+		return nil
+	}
+	summary, err := h.voucherCommissions.GetVoucherCommissionSummary(r.Context(), franchiseID)
+	if err != nil {
+		log.Error().Err(err).Int("franchise_id", franchiseID).Msg("staffui: voucher commission summary failed")
+		return nil
+	}
+	return summary
 }
 
 // parseFranchiseDateWindow mirrors internal/api/franchises.go's own
@@ -293,6 +323,6 @@ func (h *Handler) MyPnL(w http.ResponseWriter, r *http.Request) {
 	// /staff/my-pnl here rather than /staff/franchise/{id}, so it stays
 	// correctly self-scoped without the template needing to know which
 	// screen rendered it.
-	d.Data = franchiseDetailData{PnL: pnl, From: fromStr, To: toStr}
+	d.Data = franchiseDetailData{PnL: pnl, From: fromStr, To: toStr, Vouchers: h.voucherSummaryOrNil(r, s.FranchiseID)}
 	h.render(w, "franchise_detail", d)
 }

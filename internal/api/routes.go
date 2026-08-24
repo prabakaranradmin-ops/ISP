@@ -486,6 +486,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		staffRead(http.HandlerFunc(h.ListVouchers)))
 	mux.Handle("DELETE /api/v1/hotspot/vouchers/{id}",
 		admin(http.HandlerFunc(h.VoidVoucher)))
+	mux.Handle("GET /api/v1/hotspot/vouchers/commissions",
+		admin(http.HandlerFunc(h.GetVoucherCommissions)))
 	mux.Handle("POST /api/v1/hotspot/devices",
 		csrOrTech(http.HandlerFunc(h.RegisterHotspotDevice)))
 	mux.Handle("DELETE /api/v1/hotspot/devices/{mac}",

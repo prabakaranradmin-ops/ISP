@@ -204,73 +204,78 @@ type HandlerDeps struct {
 	// GeneralLedger backs the Ledger screen (CRD-EXP-006 Phase 1): chart of
 	// accounts, manual journal entries, trial balance, P&L, balance sheet.
 	GeneralLedger GeneralLedgerStore
+	// VoucherCommissions backs the voucher-settlement half of the
+	// Franchise/My P&L screens (CRD-EXP-010).
+	VoucherCommissions VoucherCommissionStore
 }
 
 // Handler serves the console.
 type Handler struct {
-	staff             StaffQuerier
-	subscribers       SubscriberQuerier
-	health            HealthQuerier
-	sessions          SessionReader
-	billing           BillingQuerier
-	tickets           TicketQuerier
-	lea               LEAQuerier
-	revenue           RevenueQuerier
-	catalogue         CatalogueStore
-	gstr1             GSTR1Store
-	gstSupplier       billing.Supplier
-	subscriberCreator SubscriberCreator
-	nas               NASStore
-	secretEncryptor   api.SecretEncryptor
-	demo              DemoStore
-	ticketCreator     TicketCreator
-	invoiceSeeder     InvoiceSeeder
-	speedOverride     SpeedOverrideController
-	bulkActions       BulkActionExecutor
-	tasks             TaskEnqueuer
-	jwtSecret         string
-	franchises        FranchiseStore
-	inventory         InventoryStore
-	reporting         ReportingStore
-	fieldTasks        FieldTaskStore
-	approvals         ApprovalStore
-	approvalExecutor  ApprovalExecutor
-	procurement       ProcurementStore
-	generalLedger     GeneralLedgerStore
+	staff              StaffQuerier
+	subscribers        SubscriberQuerier
+	health             HealthQuerier
+	sessions           SessionReader
+	billing            BillingQuerier
+	tickets            TicketQuerier
+	lea                LEAQuerier
+	revenue            RevenueQuerier
+	catalogue          CatalogueStore
+	gstr1              GSTR1Store
+	gstSupplier        billing.Supplier
+	subscriberCreator  SubscriberCreator
+	nas                NASStore
+	secretEncryptor    api.SecretEncryptor
+	demo               DemoStore
+	ticketCreator      TicketCreator
+	invoiceSeeder      InvoiceSeeder
+	speedOverride      SpeedOverrideController
+	bulkActions        BulkActionExecutor
+	tasks              TaskEnqueuer
+	jwtSecret          string
+	franchises         FranchiseStore
+	inventory          InventoryStore
+	reporting          ReportingStore
+	fieldTasks         FieldTaskStore
+	approvals          ApprovalStore
+	approvalExecutor   ApprovalExecutor
+	procurement        ProcurementStore
+	generalLedger      GeneralLedgerStore
+	voucherCommissions VoucherCommissionStore
 }
 
 // NewHandler constructs the console handler.
 func NewHandler(deps HandlerDeps) *Handler {
 	return &Handler{
-		staff:             deps.Staff,
-		subscribers:       deps.Subscribers,
-		health:            deps.Health,
-		sessions:          deps.Sessions,
-		billing:           deps.Billing,
-		tickets:           deps.Tickets,
-		lea:               deps.LEA,
-		revenue:           deps.Revenue,
-		catalogue:         deps.Catalogue,
-		gstr1:             deps.GSTR1,
-		gstSupplier:       deps.GSTSupplier,
-		subscriberCreator: deps.SubscriberCreator,
-		nas:               deps.NAS,
-		secretEncryptor:   deps.SecretEncryptor,
-		demo:              deps.Demo,
-		ticketCreator:     deps.TicketCreator,
-		invoiceSeeder:     deps.InvoiceSeeder,
-		speedOverride:     deps.SpeedOverride,
-		bulkActions:       deps.BulkActions,
-		tasks:             deps.Tasks,
-		jwtSecret:         deps.JWTSecret,
-		franchises:        deps.Franchises,
-		inventory:         deps.Inventory,
-		reporting:         deps.Reporting,
-		fieldTasks:        deps.FieldTasks,
-		approvals:         deps.Approvals,
-		approvalExecutor:  deps.ApprovalExecutor,
-		procurement:       deps.Procurement,
-		generalLedger:     deps.GeneralLedger,
+		staff:              deps.Staff,
+		subscribers:        deps.Subscribers,
+		health:             deps.Health,
+		sessions:           deps.Sessions,
+		billing:            deps.Billing,
+		tickets:            deps.Tickets,
+		lea:                deps.LEA,
+		revenue:            deps.Revenue,
+		catalogue:          deps.Catalogue,
+		gstr1:              deps.GSTR1,
+		gstSupplier:        deps.GSTSupplier,
+		subscriberCreator:  deps.SubscriberCreator,
+		nas:                deps.NAS,
+		secretEncryptor:    deps.SecretEncryptor,
+		demo:               deps.Demo,
+		ticketCreator:      deps.TicketCreator,
+		invoiceSeeder:      deps.InvoiceSeeder,
+		speedOverride:      deps.SpeedOverride,
+		bulkActions:        deps.BulkActions,
+		tasks:              deps.Tasks,
+		jwtSecret:          deps.JWTSecret,
+		franchises:         deps.Franchises,
+		inventory:          deps.Inventory,
+		reporting:          deps.Reporting,
+		fieldTasks:         deps.FieldTasks,
+		approvals:          deps.Approvals,
+		approvalExecutor:   deps.ApprovalExecutor,
+		procurement:        deps.Procurement,
+		generalLedger:      deps.GeneralLedger,
+		voucherCommissions: deps.VoucherCommissions,
 	}
 }
 

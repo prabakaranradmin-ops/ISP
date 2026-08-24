@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/maaransoft/isp-bss-oss/internal/hotspot"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/maaransoft/isp-bss-oss/internal/radius"
@@ -28,6 +30,10 @@ type HotspotQuerier interface {
 	VoidVoucher(ctx context.Context, voucherID int) (bool, error)
 	RegisterDevice(ctx context.Context, mac string, subscriberID int, label string, nasID *int) (int, error)
 	DeactivateDevice(ctx context.Context, mac string) (bool, error)
+	// GetVoucherCommissionSummary backs CRD-EXP-010's settlement reporting —
+	// see internal/db/hotspot.go's own doc comment on why this lives
+	// alongside vouchers rather than in the franchise P&L query.
+	GetVoucherCommissionSummary(ctx context.Context, franchiseID int) (*hotspot.VoucherCommissionSummary, error)
 }
 
 // maxVoucherBatch caps one generation request.
@@ -50,6 +56,11 @@ type createVoucherBatchRequest struct {
 	FranchiseID  *int   `json:"franchise_id,omitempty"`
 	ValidForDays *int   `json:"valid_for_days,omitempty"`
 	BatchRef     string `json:"batch_ref,omitempty"`
+	// SaleAmount is what each voucher in this batch sells for — a decimal
+	// string, omitted or "0" for a free voucher. Only meaningful alongside
+	// FranchiseID: a commission is credited at redemption (CRD-EXP-010)
+	// only when both a franchise and a positive sale amount are present.
+	SaleAmount string `json:"sale_amount,omitempty"`
 }
 
 // CreateVoucherBatch handles POST /api/v1/hotspot/vouchers.
@@ -104,6 +115,7 @@ func (h *Handler) CreateVoucherBatch(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt:       expiresAt,
 			BatchRef:        batchRef,
 			CreatedBy:       createdBy,
+			SaleAmount:      req.SaleAmount,
 		})
 		if err != nil {
 			// Partial batches are reported rather than rolled back: the codes
@@ -142,6 +154,12 @@ func validateVoucherBatch(req createVoucherBatchRequest) error {
 	}
 	if req.DataCapBytes < 0 {
 		return fmt.Errorf("data_cap_bytes cannot be negative")
+	}
+	if req.SaleAmount != "" {
+		amount, err := decimal.NewFromString(req.SaleAmount)
+		if err != nil || amount.IsNegative() {
+			return fmt.Errorf("sale_amount must be a non-negative decimal")
+		}
 	}
 	return nil
 }
@@ -268,4 +286,27 @@ func (h *Handler) DeactivateHotspotDevice(w http.ResponseWriter, r *http.Request
 
 	middleware.Audit(r.Context(), "hotspot.device_deactivated", mac, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"deactivated": true, "mac_address": mac})
+}
+
+// GetVoucherCommissions handles GET /api/v1/hotspot/vouchers/commissions?franchise_id=.
+// ISP-wide staff only (mounted behind admin, matching Franchises' own
+// owner/billing_admin gate) — a franchise partner's own view of this same
+// data is served directly by the console (internal/staffui/franchise.go's
+// MyPnL), not through this route.
+func (h *Handler) GetVoucherCommissions(w http.ResponseWriter, r *http.Request) {
+	if h.hotspot == nil {
+		writeError(w, http.StatusServiceUnavailable, "ERR_UNAVAILABLE", "hotspot is not configured")
+		return
+	}
+	franchiseID, err := strconv.Atoi(r.URL.Query().Get("franchise_id"))
+	if err != nil || franchiseID <= 0 {
+		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "franchise_id is required")
+		return
+	}
+	summary, err := h.hotspot.GetVoucherCommissionSummary(r.Context(), franchiseID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "voucher commission summary failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
 }

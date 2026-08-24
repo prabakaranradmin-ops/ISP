@@ -333,6 +333,8 @@ func run(ctx context.Context) error {
 		Procurement: database.Procurement(),
 		// Same *db.LedgerStore instance already wired for internal/api.
 		GeneralLedger: database.Ledger(),
+		// Same *db.HotspotStore instance already wired for internal/api.
+		VoucherCommissions: database.Hotspot(),
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —

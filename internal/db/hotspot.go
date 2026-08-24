@@ -144,13 +144,17 @@ func (s *HotspotStore) CreateVoucher(ctx context.Context, v hotspot.NewVoucher) 
 	const q = `
 		INSERT INTO hotspot_vouchers (
 			code_hash, code_prefix, plan_id, franchise_id,
-			duration_minutes, data_cap_bytes, expires_at, batch_ref, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8,''), $9)
+			duration_minutes, data_cap_bytes, expires_at, batch_ref, created_by, sale_amount)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8,''), $9, $10::numeric)
 		RETURNING id`
 
+	saleAmount := v.SaleAmount
+	if saleAmount == "" {
+		saleAmount = "0"
+	}
 	var id int
 	err := s.pool.QueryRow(ctx, q, v.CodeHash, v.CodePrefix, v.PlanID, v.FranchiseID,
-		v.DurationMinutes, v.DataCapBytes, v.ExpiresAt, v.BatchRef, v.CreatedBy).Scan(&id)
+		v.DurationMinutes, v.DataCapBytes, v.ExpiresAt, v.BatchRef, v.CreatedBy, saleAmount).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("db: create voucher: %w", err)
 	}
@@ -168,7 +172,7 @@ func (s *HotspotStore) ListVouchers(ctx context.Context, f hotspot.VoucherFilter
 	const q = `
 		SELECT id, code_prefix, plan_id, franchise_id, duration_minutes, data_cap_bytes,
 		       status, COALESCE(redeemed_by_mac, ''), redeemed_at, expires_at, valid_until,
-		       COALESCE(batch_ref, ''), created_by, created_at
+		       COALESCE(batch_ref, ''), created_by, created_at, sale_amount::text
 		  FROM hotspot_vouchers
 		 WHERE ($1 = '' OR batch_ref = $1)
 		   AND ($2 = '' OR status = $2)
@@ -192,7 +196,7 @@ func (s *HotspotStore) ListVouchers(ctx context.Context, f hotspot.VoucherFilter
 		if err := rows.Scan(&v.ID, &v.CodePrefix, &v.PlanID, &v.FranchiseID,
 			&v.DurationMinutes, &v.DataCapBytes, &v.Status, &v.RedeemedByMAC,
 			&v.RedeemedAt, &v.ExpiresAt, &v.ValidUntil, &v.BatchRef,
-			&v.CreatedBy, &v.CreatedAt); err != nil {
+			&v.CreatedBy, &v.CreatedAt, &v.SaleAmount); err != nil {
 			return nil, fmt.Errorf("db: scan voucher row: %w", err)
 		}
 		out = append(out, v)
@@ -219,13 +223,25 @@ func (s *HotspotStore) VoidVoucher(ctx context.Context, voucherID int) (bool, er
 	return tag.RowsAffected() == 1, nil
 }
 
-// RedeemVoucher claims a voucher for a MAC and opens a grant, atomically.
+// RedeemVoucher claims a voucher for a MAC and opens a grant, atomically —
+// and, when the voucher carries both a franchise_id and a sale_amount,
+// credits that partner's commission in the same statement (CRD-EXP-010).
 //
 // The `status = 'unused'` predicate is the same conditional claim used for
 // approvals, CPE tasks and lead conversion. It is what makes a voucher
 // single-use under concurrency: two people typing the same printed code at the
 // same moment must not both get online, and the loser must be told the code is
 // spent rather than silently sharing the winner's session.
+//
+// The `commission` CTE is never referenced by name in the final SELECT list
+// — it exists for its INSERT side effect only, credited once per voucher
+// (voucher_commissions.voucher_id is UNIQUE, so even a retried claim could
+// never double-credit it). PostgreSQL does not execute a data-modifying CTE
+// that nothing in the query depends on, so the closing LEFT JOIN against it
+// is not decorative: it is what makes the planner include the commission
+// insert in the same statement at all, and LEFT rather than INNER because a
+// voucher with no franchise or no sale price must still open its grant even
+// though the commission CTE then inserts nothing for it.
 //
 // Returns (0, nil) when the claim does not land.
 func (s *HotspotStore) RedeemVoucher(ctx context.Context, codeHash, mac string, nasID *int) (int64, error) {
@@ -239,10 +255,21 @@ func (s *HotspotStore) RedeemVoucher(ctx context.Context, codeHash, mac string, 
 			 WHERE code_hash = $1
 			   AND status = 'unused'
 			   AND (expires_at IS NULL OR expires_at > NOW())
-			RETURNING id, plan_id, valid_until
+			RETURNING id, plan_id, valid_until, franchise_id, sale_amount
+		),
+		commission AS (
+			INSERT INTO voucher_commissions (franchise_id, voucher_id, sale_amount, commission_rate_pct, commission_amount)
+			SELECT c.franchise_id, c.id, c.sale_amount, f.commission_rate_pct,
+			       ROUND(c.sale_amount * f.commission_rate_pct / 100, 2)
+			  FROM claimed c
+			  JOIN franchises f ON f.id = c.franchise_id
+			 WHERE c.franchise_id IS NOT NULL AND c.sale_amount > 0
+			RETURNING voucher_id
 		)
 		INSERT INTO hotspot_grants (mac_address, voucher_id, nas_id, plan_id, expires_at)
-		SELECT $2, c.id, $3, c.plan_id, c.valid_until FROM claimed c
+		SELECT $2, c.id, $3, c.plan_id, c.valid_until
+		  FROM claimed c
+		  LEFT JOIN commission ON commission.voucher_id = c.id
 		RETURNING id`
 
 	var grantID int64
@@ -396,4 +423,23 @@ func (s *HotspotStore) RevokeGrant(ctx context.Context, grantID int64) (bool, er
 		return false, fmt.Errorf("db: revoke grant %d: %w", grantID, err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// GetVoucherCommissionSummary totals one franchise's voucher-sourced
+// earnings (CRD-EXP-010) — the counterpart to GetFranchisePnL, which only
+// covers subscription recharges via lco_ledger. Never returns nil: a
+// partner with no voucher sales yet gets zeroed totals, not a missing row,
+// so the console can show it next to the recharge-based P&L unconditionally.
+func (s *HotspotStore) GetVoucherCommissionSummary(ctx context.Context, franchiseID int) (*hotspot.VoucherCommissionSummary, error) {
+	const q = `
+		SELECT COUNT(*), COALESCE(SUM(sale_amount), 0)::text, COALESCE(SUM(commission_amount), 0)::text
+		  FROM voucher_commissions
+		 WHERE franchise_id = $1`
+
+	summary := hotspot.VoucherCommissionSummary{FranchiseID: franchiseID}
+	err := s.pool.QueryRow(ctx, q, franchiseID).Scan(&summary.VoucherCount, &summary.TotalSales, &summary.TotalCommission)
+	if err != nil {
+		return nil, fmt.Errorf("db: voucher commission summary for franchise %d: %w", franchiseID, err)
+	}
+	return &summary, nil
 }

@@ -142,6 +142,15 @@ type NewVoucher struct {
 	ExpiresAt *time.Time
 	BatchRef  string
 	CreatedBy string
+	// SaleAmount is what this voucher is sold for — a decimal string, "0" for
+	// a free voucher. Deliberately independent of the referenced plan's own
+	// price (migration 044's own reasoning): a voucher's bundle (duration,
+	// data cap) is its own product, not "one month of the plan" at the
+	// plan's monthly rate, so the price a reseller actually charges for it
+	// has to be named here rather than derived. Read at redemption to credit
+	// FranchiseID's commission (voucher_commissions) when both this and
+	// FranchiseID are set.
+	SaleAmount string
 }
 
 // Voucher is a stored voucher as an operator sees it. The code itself is
@@ -161,6 +170,31 @@ type Voucher struct {
 	BatchRef        string     `json:"batch_ref,omitempty"`
 	CreatedBy       string     `json:"created_by"`
 	CreatedAt       time.Time  `json:"created_at"`
+	SaleAmount      string     `json:"sale_amount"`
+}
+
+// VoucherCommission is one voucher redemption's credited reseller
+// commission — the settlement record CRD-EXP-010 asks for, held in its own
+// table (voucher_commissions, migration 044) rather than lco_ledger; see
+// that migration's own comment on why.
+type VoucherCommission struct {
+	ID                int       `json:"id"`
+	FranchiseID       int       `json:"franchise_id"`
+	VoucherID         int       `json:"voucher_id"`
+	SaleAmount        string    `json:"sale_amount"`
+	CommissionRatePct string    `json:"commission_rate_pct"`
+	CommissionAmount  string    `json:"commission_amount"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
+// VoucherCommissionSummary aggregates a franchise's voucher-sourced earnings
+// — the counterpart to revenue.FranchisePnL, which only covers subscription
+// recharges via lco_ledger.
+type VoucherCommissionSummary struct {
+	FranchiseID     int    `json:"franchise_id"`
+	VoucherCount    int    `json:"voucher_count"`
+	TotalSales      string `json:"total_sales"`
+	TotalCommission string `json:"total_commission"`
 }
 
 // VoucherFilter narrows a voucher listing.

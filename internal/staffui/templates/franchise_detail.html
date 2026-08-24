@@ -27,13 +27,25 @@
       <dt>Total</dt><dd class="num">&#8377;{{.TotalRecharges}}</dd>
     </dl>
   </div>
-  <div class="card"><h3>Commission</h3>
+  <div class="card"><h3>Commission (subscriptions)</h3>
     <dl>
       <dt>Earned by partner</dt><dd class="num">&#8377;{{.CommissionEarned}}</dd>
       <dt>Net to ISP</dt><dd class="num">&#8377;{{.NetToISP}}</dd>
     </dl>
   </div>
 </div>
+
+{{with $d.Vouchers}}
+<div class="card">
+  <h3>Commission (vouchers) &mdash; all time</h3>
+  <p class="muted">Tracked separately from subscription commission above; see the general ledger design note on why these are two figures, not one.</p>
+  <dl>
+    <dt>Vouchers sold</dt><dd class="num">{{.VoucherCount}}</dd>
+    <dt>Total sales</dt><dd class="num">&#8377;{{.TotalSales}}</dd>
+    <dt>Commission earned</dt><dd class="num">&#8377;{{.TotalCommission}}</dd>
+  </dl>
+</div>
+{{end}}
 {{else}}
 <p class="empty">No data for this partner.</p>
 {{end}}
