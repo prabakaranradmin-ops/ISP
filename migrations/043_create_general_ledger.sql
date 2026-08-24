@@ -78,6 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_gl_journal_lines_account ON gl_journal_lines (acc
 -- posting a multi-line entry inserts its lines one at a time, and an
 -- immediate check would reject every entry right after its first line, long
 -- before the balancing line exists to make it pass.
+-- +goose StatementBegin
 CREATE OR REPLACE FUNCTION check_gl_journal_balanced() RETURNS trigger AS $$
 DECLARE
     unbalanced_id INTEGER;
@@ -96,6 +97,7 @@ BEGIN
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
+-- +goose StatementEnd
 
 CREATE CONSTRAINT TRIGGER trg_gl_journal_balanced
     AFTER INSERT OR UPDATE OR DELETE ON gl_journal_lines
@@ -138,6 +140,7 @@ GROUP BY a.id, a.code, a.name, a.account_type, a.normal_balance;
 -- reporting zero) whenever every one of its lines happens to fall outside
 -- the window, breaking a stable "every account, defaulting to zero" report.
 -- A CASE inside SUM is the only one of the three that gets both right.
+-- +goose StatementBegin
 CREATE OR REPLACE FUNCTION gl_income_statement(from_date TIMESTAMPTZ, to_date TIMESTAMPTZ)
 RETURNS TABLE(account_id INTEGER, code VARCHAR, name VARCHAR, account_type VARCHAR, amount NUMERIC) AS $$
     SELECT a.id, a.code, a.name, a.account_type,
@@ -153,7 +156,9 @@ RETURNS TABLE(account_id INTEGER, code VARCHAR, name VARCHAR, account_type VARCH
      WHERE a.account_type IN ('income', 'expense')
      GROUP BY a.id, a.code, a.name, a.account_type;
 $$ LANGUAGE sql STABLE;
+-- +goose StatementEnd
 
+-- +goose StatementBegin
 CREATE OR REPLACE FUNCTION gl_balance_sheet(as_of TIMESTAMPTZ)
 RETURNS TABLE(account_id INTEGER, code VARCHAR, name VARCHAR, account_type VARCHAR, amount NUMERIC) AS $$
     SELECT a.id, a.code, a.name, a.account_type,
@@ -169,6 +174,7 @@ RETURNS TABLE(account_id INTEGER, code VARCHAR, name VARCHAR, account_type VARCH
      WHERE a.account_type IN ('asset', 'liability', 'equity')
      GROUP BY a.id, a.code, a.name, a.account_type;
 $$ LANGUAGE sql STABLE;
+-- +goose StatementEnd
 
 -- +goose Down
 DROP FUNCTION IF EXISTS gl_balance_sheet(TIMESTAMPTZ);
