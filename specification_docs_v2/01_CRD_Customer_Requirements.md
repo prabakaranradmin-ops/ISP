@@ -426,14 +426,18 @@ work remains out of scope for now.
 
 ### CRD-EXP-008 — Network topology diagram
 
-No topology/diagram code exists anywhere in the repo today. A useful version
-of this is not a hand-drawn diagram tool but a *generated* map: NAS devices
-(`nas_devices`, already tracked) as nodes, PPPoE/hotspot sessions as edges to
-online subscribers, refreshed from the same session/health data the
-Subscribers screen already reads — closer to a live network-health view than
-a CAD tool. Lower priority than CRD-EXP-005/006/007: no business outcome in
-§ 1.1 depends on it, and NOC engineers today get equivalent information
-per-subscriber via the health panel and per-device via the Routers screen.
+*(Done 2026-08-24, as the live-health-view shape rather than a hand-drawn
+diagram — see below.)* Built as a *generated* map, not a CAD tool: NAS
+devices as nodes, with a live active-session count per device (Network Map
+console screen, `internal/staffui/network.go`). No new table and no
+migration — `NASStore.GetNetworkHealth` (`internal/db/nas.go`) reads
+`nas_devices LEFT JOIN subscriber_session_history` (`stop_time IS NULL`
+means still connected), the same table and the same "still connected" test
+the health panel already trusts, aggregated per device instead of per
+subscriber. Still lower priority than every other CRD-EXP item by design —
+no business outcome in § 1.1 depends on it — but cheap enough (no schema
+change, one query, one screen) to close once everything ahead of it in
+priority was done.
 
 ### CRD-EXP-009 — Bandwidth wholesale buy & sell, reseller panel
 
@@ -497,6 +501,6 @@ has a specific reason a bought-in HR system will not work for it.
 | CRD-EXP-006 Phase 1 (standalone GL) | Yes, fully | Medium | **Done (2026-08-24)** |
 | CRD-EXP-006 Phase 2 (auto-posting integration) | No | High — touches 3 live financial code paths | Needs its own sign-off when scoped |
 | CRD-EXP-010 (voucher reseller settlement) | Yes, fully | Medium | **Done (2026-08-24)** |
-| CRD-EXP-008 (network diagram) | No | Medium | P4 — no outcome in § 1.1 depends on it |
+| CRD-EXP-008 (network map) | Yes, fully | Low — no schema change | **Done (2026-08-24)** |
 | CRD-EXP-011 (HR/payroll) | No | High, and arguably not this product's job | P4 — recommend integration over build |
 | CRD-EXP-009 (bandwidth wholesale) | No | High, and a different business model | Needs an owner decision before any estimate |
