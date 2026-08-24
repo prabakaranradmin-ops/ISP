@@ -451,31 +451,29 @@ extension of the subscriber-billing data model.
 
 ### CRD-EXP-010 — MAC-voucher reseller tier
 
-**Re-scoped 2026-08-24 — narrower and more nearly done than first thought,
-but the settlement half needs a small schema decision before coding.**
-`internal/hotspot/hotspot.go` already does real MAC-bound voucher issuance
+*(Done 2026-08-24 — migration `044_create_voucher_commissions.sql`.)*
+`internal/hotspot/hotspot.go` already did real MAC-bound voucher issuance
 and redemption (`GenerateCode`, `HashCode`, `RedeemVoucher`), and
-`hotspot.NewVoucher`/`CreateVoucherBatch` (`internal/api/hotspot.go`)
-**already accept a `FranchiseID`** — a voucher batch can be attributed to a
-partner today, at the API level, with no code change. What is genuinely
-missing is settlement: `RedeemVoucher` (`internal/db/hotspot.go`) never
-calculates or credits a commission for that partner, unlike a wallet
-recharge (`CalculateAndStoreLCOCommission`).
+`hotspot.NewVoucher`/`CreateVoucherBatch` already accepted a `FranchiseID` —
+a voucher batch could be attributed to a partner with no code change. What
+was genuinely missing was settlement: `RedeemVoucher` never calculated or
+credited a commission for that partner, unlike a wallet recharge
+(`CalculateAndStoreLCOCommission`).
 
-The straightforward fix — call that same function on redemption — does not
-work as-is: `lco_ledger.subscriber_id` (migration `012_create_lco_ledger.sql`)
-is `NOT NULL`, and a voucher grant has no subscriber by design
-(`chk_grant_has_exactly_one_source`, migration 034). Crediting a voucher
-redemption needs either (a) `lco_ledger.subscriber_id` made nullable with a
-`voucher_id` column and a same-shaped `chk_..._has_exactly_one_source`
-constraint, mirroring `hotspot_grants`' own pattern, or (b) a separate
-voucher-commission ledger. Either way, a voucher also has no price today
-(`NewVoucher` carries `plan_id`/`duration_minutes`/`data_cap_bytes`, not an
-amount) — the natural source is the referenced plan's price, but that is a
-join-at-redemption-time decision that needs deciding, not assuming. Given
-this touches a live financial ledger table, treat it with the same care as
-CRD-EXP-006 (a short design note before coding, not a mid-sized PR) rather
-than the "wire up an existing backend" pattern CRD-EXP-005 was.
+Resolved as option (b) from the original analysis: a standalone
+`voucher_commissions` table rather than extending `lco_ledger`, whose
+`subscriber_id` is `NOT NULL` and already read by the shipped
+`GetFranchisePnL`/`ListConsolidatedPnL` reports — relaxing that constraint
+risked both for comparatively little gain over a dedicated table. A
+voucher's price is its own new `sale_amount` column, set per batch rather
+than derived from the referenced plan's price: a voucher's bundle (duration,
+data cap) is its own product, not "one month of the plan" at the plan's
+monthly rate. `RedeemVoucher`'s existing single-statement atomic redemption
+gained a second CTE crediting the commission in the same statement — see
+that function's own comment for why it needs a `LEFT JOIN` to actually
+execute. A franchise partner's total commission is now the sum of two
+ledgers (recharges + vouchers), shown as two figures in the console
+(Franchise/My P&L), not silently merged into one.
 
 ### CRD-EXP-011 — HR & payroll
 
@@ -498,7 +496,7 @@ has a specific reason a bought-in HR system will not work for it.
 | CRD-EXP-007 (procurement lifecycle, no ledger posting) | Yes, fully | Medium | **Done (2026-08-24)** |
 | CRD-EXP-006 Phase 1 (standalone GL) | Yes, fully | Medium | **Done (2026-08-24)** |
 | CRD-EXP-006 Phase 2 (auto-posting integration) | No | High — touches 3 live financial code paths | Needs its own sign-off when scoped |
-| CRD-EXP-010 (voucher reseller settlement) | Partial (attribution yes, commission no) | Medium, but needs a ledger-schema decision first | P2 — same care as CRD-EXP-006, not a P3 wire-up |
+| CRD-EXP-010 (voucher reseller settlement) | Yes, fully | Medium | **Done (2026-08-24)** |
 | CRD-EXP-008 (network diagram) | No | Medium | P4 — no outcome in § 1.1 depends on it |
 | CRD-EXP-011 (HR/payroll) | No | High, and arguably not this product's job | P4 — recommend integration over build |
 | CRD-EXP-009 (bandwidth wholesale) | No | High, and a different business model | Needs an owner decision before any estimate |
