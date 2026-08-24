@@ -24,13 +24,13 @@ func NewStaffStore(pool dbPool) *StaffStore { return &StaffStore{pool: pool} }
 // confirm to an outsider that the username is real.
 func (s *StaffStore) GetStaffByUsername(ctx context.Context, username string) (*staffui.StaffAccount, error) {
 	const q = `
-		SELECT id, username, password_hash, full_name, role, lea_access
+		SELECT id, username, password_hash, full_name, role, lea_access, franchise_id
 		  FROM staff_users
 		 WHERE username = $1 AND active`
 
 	var a staffui.StaffAccount
 	err := s.pool.QueryRow(ctx, q, username).Scan(
-		&a.ID, &a.Username, &a.PasswordHash, &a.FullName, &a.Role, &a.LeaAccess)
+		&a.ID, &a.Username, &a.PasswordHash, &a.FullName, &a.Role, &a.LeaAccess, &a.FranchiseID)
 	if isNoRows(err) {
 		return nil, nil
 	}
@@ -47,7 +47,7 @@ func (s *StaffStore) GetStaffByUsername(ctx context.Context, username string) (*
 // own comment on why.
 func (s *StaffStore) ListStaff(ctx context.Context) ([]staffui.StaffAccount, error) {
 	const q = `
-		SELECT id, username, full_name, role, lea_access, active
+		SELECT id, username, full_name, role, lea_access, active, franchise_id
 		  FROM staff_users
 		 ORDER BY username`
 
@@ -60,7 +60,7 @@ func (s *StaffStore) ListStaff(ctx context.Context) ([]staffui.StaffAccount, err
 	out := make([]staffui.StaffAccount, 0, 8)
 	for rows.Next() {
 		var a staffui.StaffAccount
-		if err := rows.Scan(&a.ID, &a.Username, &a.FullName, &a.Role, &a.LeaAccess, &a.Active); err != nil {
+		if err := rows.Scan(&a.ID, &a.Username, &a.FullName, &a.Role, &a.LeaAccess, &a.Active, &a.FranchiseID); err != nil {
 			return nil, fmt.Errorf("db: scan staff row: %w", err)
 		}
 		out = append(out, a)
@@ -68,16 +68,20 @@ func (s *StaffStore) ListStaff(ctx context.Context) ([]staffui.StaffAccount, err
 	return out, rows.Err()
 }
 
-// CreateStaff registers a new console operator.
-func (s *StaffStore) CreateStaff(ctx context.Context, username, fullName, passwordHash, role string, leaAccess bool) (*staffui.StaffAccount, error) {
+// CreateStaff registers a new console operator. franchiseID must be non-nil
+// exactly when role is franchise-scoped (lco/franchise_admin/
+// franchise_staff) — staffui.franchiseIDForRole enforces that before this is
+// ever called; chk_staff_franchise_binding enforces it again here as the
+// real backstop.
+func (s *StaffStore) CreateStaff(ctx context.Context, username, fullName, passwordHash, role string, leaAccess bool, franchiseID *int) (*staffui.StaffAccount, error) {
 	const q = `
-		INSERT INTO staff_users (username, full_name, password_hash, role, lea_access)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, username, full_name, role, lea_access, active`
+		INSERT INTO staff_users (username, full_name, password_hash, role, lea_access, franchise_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, username, full_name, role, lea_access, active, franchise_id`
 
 	var a staffui.StaffAccount
-	err := s.pool.QueryRow(ctx, q, username, fullName, passwordHash, role, leaAccess).
-		Scan(&a.ID, &a.Username, &a.FullName, &a.Role, &a.LeaAccess, &a.Active)
+	err := s.pool.QueryRow(ctx, q, username, fullName, passwordHash, role, leaAccess, franchiseID).
+		Scan(&a.ID, &a.Username, &a.FullName, &a.Role, &a.LeaAccess, &a.Active, &a.FranchiseID)
 	if err != nil {
 		return nil, fmt.Errorf("db: create staff %q: %w", username, err)
 	}
@@ -85,18 +89,35 @@ func (s *StaffStore) CreateStaff(ctx context.Context, username, fullName, passwo
 }
 
 // UpdateStaff applies a partial update, returning nil when no such account.
-func (s *StaffStore) UpdateStaff(ctx context.Context, id int, role *string, leaAccess, active *bool) (*staffui.StaffAccount, error) {
+//
+// franchise_id's own CASE is not a COALESCE like the other three columns:
+// when the (possibly just-changed) role is franchise-scoped, an explicit
+// franchiseID rebinds the account and a nil one leaves the existing binding
+// alone: exactly COALESCE's usual meaning, but conditional on the role,
+// because the unconditional form would let a role change to isp_owner keep
+// a stale franchise_id and violate chk_staff_franchise_binding on the very
+// next admin action, whatever it happened to be, rather than on this one
+// that actually caused it. When the role is ISP-wide, franchise_id is
+// forced to NULL outright, regardless of what was passed — the same rule
+// staffui.franchiseIDForRole already applies before this is ever called,
+// enforced again here as the real backstop.
+func (s *StaffStore) UpdateStaff(ctx context.Context, id int, role *string, leaAccess, active *bool, franchiseID *int) (*staffui.StaffAccount, error) {
 	const q = `
 		UPDATE staff_users SET
-			role       = COALESCE($2, role),
-			lea_access = COALESCE($3, lea_access),
-			active     = COALESCE($4, active)
+			role         = COALESCE($2, role),
+			lea_access   = COALESCE($3, lea_access),
+			active       = COALESCE($4, active),
+			franchise_id = CASE
+				WHEN COALESCE($2, role) IN ('lco', 'franchise_admin', 'franchise_staff')
+					THEN COALESCE($5, franchise_id)
+				ELSE NULL
+			END
 		WHERE id = $1
-		RETURNING id, username, full_name, role, lea_access, active`
+		RETURNING id, username, full_name, role, lea_access, active, franchise_id`
 
 	var a staffui.StaffAccount
-	err := s.pool.QueryRow(ctx, q, id, role, leaAccess, active).
-		Scan(&a.ID, &a.Username, &a.FullName, &a.Role, &a.LeaAccess, &a.Active)
+	err := s.pool.QueryRow(ctx, q, id, role, leaAccess, active, franchiseID).
+		Scan(&a.ID, &a.Username, &a.FullName, &a.Role, &a.LeaAccess, &a.Active, &a.FranchiseID)
 	if isNoRows(err) {
 		return nil, nil
 	}

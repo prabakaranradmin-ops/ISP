@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/maaransoft/isp-bss-oss/internal/revenue"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -14,12 +15,72 @@ import (
 // staff account, changing a password, or deactivating someone required a
 // direct SQL statement against staff_users.
 
-// staffRoles are the roles this screen can assign. The franchise-scoped
-// roles staff_users.chk_staff_role also permits (lco, franchise_admin,
-// franchise_staff — migration 024) are deliberately excluded: those need a
-// franchise_id binding this screen has no UI to collect, and the console's
-// own role model (AllowedSections) does not recognise them either.
+// staffRoles are the ISP-wide roles this screen can assign — no franchise_id
+// involved, and chk_staff_franchise_binding requires that column stay NULL
+// for every one of them.
 var staffRoles = []string{"isp_owner", "noc_engineer", "billing_admin", "csr", "technician"}
+
+// franchiseRoles are the three roles staff_users.chk_staff_role also permits
+// (migration 024) that instead require a franchise_id binding — a franchise
+// partner's own staff. Kept separate from staffRoles rather than merged so
+// the "assignable roles" dropdown can group them, and so isStaffRole (the
+// ISP-wide check used by lockout/self-service logic elsewhere) is not
+// accidentally widened by adding these.
+var franchiseRoles = []string{"lco", "franchise_admin", "franchise_staff"}
+
+// allAssignableRoles is every role this screen's dropdowns offer.
+func allAssignableRoles() []string {
+	out := make([]string, 0, len(staffRoles)+len(franchiseRoles))
+	out = append(out, staffRoles...)
+	out = append(out, franchiseRoles...)
+	return out
+}
+
+func isFranchiseRole(role string) bool {
+	for _, r := range franchiseRoles {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
+func isAssignableRole(role string) bool {
+	return isStaffRole(role) || isFranchiseRole(role)
+}
+
+// franchiseIDForRole parses and validates a franchise_id form value against
+// the role it will be paired with, matching chk_staff_franchise_binding's
+// own rule (franchise-scoped roles require one, every other role forbids
+// one) without waiting for the constraint to reject a mismatch as a raw
+// 500.
+//
+// required distinguishes the two callers: account creation has no existing
+// binding to fall back to, so a franchise-scoped role must name one right
+// now (required=true). Editing an existing account may leave the field
+// blank to mean "keep whatever is already bound" (required=false) — the
+// store's own UPDATE resolves that per-role, including clearing the
+// binding entirely when the edit moves the account to an ISP-wide role.
+func franchiseIDForRole(role, raw string, required bool) (*int, error) {
+	if !isFranchiseRole(role) {
+		// An ISP-wide role is never bound, whatever was submitted — the
+		// caller does not even need to have hidden the field via JS for
+		// this to be safe, since it is ignored either way.
+		return nil, nil
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		if required {
+			return nil, fmt.Errorf("A franchise must be selected for this role.")
+		}
+		return nil, nil
+	}
+	id, err := strconv.Atoi(raw)
+	if err != nil || id <= 0 {
+		return nil, fmt.Errorf("Franchise selection is invalid.")
+	}
+	return &id, nil
+}
 
 // minStaffPasswordLength is a console-side floor, not a schema constraint.
 // Higher than a subscriber's (unvalidated) password: a console account can
@@ -49,8 +110,9 @@ func isStaffRole(role string) bool {
 }
 
 type accountsData struct {
-	Accounts []StaffAccount
-	Roles    []string
+	Accounts   []StaffAccount
+	Roles      []string
+	Franchises []revenue.FranchiseRecord
 }
 
 // StaffAccounts lists every account and hosts the create-account form.
@@ -82,7 +144,19 @@ func (h *Handler) renderStaffAccounts(w http.ResponseWriter, r *http.Request, s 
 		return
 	}
 
-	d.Data = accountsData{Accounts: accounts, Roles: staffRoles}
+	// Franchises are optional context, not a hard dependency: a deployment
+	// with no franchise store configured (or simply none onboarded yet)
+	// still gets the ISP-wide half of this screen; the franchise-role
+	// options in the dropdown just have nothing to bind to yet.
+	var franchises []revenue.FranchiseRecord
+	if h.franchises != nil {
+		franchises, err = h.franchises.ListFranchises(r.Context(), nil)
+		if err != nil {
+			log.Error().Err(err).Msg("staffui: list franchises (for account form) failed")
+		}
+	}
+
+	d.Data = accountsData{Accounts: accounts, Roles: allAssignableRoles(), Franchises: franchises}
 	h.render(w, "accounts", d)
 }
 
@@ -107,13 +181,21 @@ func (h *Handler) CreateStaffAccount(w http.ResponseWriter, r *http.Request) {
 		h.renderStaffAccounts(w, r, s, "", "Username and full name are required.")
 		return
 	}
-	if !isStaffRole(role) {
-		h.renderStaffAccounts(w, r, s, "", "Role must be one of: "+strings.Join(staffRoles, ", ")+".")
+	if !isAssignableRole(role) {
+		h.renderStaffAccounts(w, r, s, "", "Role must be one of: "+strings.Join(allAssignableRoles(), ", ")+".")
 		return
 	}
 	if len(password) < minStaffPasswordLength {
 		h.renderStaffAccounts(w, r, s, "",
 			fmt.Sprintf("Password must be at least %d characters.", minStaffPasswordLength))
+		return
+	}
+
+	// required=true: creation has no existing binding to fall back to, so a
+	// franchise-scoped role must name one right now.
+	franchiseID, ferr := franchiseIDForRole(role, r.PostFormValue("franchise_id"), true)
+	if ferr != nil {
+		h.renderStaffAccounts(w, r, s, "", ferr.Error())
 		return
 	}
 
@@ -124,7 +206,7 @@ func (h *Handler) CreateStaffAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	created, err := h.staff.CreateStaff(r.Context(), username, fullName, string(hash), role, leaAccess)
+	created, err := h.staff.CreateStaff(r.Context(), username, fullName, string(hash), role, leaAccess, franchiseID)
 	if err != nil {
 		if isDuplicateUsername(err) {
 			h.renderStaffAccounts(w, r, s, "", "That username is already in use.")
@@ -156,8 +238,8 @@ func (h *Handler) UpdateStaffAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	role := r.PostFormValue("role")
-	if !isStaffRole(role) {
-		h.renderStaffAccounts(w, r, s, "", "Role must be one of: "+strings.Join(staffRoles, ", ")+".")
+	if !isAssignableRole(role) {
+		h.renderStaffAccounts(w, r, s, "", "Role must be one of: "+strings.Join(allAssignableRoles(), ", ")+".")
 		return
 	}
 	leaAccess := r.PostFormValue("lea_access") == "on"
@@ -168,7 +250,18 @@ func (h *Handler) UpdateStaffAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.staff.UpdateStaff(r.Context(), id, &role, &leaAccess, &active)
+	// required=false: editing an existing account, so a blank franchise_id
+	// for a franchise-scoped role means "keep whatever is already bound" —
+	// the store's own UPDATE resolves that, not this check. A role change
+	// away from a franchise-scoped role always clears the binding
+	// regardless of what was submitted here (see UpdateStaff's own doc).
+	franchiseID, ferr := franchiseIDForRole(role, r.PostFormValue("franchise_id"), false)
+	if ferr != nil {
+		h.renderStaffAccounts(w, r, s, "", ferr.Error())
+		return
+	}
+
+	updated, err := h.staff.UpdateStaff(r.Context(), id, &role, &leaAccess, &active, franchiseID)
 	if err != nil {
 		log.Error().Err(err).Int("staff_id", id).Msg("staffui: update staff failed")
 		h.renderStaffAccounts(w, r, s, "", "Could not save that account.")

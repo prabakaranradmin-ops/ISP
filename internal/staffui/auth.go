@@ -44,6 +44,11 @@ type Session struct {
 	Role      string
 	LeaAccess bool
 	Token     string
+	// FranchiseID is 0 for every ISP-wide role, matching
+	// middleware.FranchiseIDFromContext's own convention on the API side —
+	// non-zero only for lco/franchise_admin/franchise_staff, and always
+	// read from the JWT claim, never from anything a request could name.
+	FranchiseID int
 }
 
 // SessionFrom returns the operator for a request, if any.
@@ -63,6 +68,9 @@ func (h *Handler) issueToken(a *StaffAccount) (string, error) {
 		},
 		Role:      a.Role,
 		LeaAccess: a.LeaAccess,
+	}
+	if a.FranchiseID != nil {
+		claims.FranchiseID = *a.FranchiseID
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(h.jwtSecret))
 }
@@ -113,11 +121,12 @@ func (h *Handler) authed(next http.HandlerFunc) http.Handler {
 		}
 
 		ctx := context.WithValue(r.Context(), sessionKey, Session{
-			Username:  claims.Subject,
-			FullName:  claims.Subject,
-			Role:      claims.Role,
-			LeaAccess: claims.LeaAccess,
-			Token:     c.Value,
+			Username:    claims.Subject,
+			FullName:    claims.Subject,
+			Role:        claims.Role,
+			LeaAccess:   claims.LeaAccess,
+			Token:       c.Value,
+			FranchiseID: claims.FranchiseID,
 		})
 		next(w, r.WithContext(ctx))
 	})

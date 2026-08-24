@@ -196,3 +196,103 @@ func parseFranchiseDateWindow(fromStr, toStr string) (from, to *time.Time, err e
 	}
 	return from, to, nil
 }
+
+// ── Franchise partner self-service (CRD-EXP-005 follow-up) ─────────────────
+//
+// The two screens below are the restricted counterpart to Franchises/
+// FranchiseDetail above: a franchise-scoped operator (lco, franchise_admin,
+// franchise_staff) sees only their own roster and their own P&L, always
+// read from s.FranchiseID (the JWT's franchise_id claim), never from a URL
+// parameter or form field — the same rule internal/api/franchises.go's
+// callerFranchiseScope already enforces for the API, applied here so the
+// console cannot offer a wider view than the API would ever answer.
+
+type mySubscribersData struct {
+	Subscribers []revenue.SubscriberRow
+}
+
+// MySubscribers shows a franchise partner their own subscriber roster.
+func (h *Handler) MySubscribers(w http.ResponseWriter, r *http.Request) {
+	s, ok := h.requireSection(w, r, "my-subscribers")
+	if !ok {
+		return
+	}
+	d := h.page(s, "My Subscribers", "my-subscribers")
+
+	if s.FranchiseID == 0 {
+		// Unreachable through the login flow (the role check above already
+		// implies a franchise-scoped account, and CreateStaffAccount refuses
+		// to create one without a franchise_id) — checked anyway because a
+		// token with a franchise-scoped role but no claim is exactly the
+		// misissue callerFranchiseScope also refuses to guess at on the API
+		// side, and this screen must not show "every subscriber" as its
+		// fallback.
+		d.Error = "This account has no franchise binding — contact the owner."
+		h.render(w, "my_subscribers", d)
+		return
+	}
+	if h.revenue == nil {
+		d.Error = "This is not configured on this deployment."
+		h.render(w, "my_subscribers", d)
+		return
+	}
+
+	franchiseID := s.FranchiseID
+	subs, err := h.revenue.ListSubscribers(r.Context(), &franchiseID)
+	if err != nil {
+		log.Error().Err(err).Int("franchise_id", franchiseID).Msg("staffui: list own subscribers failed")
+		d.Error = "Could not load your subscribers."
+		h.render(w, "my_subscribers", d)
+		return
+	}
+
+	d.Data = mySubscribersData{Subscribers: subs}
+	h.render(w, "my_subscribers", d)
+}
+
+// MyPnL shows a franchise partner their own P&L — GetFranchisePnL called
+// with s.FranchiseID, never a path parameter, so there is no id for this
+// screen to get wrong.
+func (h *Handler) MyPnL(w http.ResponseWriter, r *http.Request) {
+	s, ok := h.requireSection(w, r, "my-pnl")
+	if !ok {
+		return
+	}
+	d := h.page(s, "My P&L", "my-pnl")
+
+	if s.FranchiseID == 0 {
+		d.Error = "This account has no franchise binding — contact the owner."
+		h.render(w, "franchise_detail", d)
+		return
+	}
+	if h.franchises == nil {
+		d.Error = "This is not configured on this deployment."
+		h.render(w, "franchise_detail", d)
+		return
+	}
+
+	fromStr := strings.TrimSpace(r.URL.Query().Get("from"))
+	toStr := strings.TrimSpace(r.URL.Query().Get("to"))
+	from, to, err := parseFranchiseDateWindow(fromStr, toStr)
+	if err != nil {
+		d.Error = err.Error()
+		h.render(w, "franchise_detail", d)
+		return
+	}
+
+	pnl, err := h.franchises.GetFranchisePnL(r.Context(), s.FranchiseID, from, to)
+	if err != nil {
+		log.Error().Err(err).Int("franchise_id", s.FranchiseID).Msg("staffui: own P&L failed")
+		d.Error = "Could not load your P&L."
+		h.render(w, "franchise_detail", d)
+		return
+	}
+
+	// Reuses the franchise_detail template — same shape of data, and the
+	// query form on that page posts back to "?" (relative), which lands on
+	// /staff/my-pnl here rather than /staff/franchise/{id}, so it stays
+	// correctly self-scoped without the template needing to know which
+	// screen rendered it.
+	d.Data = franchiseDetailData{PnL: pnl, From: fromStr, To: toStr}
+	h.render(w, "franchise_detail", d)
+}

@@ -1,0 +1,21 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>My Subscribers</h1>
+<p class="muted">Subscribers under your franchise. This is your own roster only &mdash; no other partner's subscribers are ever shown here.</p>
+
+<div class="card">
+  <table>
+    <thead><tr><th>ID</th><th>Username</th></tr></thead>
+    <tbody>
+    {{range $d.Subscribers}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td>{{.Username}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="2" class="empty">No subscribers under your franchise yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

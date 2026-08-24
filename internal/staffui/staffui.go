@@ -45,6 +45,11 @@ type StaffAccount struct {
 	Role         string
 	LeaAccess    bool
 	Active       bool
+	// FranchiseID is non-nil only for the three franchise-scoped roles (lco,
+	// franchise_admin, franchise_staff — migration 024's
+	// chk_staff_franchise_binding requires exactly that pairing). nil for
+	// every ISP-wide role.
+	FranchiseID *int
 }
 
 // StaffQuerier looks up console operators and, for isp_owner, manages them.
@@ -59,9 +64,18 @@ type StaffQuerier interface {
 	GetStaffByUsername(ctx context.Context, username string) (*StaffAccount, error)
 	TouchStaffLogin(ctx context.Context, staffID int) error
 	ListStaff(ctx context.Context) ([]StaffAccount, error)
-	CreateStaff(ctx context.Context, username, fullName, passwordHash, role string, leaAccess bool) (*StaffAccount, error)
+	// franchiseID is required exactly when role is lco/franchise_admin/
+	// franchise_staff, matching chk_staff_franchise_binding — enforced in
+	// the handler before this is ever called, not left to the constraint to
+	// reject as a raw 500.
+	CreateStaff(ctx context.Context, username, fullName, passwordHash, role string, leaAccess bool, franchiseID *int) (*StaffAccount, error)
 	// UpdateStaff applies a partial update; a nil field is left unchanged.
-	UpdateStaff(ctx context.Context, id int, role *string, leaAccess, active *bool) (*StaffAccount, error)
+	// franchiseID rebinds the account to a different franchise when
+	// non-nil; there is no way to clear it back to NULL from this
+	// interface (an ISP-wide role never had one to clear, and moving a
+	// franchise account to a different partner is the only real case,
+	// covered by passing a new id).
+	UpdateStaff(ctx context.Context, id int, role *string, leaAccess, active *bool, franchiseID *int) (*StaffAccount, error)
 	SetStaffPassword(ctx context.Context, id int, passwordHash string) error
 }
 
@@ -300,12 +314,21 @@ var sections = []Section{
 		[]string{"isp_owner"}, false},
 	// Owner-only, same reasoning as Revenue: onboarding a partner and seeing
 	// the consolidated commission P&L across every partner is a business
-	// decision, not an operations task. A franchise-scoped role (lco,
-	// franchise_admin, franchise_staff) signing in here would see no
-	// sections at all today — a restricted partner-facing view is tracked
-	// separately (CRD §1.11 follow-up), not this screen widened.
+	// decision, not an operations task. The franchise-scoped roles (lco,
+	// franchise_admin, franchise_staff) get their own restricted sections
+	// below instead — never this one widened, since it can name any
+	// partner's id.
 	{"franchise", "Franchises", "/staff/franchise",
 		[]string{"isp_owner"}, false},
+	// A franchise partner's own restricted view: their own subscriber
+	// roster and their own P&L, never another partner's — scoped from the
+	// session's FranchiseID (set from the JWT's franchise_id claim), never
+	// from a URL parameter, the same rule internal/api/franchises.go's
+	// callerFranchiseScope already enforces for the API.
+	{"my-subscribers", "My Subscribers", "/staff/my-subscribers",
+		[]string{"lco", "franchise_admin", "franchise_staff"}, false},
+	{"my-pnl", "My P&L", "/staff/my-pnl",
+		[]string{"lco", "franchise_admin", "franchise_staff"}, false},
 	// Technicians handle hardware day to day (issue/return); NOC engineers
 	// track it against the network estate; purchases and device-type
 	// changes are procurement, gated inside the screen itself to
@@ -394,6 +417,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/franchise", h.authed(h.Franchises))
 	mux.Handle("POST /staff/franchise/new", h.authed(h.requireCSRF(h.CreateFranchiseForm)))
 	mux.Handle("GET /staff/franchise/{id}", h.authed(h.FranchiseDetail))
+	mux.Handle("GET /staff/my-subscribers", h.authed(h.MySubscribers))
+	mux.Handle("GET /staff/my-pnl", h.authed(h.MyPnL))
 	mux.Handle("GET /staff/inventory", h.authed(h.Inventory))
 	mux.Handle("POST /staff/inventory/types/new", h.authed(h.requireCSRF(h.CreateDeviceTypeForm)))
 	mux.Handle("POST /staff/inventory/devices/new", h.authed(h.requireCSRF(h.CreateDeviceForm)))

@@ -50,6 +50,19 @@ var funcMap = template.FuncMap{
 	"optDate":     optDate,
 	"optDatetime": optDatetime,
 	"optString":   optString,
+	// deref reads a *int for a template-side equality check (e.g. matching
+	// a staff account's bound franchise against a dropdown option) — a bare
+	// {{eq .ID $ptr}} cannot compare an int to a *int, and printableValue's
+	// auto-indirection only applies when printing a value directly, not
+	// when passing it as an argument to another action.
+	"deref": derefInt,
+}
+
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 func optMoney(d *decimal.Decimal) string {
@@ -140,7 +153,7 @@ var pageNames = []string{
 	"login", "subscribers", "subscriber_detail", "subscriber_new",
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
-	"inventory", "reports", "tasks",
+	"inventory", "reports", "tasks", "my_subscribers",
 }
 
 var pages = func() map[string]*template.Template {

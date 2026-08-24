@@ -27,6 +27,12 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 		// needs to answer a call or fix a line.
 		{"csr", false, []string{"subscribers", "billing", "tickets", "tasks"}},
 		{"technician", false, []string{"subscribers", "tickets", "inventory", "tasks"}},
+		// Franchise-scoped roles get their own restricted pair, never the
+		// ISP-wide sections above (not even Subscribers or Tickets) — a
+		// franchise partner's reach is My Subscribers/My P&L only.
+		{"lco", false, []string{"my-subscribers", "my-pnl"}},
+		{"franchise_admin", false, []string{"my-subscribers", "my-pnl"}},
+		{"franchise_staff", false, []string{"my-subscribers", "my-pnl"}},
 		// An unknown role gets nothing. Defaulting to any access would make a
 		// typo in a role name a privilege grant.
 		{"intern", false, nil},

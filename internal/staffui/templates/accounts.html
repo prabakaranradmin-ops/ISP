@@ -7,7 +7,7 @@
   <h3>Accounts</h3>
   <table>
     <thead>
-      <tr><th>Username</th><th>Full name</th><th>Role</th><th>LEA</th><th>Status</th><th></th></tr>
+      <tr><th>Username</th><th>Full name</th><th>Role</th><th>Franchise</th><th>LEA</th><th>Status</th><th></th></tr>
     </thead>
     <tbody>
     {{range $d.Accounts}}
@@ -16,6 +16,7 @@
         <td>{{.Username}}</td>
         <td>{{.FullName}}</td>
         <td>{{.Role}}</td>
+        <td>{{if .FranchiseID}}#{{.FranchiseID}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
         <td><span class="pill {{if .LeaAccess}}ok{{else}}neutral{{end}}">{{if .LeaAccess}}on{{else}}off{{end}}</span></td>
         <td><span class="pill {{if .Active}}ok{{else}}bad{{end}}">{{if .Active}}active{{else}}deactivated{{end}}</span></td>
         <td class="right">
@@ -27,6 +28,12 @@
                 <label>Role
                   <select name="role">
                     {{range $d.Roles}}<option value="{{.}}" {{if eq . $row.Role}}selected{{end}}>{{.}}</option>{{end}}
+                  </select>
+                </label>
+                <label>Franchise (only for lco / franchise_admin / franchise_staff)
+                  <select name="franchise_id">
+                    <option value="">Keep current</option>
+                    {{range $d.Franchises}}<option value="{{.ID}}" {{if eq .ID (deref $row.FranchiseID)}}selected{{end}}>{{.Name}}</option>{{end}}
                   </select>
                 </label>
                 <label>Reset password (blank = keep current)
@@ -41,7 +48,7 @@
         </td>
       </tr>
     {{else}}
-      <tr><td colspan="6" class="empty">No staff accounts found.</td></tr>
+      <tr><td colspan="7" class="empty">No staff accounts found.</td></tr>
     {{end}}
     </tbody>
   </table>
@@ -61,6 +68,12 @@
       <label>Role
         <select name="role">
           {{range $d.Roles}}<option value="{{.}}">{{.}}</option>{{end}}
+        </select>
+      </label>
+      <label>Franchise (required for lco / franchise_admin / franchise_staff)
+        <select name="franchise_id">
+          <option value="">No franchise</option>
+          {{range $d.Franchises}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
         </select>
       </label>
       <label>Password
