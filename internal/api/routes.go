@@ -113,6 +113,7 @@ type Handler struct {
 	reports         ReportQuerier
 	archives        ArchiveLookup
 	procurement     ProcurementQuerier
+	generalLedger   GeneralLedgerQuerier
 	// subscriberLister backs revenue.ListSubscribersHandler, which is a
 	// plain http.HandlerFunc rather than a method on Handler — so the
 	// dependency is held here and passed to it at route-registration time.
@@ -171,6 +172,7 @@ type HandlerDeps struct {
 	Reports          ReportQuerier
 	Archives         ArchiveLookup
 	Procurement      ProcurementQuerier
+	GeneralLedger    GeneralLedgerQuerier
 
 	// Health serves GET /api/v1/subscribers/{id}/health (FR-OBS-004). The
 	// implementation lives in internal/health, which cannot be imported here
@@ -226,6 +228,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		reports:          deps.Reports,
 		archives:         deps.Archives,
 		procurement:      deps.Procurement,
+		generalLedger:    deps.GeneralLedger,
 		health:           deps.Health,
 
 		razorpayWebhookSecret: deps.RazorpayWebhookSecret,
@@ -395,6 +398,28 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		admin(http.HandlerFunc(h.DecidePurchaseOrder)))
 	mux.Handle("POST /api/v1/procurement/orders/{id}/fulfilment",
 		admin(http.HandlerFunc(h.UpdateFulfilmentStatus)))
+
+	// General ledger, Phase 1 (CRD-EXP-006 | DBD §6.2). Owner/billing_admin
+	// only, matching every other financial screen. Every entry reachable
+	// here is 'manual' — there is no route that auto-posts on behalf of a
+	// wallet recharge, franchise commission, or purchase order (Phase 2,
+	// not implemented).
+	mux.Handle("POST /api/v1/ledger/accounts",
+		admin(http.HandlerFunc(h.CreateLedgerAccount)))
+	mux.Handle("GET /api/v1/ledger/accounts",
+		admin(http.HandlerFunc(h.ListLedgerAccounts)))
+	mux.Handle("POST /api/v1/ledger/entries",
+		admin(http.HandlerFunc(h.PostJournalEntry)))
+	mux.Handle("GET /api/v1/ledger/entries",
+		admin(http.HandlerFunc(h.ListJournalEntries)))
+	mux.Handle("GET /api/v1/ledger/entries/{id}",
+		admin(http.HandlerFunc(h.GetJournalEntry)))
+	mux.Handle("GET /api/v1/ledger/trial-balance",
+		admin(http.HandlerFunc(h.GetTrialBalance)))
+	mux.Handle("GET /api/v1/ledger/income-statement",
+		admin(http.HandlerFunc(h.GetIncomeStatement)))
+	mux.Handle("GET /api/v1/ledger/balance-sheet",
+		admin(http.HandlerFunc(h.GetBalanceSheet)))
 
 	// TR-069 remote control (FR-CPE-003 | MDS §4.19). NOC and technicians:
 	// these are field-operations actions, and every one of them queues an

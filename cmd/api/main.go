@@ -240,10 +240,11 @@ func run(ctx context.Context) error {
 		// migration 032 with no HTTP surface serving them; Archives backs the
 		// status lookup for a queued export, which is delivered into the same
 		// archival storage FR-DOC-001 built.
-		Reports:     database.Reporting(),
-		Archives:    database.Archive(),
-		Procurement: database.Procurement(),
-		Health:      http.HandlerFunc(healthHandler.GetSubscriberHealth),
+		Reports:       database.Reporting(),
+		Archives:      database.Archive(),
+		Procurement:   database.Procurement(),
+		GeneralLedger: database.Ledger(),
+		Health:        http.HandlerFunc(healthHandler.GetSubscriberHealth),
 
 		RazorpayWebhookSecret: cfg.RazorpayWebhookSecret,
 	})
@@ -330,6 +331,8 @@ func run(ctx context.Context) error {
 		ApprovalExecutor: apiHandler,
 		// Same *db.ProcurementStore instance already wired for internal/api.
 		Procurement: database.Procurement(),
+		// Same *db.LedgerStore instance already wired for internal/api.
+		GeneralLedger: database.Ledger(),
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —

@@ -1,0 +1,201 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>General Ledger</h1>
+<p class="muted">The business's own books &mdash; distinct from a subscriber's wallet and a franchise partner's commission ledger. Every entry here is posted manually; nothing else in the console writes to it yet.</p>
+
+<div class="tabbar" role="tablist">
+  <a class="tab-btn {{if eq $d.Tab "journal"}}on{{end}}" href="?tab=journal">Journal</a>
+  <a class="tab-btn {{if eq $d.Tab "trial-balance"}}on{{end}}" href="?tab=trial-balance">Trial balance</a>
+  <a class="tab-btn {{if eq $d.Tab "income-statement"}}on{{end}}" href="?tab=income-statement">Income statement</a>
+  <a class="tab-btn {{if eq $d.Tab "balance-sheet"}}on{{end}}" href="?tab=balance-sheet">Balance sheet</a>
+</div>
+
+{{if eq $d.Tab "journal"}}
+<div class="card">
+  <h3>Journal entries</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Date</th><th>Description</th><th>Source</th><th>By</th></tr></thead>
+    <tbody>
+    {{range $d.Entries}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td>{{date .EntryDate}}</td>
+        <td>{{.Description}}</td>
+        <td><span class="pill neutral">{{.SourceType}}</span></td>
+        <td>{{.CreatedBy}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="5" class="empty">No journal entries yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Post a manual entry</h3>
+  <p class="muted">Debits must equal credits across all lines used, or the entry is refused.</p>
+  <form method="post" action="/staff/ledger/entries/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label>Description
+      <input name="description" required placeholder="What is this entry for?">
+    </label>
+    <table>
+      <thead><tr><th>Account</th><th>Debit</th><th>Credit</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>
+            <select name="account_id_1">
+              <option value="">&mdash; not used &mdash;</option>
+              {{range $d.Accounts}}<option value="{{.ID}}">{{.Code}} {{.Name}}</option>{{end}}
+            </select>
+          </td>
+          <td><input name="debit_1" placeholder="0.00" inputmode="decimal"></td>
+          <td><input name="credit_1" placeholder="0.00" inputmode="decimal"></td>
+        </tr>
+        <tr>
+          <td>
+            <select name="account_id_2">
+              <option value="">&mdash; not used &mdash;</option>
+              {{range $d.Accounts}}<option value="{{.ID}}">{{.Code}} {{.Name}}</option>{{end}}
+            </select>
+          </td>
+          <td><input name="debit_2" placeholder="0.00" inputmode="decimal"></td>
+          <td><input name="credit_2" placeholder="0.00" inputmode="decimal"></td>
+        </tr>
+        <tr>
+          <td>
+            <select name="account_id_3">
+              <option value="">&mdash; not used &mdash;</option>
+              {{range $d.Accounts}}<option value="{{.ID}}">{{.Code}} {{.Name}}</option>{{end}}
+            </select>
+          </td>
+          <td><input name="debit_3" placeholder="0.00" inputmode="decimal"></td>
+          <td><input name="credit_3" placeholder="0.00" inputmode="decimal"></td>
+        </tr>
+        <tr>
+          <td>
+            <select name="account_id_4">
+              <option value="">&mdash; not used &mdash;</option>
+              {{range $d.Accounts}}<option value="{{.ID}}">{{.Code}} {{.Name}}</option>{{end}}
+            </select>
+          </td>
+          <td><input name="debit_4" placeholder="0.00" inputmode="decimal"></td>
+          <td><input name="credit_4" placeholder="0.00" inputmode="decimal"></td>
+        </tr>
+      </tbody>
+    </table>
+    <button class="primary" type="submit">Post entry</button>
+  </form>
+</div>
+{{end}}
+
+{{if eq $d.Tab "trial-balance"}}
+<div class="card">
+  <h3>Trial balance</h3>
+  <table>
+    <thead><tr><th>Code</th><th>Account</th><th>Type</th><th class="right">Debit</th><th class="right">Credit</th><th class="right">Balance</th></tr></thead>
+    <tbody>
+    {{range $d.TrialBalance}}
+      <tr>
+        <td class="num">{{.Code}}</td>
+        <td>{{.Name}}</td>
+        <td>{{.AccountType}}</td>
+        <td class="right num">&#8377;{{.DebitTotal}}</td>
+        <td class="right num">&#8377;{{.CreditTotal}}</td>
+        <td class="right num">&#8377;{{.Balance}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">No activity yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Tab "income-statement"}}
+<div class="card">
+  <h3>Income statement &mdash; current month</h3>
+  <table>
+    <thead><tr><th>Code</th><th>Account</th><th>Type</th><th class="right">Amount</th></tr></thead>
+    <tbody>
+    {{range $d.IncomeRows}}
+      <tr>
+        <td class="num">{{.Code}}</td>
+        <td>{{.Name}}</td>
+        <td>{{.AccountType}}</td>
+        <td class="right num">&#8377;{{.Amount}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="4" class="empty">No income or expense activity this month.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Tab "balance-sheet"}}
+<div class="card">
+  <h3>Balance sheet &mdash; as of today</h3>
+  <table>
+    <thead><tr><th>Code</th><th>Account</th><th>Type</th><th class="right">Amount</th></tr></thead>
+    <tbody>
+    {{range $d.BalanceRows}}
+      <tr>
+        <td class="num">{{.Code}}</td>
+        <td>{{.Name}}</td>
+        <td>{{.AccountType}}</td>
+        <td class="right num">&#8377;{{.Amount}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="4" class="empty">No asset, liability or equity activity yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+<div class="card">
+  <h3>Chart of accounts</h3>
+  <table>
+    <thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Normal balance</th><th>Status</th></tr></thead>
+    <tbody>
+    {{range $d.Accounts}}
+      <tr>
+        <td class="num">{{.Code}}</td>
+        <td>{{.Name}}</td>
+        <td>{{.AccountType}}</td>
+        <td>{{.NormalBalance}}</td>
+        <td><span class="pill {{if .IsActive}}ok{{else}}neutral{{end}}">{{if .IsActive}}active{{else}}inactive{{end}}</span></td>
+      </tr>
+    {{else}}
+      <tr><td colspan="5" class="empty">No accounts yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Add an account</h3>
+  <form method="post" action="/staff/ledger/accounts/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="formgrid">
+      <label>Code
+        <input name="code" required placeholder="5200">
+      </label>
+      <label>Name
+        <input name="name" required placeholder="e.g. Upstream Bandwidth">
+      </label>
+      <label>Type
+        <select name="account_type">
+          <option value="asset">Asset</option>
+          <option value="liability">Liability</option>
+          <option value="equity">Equity</option>
+          <option value="income">Income</option>
+          <option value="expense">Expense</option>
+        </select>
+      </label>
+    </div>
+    <button class="primary" type="submit">Add account</button>
+  </form>
+</div>
+{{end}}

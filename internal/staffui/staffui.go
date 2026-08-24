@@ -201,6 +201,9 @@ type HandlerDeps struct {
 	// Procurement backs the Procurement screen: general purchase orders,
 	// distinct from Inventory's CPE-restocking purchases.
 	Procurement ProcurementStore
+	// GeneralLedger backs the Ledger screen (CRD-EXP-006 Phase 1): chart of
+	// accounts, manual journal entries, trial balance, P&L, balance sheet.
+	GeneralLedger GeneralLedgerStore
 }
 
 // Handler serves the console.
@@ -233,6 +236,7 @@ type Handler struct {
 	approvals         ApprovalStore
 	approvalExecutor  ApprovalExecutor
 	procurement       ProcurementStore
+	generalLedger     GeneralLedgerStore
 }
 
 // NewHandler constructs the console handler.
@@ -266,6 +270,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		approvals:         deps.Approvals,
 		approvalExecutor:  deps.ApprovalExecutor,
 		procurement:       deps.Procurement,
+		generalLedger:     deps.GeneralLedger,
 	}
 }
 
@@ -337,6 +342,10 @@ var sections = []Section{
 	// Same reach as Inventory's own purchase/device-type gating: a spend
 	// decision is procurement, whatever it is being spent on.
 	{"procurement", "Procurement", "/staff/procurement",
+		[]string{"isp_owner", "billing_admin"}, false},
+	// Same reach as every other financial screen. Phase 1 only — see
+	// internal/staffui/ledger.go's own doc comment on what that excludes.
+	{"ledger", "General Ledger", "/staff/ledger",
 		[]string{"isp_owner", "billing_admin"}, false},
 	// Technicians handle hardware day to day (issue/return); NOC engineers
 	// track it against the network estate; purchases and device-type
@@ -432,6 +441,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/procurement/new", h.authed(h.requireCSRF(h.CreatePurchaseOrderForm)))
 	mux.Handle("POST /staff/procurement/{id}/decide", h.authed(h.requireCSRF(h.DecidePurchaseOrderForm)))
 	mux.Handle("POST /staff/procurement/{id}/fulfilment", h.authed(h.requireCSRF(h.UpdateFulfilmentForm)))
+	mux.Handle("GET /staff/ledger", h.authed(h.Ledger))
+	mux.Handle("POST /staff/ledger/accounts/new", h.authed(h.requireCSRF(h.CreateLedgerAccountForm)))
+	mux.Handle("POST /staff/ledger/entries/new", h.authed(h.requireCSRF(h.PostJournalEntryForm)))
 	mux.Handle("GET /staff/inventory", h.authed(h.Inventory))
 	mux.Handle("POST /staff/inventory/types/new", h.authed(h.requireCSRF(h.CreateDeviceTypeForm)))
 	mux.Handle("POST /staff/inventory/devices/new", h.authed(h.requireCSRF(h.CreateDeviceForm)))

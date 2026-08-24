@@ -118,6 +118,7 @@ var sectionShortcuts = map[string]string{
 	"inventory":   "i",
 	"reports":     "p",
 	"tasks":       "k",
+	"ledger":      "g",
 }
 
 func shortcutFor(key string) string { return sectionShortcuts[key] }
@@ -153,7 +154,7 @@ var pageNames = []string{
 	"login", "subscribers", "subscriber_detail", "subscriber_new",
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
-	"inventory", "reports", "tasks", "my_subscribers", "procurement",
+	"inventory", "reports", "tasks", "my_subscribers", "procurement", "ledger",
 }
 
 var pages = func() map[string]*template.Template {
