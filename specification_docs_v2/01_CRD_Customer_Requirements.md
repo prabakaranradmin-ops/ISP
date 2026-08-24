@@ -325,16 +325,21 @@ existing store interface, one new `Section` entry, one or two templates. No
 new backend design work was needed.
 
 - **Franchises console screen** — done (`internal/staffui/franchise.go`):
-  onboard a partner, view any partner's or the consolidated P&L. Still open:
-  a restricted **franchise partner self-service login** — `lco`,
-  `franchise_admin` and `franchise_staff` roles exist and are scoped
-  correctly at the API (`internal/api/franchises.go`'s
-  `callerFranchiseScope`), but `AllowedSections`
-  (`internal/staffui/staffui.go`) maps none of them to any section, so such
-  an account signs in to an empty console today. Needs its own restricted
-  section set (own subscribers, own P&L, nothing cross-partner) — not the
-  owner's `franchise` section widened. Tracked as its own follow-up, not
-  part of CRD-EXP-005 as shipped.
+  onboard a partner, view any partner's or the consolidated P&L.
+- **Franchise partner self-service login** — *(done 2026-08-24, tracked
+  separately from CRD-EXP-005 since it was never part of it as originally
+  scoped)*. `lco`, `franchise_admin` and `franchise_staff` accounts now carry
+  their `franchise_id` all the way through: `StaffAccount`/`StaffQuerier`
+  (`internal/staffui/staffui.go`), the issued JWT and `Session`
+  (`internal/staffui/auth.go`), two new restricted sections — My Subscribers
+  and My P&L (`internal/staffui/franchise.go`) — always scoped from the
+  session's own `FranchiseID`, never a URL parameter. The Staff Accounts
+  screen (`internal/staffui/accounts.go`) can now create and edit these
+  accounts, with a franchise picker required on creation and
+  `chk_staff_franchise_binding` enforced again at the `UpdateStaff` query
+  itself (`internal/db/staff.go`) — a role change away from franchise-scoped
+  always clears the binding, rather than leaving it to the constraint to
+  reject the next unrelated edit.
 - **Inventory console screen** — done (`internal/staffui/inventory.go`):
   stock levels and the device roster (with inline issue/return) for owner,
   NOC, technician and billing admin; device-type and purchase management
