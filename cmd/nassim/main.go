@@ -23,6 +23,11 @@
 // console (a speed override, a plan change on an active session, or a FUP
 // breach) while it's waiting, to verify mid-session control actually
 // reaches something listening on the wire.
+//
+// -send-interim reports usage for an already-open session instead:
+//
+//	nassim -send-interim -secret <secret> -session-id <id from -acct-start> \
+//	       -octets-in 2147483648 -octets-out 314572800
 package main
 
 import (
@@ -58,8 +63,20 @@ func main() {
 		listenCoA     = flag.Bool("listen-coa", true, "after authenticating, wait for one CoA/PoD packet and acknowledge it")
 		coaTimeout    = flag.Duration("coa-timeout", 2*time.Minute, "how long to wait for a CoA/PoD packet before giving up")
 		timeout       = flag.Duration("timeout", 5*time.Second, "per-request timeout for the Access-Request and Accounting-Start")
+		sendInterim   = flag.Bool("send-interim", false, "instead of authenticating, send a single Accounting-Interim-Update for -session-id and exit — simulates a NAS's periodic usage report for an already-open session, moving the subscriber's live/reported data usage without a real router pushing real bytes")
+		octetsIn      = flag.Int64("octets-in", 0, "Acct-Input-Octets to report with -send-interim (bytes received by the subscriber, i.e. download)")
+		octetsOut     = flag.Int64("octets-out", 0, "Acct-Output-Octets to report with -send-interim (bytes sent by the subscriber, i.e. upload)")
 	)
 	flag.Parse()
+
+	if *sendInterim {
+		if *secret == "" || *sessionID == "" {
+			fmt.Fprintln(os.Stderr, "nassim: -send-interim requires -secret and -session-id (the session already opened by an earlier Accounting-Start)")
+			os.Exit(1)
+		}
+		sendInterimUpdate(*acctAddr, []byte(*secret), *sessionID, *octetsIn, *octetsOut, *timeout)
+		return
+	}
 
 	if *secret == "" || *username == "" || *password == "" {
 		fmt.Fprintln(os.Stderr, "nassim: -secret, -username and the subscriber's login credential flag are all required")
@@ -107,6 +124,30 @@ func main() {
 			fatalf("%v", err)
 		}
 	}
+}
+
+// sendInterimUpdate reports usage for an already-open session — the
+// periodic report a real NAS sends every few minutes while a subscriber
+// stays connected, moving their metered data usage without anything having
+// to actually push bytes through a tunnel. Exercises exactly the same
+// aaa_core_daemon code path (internal/radius/accounting.go's acctUpdate)
+// that a real interim update does: subscriber_session_history and the live
+// session cache both get updated, which is what the portal's usage
+// dashboard and the FUP scanner both read from.
+func sendInterimUpdate(acctAddr string, secret []byte, sessionID string, octetsIn, octetsOut int64, timeout time.Duration) {
+	fmt.Printf("=== Accounting-Interim-Update (session %s) ===\n", sessionID)
+	req := radius.New(radius.CodeAccountingRequest, secret)
+	check(rfc2866.AcctStatusType_Set(req, rfc2866.AcctStatusType_Value_InterimUpdate))
+	check(rfc2866.AcctSessionID_SetString(req, sessionID))
+	check(rfc2866.AcctInputOctets_Set(req, rfc2866.AcctInputOctets(octetsIn)))
+	check(rfc2866.AcctOutputOctets_Set(req, rfc2866.AcctOutputOctets(octetsOut)))
+
+	resp, err := exchange(req, acctAddr, timeout)
+	if err != nil {
+		fatalf("interim update to %s failed: %v", acctAddr, err)
+	}
+	fmt.Printf("  %s -> %v (in=%d out=%d bytes, total=%.2f MB)\n",
+		acctAddr, resp.Code, octetsIn, octetsOut, float64(octetsIn+octetsOut)/1024/1024)
 }
 
 func exchange(pkt *radius.Packet, addr string, timeout time.Duration) (*radius.Packet, error) {
