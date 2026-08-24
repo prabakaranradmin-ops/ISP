@@ -386,16 +386,24 @@ subscriber's wallet and (since § 1.11) each franchise partner's commission.
 
 ### CRD-EXP-007 — Purchase / procurement management
 
-The inventory module's `Purchase` type (`internal/inventory/inventory.go`)
-is a vendor-restock record for CPE devices specifically — a device type, a
-quantity, a vendor name, a low-stock trigger. A general procurement system is
-a different shape: a purchase order with its own approval step (reusing
-`internal/api/workflow.go`'s existing approval-request pattern rather than
-inventing a second one), a status lifecycle (requested → approved → ordered
-→ received), and goods/services that are not CPE hardware (office supplies,
-vehicle fuel, a contractor invoice). Depends on CRD-EXP-006 if the goal is
-for a received purchase order to post an accounts-payable entry automatically
-— sequence after it, not before.
+*(Status 2026-08-24: done — the lifecycle only, per the sequencing note
+below, which still holds.)* The inventory module's `Purchase` type
+(`internal/inventory/inventory.go`) is a vendor-restock record for CPE
+devices specifically — a device type, a quantity, a vendor name, a low-stock
+trigger. General procurement (`internal/procurement/procurement.go`,
+migration `042_create_purchase_orders.sql`) is a different shape: a purchase
+order with its own status lifecycle (requested → approved/rejected →
+ordered → received/cancelled) for goods or services that are not CPE
+hardware. Built as its own table rather than reusing
+`internal/api/workflow.go`'s `approval_requests` as originally suggested
+here — that table's `subscriber_id` is `NOT NULL` and its `action_type`
+CHECK only permits `wallet_credit`/`refund`/`terminate`, both correct for
+subscriber-affecting actions and wrong for a purchase order with no
+subscriber at all; `chk_po_distinct_approver` reproduces the same
+distinct-approver guarantee on its own table instead. Still and
+deliberately **not** posted to any ledger — depends on CRD-EXP-006 for a
+received order to post an accounts-payable entry automatically, and that
+work remains out of scope for now.
 
 ### CRD-EXP-008 — Network topology diagram
 
@@ -424,16 +432,31 @@ extension of the subscriber-billing data model.
 
 ### CRD-EXP-010 — MAC-voucher reseller tier
 
+**Re-scoped 2026-08-24 — narrower and more nearly done than first thought,
+but the settlement half needs a small schema decision before coding.**
 `internal/hotspot/hotspot.go` already does real MAC-bound voucher issuance
-and redemption (`GenerateCode`, `HashCode`, `RedeemVoucher`) — a technician
-or CSR issues a voucher, a walk-up Wi-Fi user redeems it by MAC address. What
-is missing is a distinct *reseller* tier: an external agent (a shop, a local
-partner) who buys a batch of vouchers at a discount and sells them
-independently, with their own running balance and settlement — structurally
-close to the franchise module's commission model (§ 1.11 Phase 3), and
-should reuse `internal/revenue/franchise.go`'s commission-ledger pattern
-rather than inventing a second one, scoped as a voucher-specific extension
-of the franchise/LCO concept rather than a wholly separate subsystem.
+and redemption (`GenerateCode`, `HashCode`, `RedeemVoucher`), and
+`hotspot.NewVoucher`/`CreateVoucherBatch` (`internal/api/hotspot.go`)
+**already accept a `FranchiseID`** — a voucher batch can be attributed to a
+partner today, at the API level, with no code change. What is genuinely
+missing is settlement: `RedeemVoucher` (`internal/db/hotspot.go`) never
+calculates or credits a commission for that partner, unlike a wallet
+recharge (`CalculateAndStoreLCOCommission`).
+
+The straightforward fix — call that same function on redemption — does not
+work as-is: `lco_ledger.subscriber_id` (migration `012_create_lco_ledger.sql`)
+is `NOT NULL`, and a voucher grant has no subscriber by design
+(`chk_grant_has_exactly_one_source`, migration 034). Crediting a voucher
+redemption needs either (a) `lco_ledger.subscriber_id` made nullable with a
+`voucher_id` column and a same-shaped `chk_..._has_exactly_one_source`
+constraint, mirroring `hotspot_grants`' own pattern, or (b) a separate
+voucher-commission ledger. Either way, a voucher also has no price today
+(`NewVoucher` carries `plan_id`/`duration_minutes`/`data_cap_bytes`, not an
+amount) — the natural source is the referenced plan's price, but that is a
+join-at-redemption-time decision that needs deciding, not assuming. Given
+this touches a live financial ledger table, treat it with the same care as
+CRD-EXP-006 (a short design note before coding, not a mid-sized PR) rather
+than the "wire up an existing backend" pattern CRD-EXP-005 was.
 
 ### CRD-EXP-011 — HR & payroll
 
@@ -452,9 +475,10 @@ has a specific reason a bought-in HR system will not work for it.
 | Item | Backend exists? | Effort to close | Recommended priority |
 |---|---|---|---|
 | CRD-EXP-005 (5 console screens) | Yes, fully | Low — established pattern | **Done (2026-08-24)** |
+| Franchise-partner self-service login (§ CRD-EXP-005 follow-up) | Yes, fully | Low | **Done (2026-08-24)** |
+| CRD-EXP-007 (procurement lifecycle, no ledger posting) | Yes, fully | Medium | **Done (2026-08-24)** |
 | CRD-EXP-006 (GL/accounts) | No | High — real financial-software design | P2 |
-| CRD-EXP-007 (procurement) | Partial (CPE-only) | Medium | P3, after CRD-EXP-006 |
-| CRD-EXP-010 (voucher reseller tier) | Partial (vouchers yes, tier no) | Medium — extend franchise pattern | P3 |
+| CRD-EXP-010 (voucher reseller settlement) | Partial (attribution yes, commission no) | Medium, but needs a ledger-schema decision first | P2 — same care as CRD-EXP-006, not a P3 wire-up |
 | CRD-EXP-008 (network diagram) | No | Medium | P4 — no outcome in § 1.1 depends on it |
 | CRD-EXP-011 (HR/payroll) | No | High, and arguably not this product's job | P4 — recommend integration over build |
 | CRD-EXP-009 (bandwidth wholesale) | No | High, and a different business model | Needs an owner decision before any estimate |
