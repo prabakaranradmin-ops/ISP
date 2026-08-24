@@ -117,6 +117,7 @@ type ActiveSession struct {
 	GBUsed       decimal.Decimal `json:"gb_used"`
 	GBIncluded   decimal.Decimal `json:"gb_included"`
 	PctUsed      float64         `json:"pct_used"`
+	SpeedProfile string          `json:"speed_profile"`
 	FUPThrottled bool            `json:"fup_throttled"`
 	StartedAt    time.Time       `json:"started_at"`
 }

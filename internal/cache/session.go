@@ -236,9 +236,28 @@ func (s *SessionStore) PortalSession(ctx context.Context, subscriberID int) (*po
 		GBUsed:       gb(sess.BytesUsed()),
 		GBIncluded:   gb(sess.BytesTotal),
 		PctUsed:      pct,
+		SpeedProfile: sess.SpeedProfile,
 		FUPThrottled: sess.FUPThrottled,
 		StartedAt:    sess.StartedAt,
 	}, nil
+}
+
+// UpdateSpeedProfile applies a rate-limit change to a live session's cached
+// profile, matched by session_id like UpdateOctets. Called after a CoA (FUP
+// throttle toggle or owner speed override) is acknowledged by the NAS, so
+// the portal's live-usage panel reflects the rate the subscriber is
+// actually getting rather than the value captured once at Accounting-Start
+// — without this, a mid-session override or throttle change never reaches
+// the cache row PortalSession reads from.
+func (s *SessionStore) UpdateSpeedProfile(ctx context.Context, sessionID, rateLimit string) error {
+	const q = `
+		UPDATE live_sessions
+		SET speed_profile = $2, updated_at = now()
+		WHERE session_id = $1`
+	if _, err := s.pool.Exec(ctx, q, sessionID, rateLimit); err != nil {
+		return fmt.Errorf("cache: update speed profile for %q: %w", sessionID, err)
+	}
+	return nil
 }
 
 // defaultSweepInterval bounds how long a stale row can linger before

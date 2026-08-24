@@ -175,6 +175,7 @@ var activeSessionSchema = []field{
 	{name: "gb_used", typ: jsonString},
 	{name: "gb_included", typ: jsonString},
 	{name: "pct_used", typ: jsonNumber},
+	{name: "speed_profile", typ: jsonString},
 	{name: "fup_throttled", typ: jsonBool},
 	{name: "started_at", typ: jsonString},
 }

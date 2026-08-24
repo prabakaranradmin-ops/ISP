@@ -10,6 +10,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/rs/zerolog/log"
 	"layeh.com/radius"
 
 	"github.com/maaransoft/isp-bss-oss/internal/nas"
@@ -40,14 +41,21 @@ type CoAQuerier interface {
 	GetSubscriberNASSession(ctx context.Context, subscriberID int) (nasIP, sessionID, rateLimit string, planID int, err error)
 }
 
+// LiveSessionRateWriter updates the cached rate a live session's portal
+// panel reports. Satisfied by *cache.SessionStore.
+type LiveSessionRateWriter interface {
+	UpdateSpeedProfile(ctx context.Context, sessionID, rateLimit string) error
+}
+
 // CoAHandler processes CoA send tasks with exponential backoff via queue retry.
 //
 // FR: FR-FUP-002, FR-NAS-001..004 | DDS §5.3 | MDS §4.11
 type CoAHandler struct {
-	db          CoAQuerier
-	secret      []byte
-	port        int
-	nasResolver *nas.Resolver
+	db           CoAQuerier
+	secret       []byte
+	port         int
+	nasResolver  *nas.Resolver
+	liveSessions LiveSessionRateWriter
 }
 
 // NewCoAHandler constructs a CoAHandler targeting DefaultCoAPort.
@@ -66,6 +74,14 @@ func (h *CoAHandler) SetPort(port int) {
 // MikroTik VSA unconditionally.
 func (h *CoAHandler) SetNASResolver(r *nas.Resolver) {
 	h.nasResolver = r
+}
+
+// SetLiveSessions enables refreshing the portal's live-usage panel with the
+// rate a CoA actually applied. Optional: without it, CoA sends behave
+// exactly as before — the NAS still gets the right rate, only the console's
+// and portal's cached display lags until the subscriber's next session.
+func (h *CoAHandler) SetLiveSessions(w LiveSessionRateWriter) {
+	h.liveSessions = w
 }
 
 // ProcessTask implements jobqueue.Handler.
@@ -102,7 +118,20 @@ func (h *CoAHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 		return fmt.Errorf("coa: build vendor attributes for sub %d (%s): %w", p.SubscriberID, vendor, err)
 	}
 
-	return SendReliableCoA(nasIP, port, sessionID, attrs, secret)
+	if err := SendReliableCoA(nasIP, port, sessionID, attrs, secret); err != nil {
+		return err
+	}
+
+	// Best-effort: this is a read-surface refresh for the console/portal, not
+	// the enforcement action itself, which the NAS has already acknowledged
+	// above. A failure here must not turn a successful CoA into a retried
+	// task — that would re-send an already-applied rate change.
+	if h.liveSessions != nil {
+		if err := h.liveSessions.UpdateSpeedProfile(ctx, sessionID, rateLimit); err != nil {
+			log.Warn().Err(err).Str("session_id", sessionID).Msg("coa: live session rate refresh failed")
+		}
+	}
+	return nil
 }
 
 func (h *CoAHandler) effectivePort() int {

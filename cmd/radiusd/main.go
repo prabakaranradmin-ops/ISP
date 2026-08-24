@@ -389,6 +389,7 @@ func run(ctx context.Context) error {
 
 	dispatcher := newDispatcher(cfg, database)
 	coaHandler := fup.NewCoAHandler(database.FUP(), []byte(cfg.RadiusSecret))
+	coaHandler.SetLiveSessions(liveSessions)
 	podHandler := fup.NewPoDHandler(database.FUP(), []byte(cfg.RadiusSecret))
 	if nasResolver != nil {
 		coaHandler.SetNASResolver(nasResolver)

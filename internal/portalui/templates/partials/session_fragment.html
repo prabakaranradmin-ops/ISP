@@ -12,7 +12,7 @@
   <div>
     <div class="stat-label">Speed</div>
     <div class="stat" style="font-size:1.25rem">
-      {{if .FUPThrottled}}<span style="color:var(--warn)">Throttled (FUP)</span>{{else}}Full speed{{end}}
+      {{if .FUPThrottled}}<span style="color:var(--warn)">{{.SpeedProfile}} (FUP)</span>{{else if .SpeedProfile}}{{.SpeedProfile}}{{else}}Full speed{{end}}
     </div>
   </div>
 </div>
