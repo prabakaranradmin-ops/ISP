@@ -36,6 +36,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/partner"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
 	"github.com/maaransoft/isp-bss-oss/internal/portalui"
+	"github.com/maaransoft/isp-bss-oss/internal/revenue"
 	"github.com/maaransoft/isp-bss-oss/internal/staffui"
 	"github.com/maaransoft/isp-bss-oss/internal/svclog"
 	"github.com/maaransoft/isp-bss-oss/internal/tr069"
@@ -261,6 +262,7 @@ func run(ctx context.Context) error {
 		wallet:     walletSvc,
 		planExpiry: database.Portal(),
 		invoicing:  database.Billing(),
+		franchises: database.Revenue(),
 	})
 
 	portalUIHandler := portalui.NewHandler(portalui.Deps{
@@ -465,6 +467,7 @@ type renewalProcessor struct {
 	wallet     *billing.WalletService
 	planExpiry portal.PlanExpiryStore
 	invoicing  renewalInvoicer
+	franchises revenue.FranchiseQuerier
 }
 
 func (p *renewalProcessor) ApplyRenewal(ctx context.Context, subscriberID int, amount decimal.Decimal, paymentID string) (*portal.RenewalPayment, error) {
@@ -493,6 +496,10 @@ func (p *renewalProcessor) ApplyRenewal(ctx context.Context, subscriberID int, a
 		if err := createRenewalInvoice(ctx, p.invoicing, subscriberID, amount); err != nil {
 			log.Error().Err(err).Int("subscriber_id", subscriberID).Msg("renewal: invoice creation failed")
 		}
+	}
+
+	if p.franchises != nil {
+		revenue.SettleCommissionForRecharge(ctx, p.franchises, subscriberID, amount, paymentID)
 	}
 
 	return &portal.RenewalPayment{TransactionID: tx.ID, Balance: tx.BalanceAfter}, nil

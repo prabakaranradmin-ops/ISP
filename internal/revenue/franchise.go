@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
+	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 )
 
@@ -15,6 +16,10 @@ import (
 type FranchiseQuerier interface {
 	GetFranchiseByID(ctx context.Context, franchiseID int) (*Franchise, error)
 	CalculateAndStoreLCOCommission(ctx context.Context, entry LCOCommissionEntry) error
+	// GetSubscriberFranchiseID reports which franchise (if any) a subscriber
+	// belongs to, for SettleCommissionForRecharge to decide whether a
+	// recharge owes a partner commission at all.
+	GetSubscriberFranchiseID(ctx context.Context, subscriberID int) (*int, error)
 }
 
 // Franchise represents a franchise record.
@@ -115,6 +120,41 @@ func CalculateLCOCommission(ctx context.Context, db FranchiseQuerier, entry LCOC
 		return decimal.Zero, fmt.Errorf("revenue: store lco commission: %w", err)
 	}
 	return commission, nil
+}
+
+// SettleCommissionForRecharge is CRD-EXP-006 Phase 2's franchise-commission
+// integration: called after a wallet recharge has already committed, it
+// looks up whether the recharged subscriber belongs to a franchise and, if
+// so, computes and posts that partner's commission (lco_ledger row plus its
+// GL entry — see db.RevenueStore.CalculateAndStoreLCOCommission).
+//
+// Deliberately best-effort and error-swallowing, matching this codebase's
+// established pattern for a derived write that follows an already-correct
+// primary one (e.g. RadiusDaemon's live-session tracking after
+// Accounting-Start persists): the recharge itself already succeeded and
+// must never be undone, retried, or reported as failed because a
+// downstream commission calculation could not run. A failure here is
+// logged loudly enough for ops to reconcile, not silently dropped.
+func SettleCommissionForRecharge(ctx context.Context, db FranchiseQuerier, subscriberID int, amount decimal.Decimal, transactionRef string) {
+	franchiseID, err := db.GetSubscriberFranchiseID(ctx, subscriberID)
+	if err != nil {
+		log.Error().Err(err).Int("subscriber_id", subscriberID).
+			Msg("revenue: resolve subscriber franchise for commission settlement failed")
+		return
+	}
+	if franchiseID == nil {
+		return
+	}
+
+	if _, err := CalculateLCOCommission(ctx, db, LCOCommissionEntry{
+		FranchiseID:    *franchiseID,
+		SubscriberID:   subscriberID,
+		RechargeAmount: amount,
+		TransactionRef: transactionRef,
+	}); err != nil {
+		log.Error().Err(err).Int("subscriber_id", subscriberID).Int("franchise_id", *franchiseID).
+			Msg("revenue: franchise commission settlement failed")
+	}
 }
 
 // franchiseScopedRoles are the roles whose visibility is confined to a single

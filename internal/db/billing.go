@@ -117,6 +117,10 @@ func (s *BillingStore) RecordRecharge(ctx context.Context, p billing.RechargePos
 			return fmt.Errorf("db: update wallet balance: %w", err)
 		}
 
+		if err := postWalletGLEntry(ctx, dbTx, p, creditID); err != nil {
+			return err
+		}
+
 		token := ""
 		if p.Credit.TransactionToken != nil {
 			token = *p.Credit.TransactionToken
@@ -136,6 +140,65 @@ func (s *BillingStore) RecordRecharge(ctx context.Context, p billing.RechargePos
 		return nil, err
 	}
 	return tx, nil
+}
+
+// postWalletGLEntry posts the general-ledger side of a wallet posting
+// (CRD-EXP-006 Phase 2), in the same transaction as the wallet_ledgers legs
+// it mirrors so the two can never disagree. Every wallet_ledgers leg's own
+// EntryType already is its GL line's debit/credit side — see
+// billing.GLAccountCode's own doc comment — so this only has to resolve
+// each leg's account code and insert.
+//
+// walletLegID is the credit leg's wallet_ledgers row (the one RecordRecharge
+// returns as the Transaction), kept as source_id purely for traceability
+// from a GL line back to the subledger row that caused it.
+func postWalletGLEntry(ctx context.Context, dbTx pgx.Tx, p billing.RechargePosting, walletLegID int) error {
+	debitCode := billing.GLAccountCode(p.Debit.Account)
+	creditCode := billing.GLAccountCode(p.Credit.Account)
+	if debitCode == "" || creditCode == "" {
+		return fmt.Errorf("db: no GL account mapped for wallet leg account %q/%q", p.Debit.Account, p.Credit.Account)
+	}
+
+	createdBy := p.Credit.AdjustedBy
+	if createdBy == "" {
+		createdBy = "system"
+	}
+
+	var entryID int
+	if err := dbTx.QueryRow(ctx, `
+		INSERT INTO gl_journal_entries (description, source_type, source_id, created_by)
+		VALUES ($1, 'wallet_ledger', $2, $3)
+		RETURNING id`,
+		p.Credit.Description, walletLegID, createdBy,
+	).Scan(&entryID); err != nil {
+		return fmt.Errorf("db: insert wallet GL journal entry: %w", err)
+	}
+
+	const insertLine = `
+		INSERT INTO gl_journal_lines (journal_entry_id, account_id, debit, credit)
+		VALUES ($1, (SELECT id FROM chart_of_accounts WHERE code = $2), $3::numeric, $4::numeric)`
+
+	// Each leg posts to whichever of debit/credit its own EntryType names —
+	// a leg is never both, chk_gl_line_not_both would reject the ambiguity.
+	for _, leg := range []struct {
+		code      string
+		entryType string
+		amount    decimal.Decimal
+	}{
+		{debitCode, p.Debit.EntryType, p.Debit.Amount},
+		{creditCode, p.Credit.EntryType, p.Credit.Amount},
+	} {
+		debit, credit := "0", "0"
+		if leg.entryType == "debit" {
+			debit = leg.amount.String()
+		} else {
+			credit = leg.amount.String()
+		}
+		if _, err := dbTx.Exec(ctx, insertLine, entryID, leg.code, debit, credit); err != nil {
+			return fmt.Errorf("db: insert wallet GL journal line (%s): %w", leg.code, err)
+		}
+	}
+	return nil
 }
 
 // GetSubscriberDunningState returns the current dunning stage and plan expiry.

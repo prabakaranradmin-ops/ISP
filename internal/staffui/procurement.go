@@ -24,7 +24,7 @@ type ProcurementStore interface {
 	ListPurchaseOrders(ctx context.Context, status *string) ([]procurement.PurchaseOrder, error)
 	GetPurchaseOrder(ctx context.Context, id int) (*procurement.PurchaseOrder, error)
 	DecidePurchaseOrder(ctx context.Context, id int, approve bool, decidedBy, reason string) (*procurement.PurchaseOrder, error)
-	UpdateFulfilment(ctx context.Context, id int, status string) (*procurement.PurchaseOrder, error)
+	UpdateFulfilment(ctx context.Context, id int, status, actor string) (*procurement.PurchaseOrder, error)
 }
 
 type procurementData struct {
@@ -181,7 +181,7 @@ func (h *Handler) UpdateFulfilmentForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.procurement.UpdateFulfilment(r.Context(), id, status)
+	updated, err := h.procurement.UpdateFulfilment(r.Context(), id, status, s.Username)
 	if err != nil {
 		log.Error().Err(err).Int("id", id).Msg("staffui: update purchase order fulfilment failed")
 		h.renderProcurement(w, r, s, "", "", "Could not update that purchase order.")

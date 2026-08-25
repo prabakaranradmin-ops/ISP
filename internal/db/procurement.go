@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/maaransoft/isp-bss-oss/internal/procurement"
 )
 
@@ -127,7 +128,17 @@ func (s *ProcurementStore) DecidePurchaseOrder(ctx context.Context, id int, appr
 // cancels it. Only a still-approved (or, for cancellation, still-requested)
 // order can transition — matching the domain's own lifecycle: an order that
 // was rejected cannot later be marked received.
-func (s *ProcurementStore) UpdateFulfilment(ctx context.Context, id int, status string) (*procurement.PurchaseOrder, error) {
+//
+// A transition to received additionally posts the GL entry CRD-EXP-006
+// Phase 2 promised ("accounts payable falls naturally out of Phase 2's
+// procurement posting"): Dr Operating Expenses, Cr Accounts Payable, in the
+// same transaction as the status change. Every category (hardware,
+// services, other) expenses to the same account rather than capitalising
+// hardware as a fixed asset — this codebase has no depreciation schedule or
+// asset register anywhere, and adding one is its own design question, not
+// a wire-up decision. actor is the acknowledging staff member's username,
+// recorded as the GL entry's created_by.
+func (s *ProcurementStore) UpdateFulfilment(ctx context.Context, id int, status, actor string) (*procurement.PurchaseOrder, error) {
 	receivedAtSet := ""
 	if status == procurement.StatusReceived {
 		receivedAtSet = ", received_at = NOW()"
@@ -137,12 +148,45 @@ func (s *ProcurementStore) UpdateFulfilment(ctx context.Context, id int, status 
 		WHERE id = $1 AND status IN ('%s', '%s')
 		RETURNING %s`, receivedAtSet, procurement.StatusApproved, procurement.StatusRequested, purchaseOrderColumns)
 
-	po, err := scanPurchaseOrder(s.pool.QueryRow(ctx, q, id, status))
-	if isNoRows(err) {
-		return nil, nil
-	}
+	var po *procurement.PurchaseOrder
+	err := inTx(ctx, s.pool, func(dbTx pgx.Tx) error {
+		var err error
+		po, err = scanPurchaseOrder(dbTx.QueryRow(ctx, q, id, status))
+		if isNoRows(err) {
+			po = nil
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("db: update purchase order %d fulfilment: %w", id, err)
+		}
+		if status != procurement.StatusReceived {
+			return nil
+		}
+
+		var journalID int
+		if err := dbTx.QueryRow(ctx, `
+			INSERT INTO gl_journal_entries (description, source_type, source_id, created_by)
+			VALUES ($1, 'purchase_order', $2, $3)
+			RETURNING id`,
+			fmt.Sprintf("Purchase order #%d received — %s (%s)", po.ID, po.Description, po.Vendor),
+			po.ID, actor,
+		).Scan(&journalID); err != nil {
+			return fmt.Errorf("db: insert purchase order GL journal entry: %w", err)
+		}
+
+		const insertLine = `
+			INSERT INTO gl_journal_lines (journal_entry_id, account_id, debit, credit)
+			VALUES ($1, (SELECT id FROM chart_of_accounts WHERE code = $2), $3::numeric, $4::numeric)`
+		if _, err := dbTx.Exec(ctx, insertLine, journalID, "5100", po.Amount, "0"); err != nil {
+			return fmt.Errorf("db: insert purchase order expense line: %w", err)
+		}
+		if _, err := dbTx.Exec(ctx, insertLine, journalID, "2000", "0", po.Amount); err != nil {
+			return fmt.Errorf("db: insert purchase order payable line: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("db: update purchase order %d fulfilment: %w", id, err)
+		return nil, err
 	}
 	return po, nil
 }

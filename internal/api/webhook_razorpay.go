@@ -8,6 +8,7 @@ import (
 
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/partner"
+	"github.com/maaransoft/isp-bss-oss/internal/revenue"
 	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 )
@@ -102,6 +103,9 @@ func (h *Handler) RazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 		// database being unavailable, not bad input.
 		http.Error(w, "recharge failed", http.StatusInternalServerError)
 		return
+	}
+	if h.franchises != nil {
+		revenue.SettleCommissionForRecharge(r.Context(), h.franchises, subscriberID, amount, entity.ID)
 	}
 
 	// Emitted only after the wallet credit committed. Publishing before it

@@ -28,7 +28,7 @@ type ProcurementQuerier interface {
 	ListPurchaseOrders(ctx context.Context, status *string) ([]procurement.PurchaseOrder, error)
 	GetPurchaseOrder(ctx context.Context, id int) (*procurement.PurchaseOrder, error)
 	DecidePurchaseOrder(ctx context.Context, id int, approve bool, decidedBy, reason string) (*procurement.PurchaseOrder, error)
-	UpdateFulfilment(ctx context.Context, id int, status string) (*procurement.PurchaseOrder, error)
+	UpdateFulfilment(ctx context.Context, id int, status, actor string) (*procurement.PurchaseOrder, error)
 }
 
 type createPurchaseOrderRequest struct {
@@ -188,7 +188,7 @@ func (h *Handler) UpdateFulfilmentStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	updated, err := h.procurement.UpdateFulfilment(r.Context(), id, req.Status)
+	updated, err := h.procurement.UpdateFulfilment(r.Context(), id, req.Status, middleware.SubjectFromContext(r.Context()))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "update purchase order failed")
 		return

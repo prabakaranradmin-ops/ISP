@@ -216,23 +216,92 @@ func (s *RevenueStore) GetFranchiseByID(ctx context.Context, franchiseID int) (*
 	return &f, nil
 }
 
-// CalculateAndStoreLCOCommission writes one lco_ledger row.
+// CalculateAndStoreLCOCommission writes one lco_ledger row and, atomically
+// with it, the GL entry that recognises the commission expense and what is
+// now owed to the partner (CRD-EXP-006 Phase 2: Dr Franchise Commission
+// Expense, Cr Commission Payable to Partners).
 //
 // The commission is computed by the caller (revenue.CalculateLCOCommission) and
 // passed in already rounded, so the stored figure is exactly what was reported.
+//
+// Idempotent on transaction_ref (idx_lco_ledger_txn_ref, migration 045): a
+// recharge can be retried with the same token, and
+// revenue.SettleCommissionForRecharge has no way of knowing that on its
+// own — the guard has to live here, at the write, the same reasoning
+// wallet_ledgers' own idx_wallet_token already applies one layer up. A
+// conflict means this commission was already settled, so both the ledger
+// row and its GL entry are skipped rather than double-posted; a token-less
+// entry (TransactionRef == "") never matches the partial index and is
+// always inserted, same as before this phase.
 func (s *RevenueStore) CalculateAndStoreLCOCommission(ctx context.Context, entry revenue.LCOCommissionEntry) error {
-	const q = `
+	const insertLedger = `
 		INSERT INTO lco_ledger (
 			franchise_id, subscriber_id, recharge_amount, commission_amount, transaction_ref
-		) VALUES ($1, $2, $3::numeric, $4::numeric, NULLIF($5,''))`
+		) VALUES ($1, $2, $3::numeric, $4::numeric, NULLIF($5,''))
+		ON CONFLICT (transaction_ref) WHERE transaction_ref IS NOT NULL DO NOTHING
+		RETURNING id`
 
-	if _, err := s.pool.Exec(ctx, q,
-		entry.FranchiseID, entry.SubscriberID,
-		entry.RechargeAmount.String(), entry.CommissionAmount.String(), entry.TransactionRef,
-	); err != nil {
-		return fmt.Errorf("db: store LCO commission for franchise %d: %w", entry.FranchiseID, err)
+	return inTx(ctx, s.pool, func(dbTx pgx.Tx) error {
+		var ledgerID int
+		err := dbTx.QueryRow(ctx, insertLedger,
+			entry.FranchiseID, entry.SubscriberID,
+			entry.RechargeAmount.String(), entry.CommissionAmount.String(), entry.TransactionRef,
+		).Scan(&ledgerID)
+		if isNoRows(err) {
+			// Conflict: already settled for this transaction_ref.
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("db: store LCO commission for franchise %d: %w", entry.FranchiseID, err)
+		}
+
+		if entry.CommissionAmount.IsZero() {
+			// A balanced GL entry cannot have a zero-amount line
+			// (chk_gl_line_nonzero) — a zero-rate partner still gets its
+			// lco_ledger row above for the record, just no journal entry.
+			return nil
+		}
+
+		var journalID int
+		if err := dbTx.QueryRow(ctx, `
+			INSERT INTO gl_journal_entries (description, source_type, source_id, created_by)
+			VALUES ($1, 'lco_commission', $2, 'system')
+			RETURNING id`,
+			fmt.Sprintf("Franchise commission — partner %d, subscriber %d", entry.FranchiseID, entry.SubscriberID),
+			ledgerID,
+		).Scan(&journalID); err != nil {
+			return fmt.Errorf("db: insert commission GL journal entry: %w", err)
+		}
+
+		const insertLine = `
+			INSERT INTO gl_journal_lines (journal_entry_id, account_id, debit, credit)
+			VALUES ($1, (SELECT id FROM chart_of_accounts WHERE code = $2), $3::numeric, $4::numeric)`
+		if _, err := dbTx.Exec(ctx, insertLine, journalID, "5000", entry.CommissionAmount.String(), "0"); err != nil {
+			return fmt.Errorf("db: insert commission expense line: %w", err)
+		}
+		if _, err := dbTx.Exec(ctx, insertLine, journalID, "2100", "0", entry.CommissionAmount.String()); err != nil {
+			return fmt.Errorf("db: insert commission payable line: %w", err)
+		}
+		return nil
+	})
+}
+
+// GetSubscriberFranchiseID reports which franchise (if any) a subscriber
+// belongs to. Used by revenue.SettleCommissionForRecharge to decide whether
+// a recharge owes a partner commission — a subscriber signed up directly
+// (franchise_id IS NULL) never does.
+func (s *RevenueStore) GetSubscriberFranchiseID(ctx context.Context, subscriberID int) (*int, error) {
+	const q = `SELECT franchise_id FROM subscribers WHERE id = $1`
+
+	var franchiseID *int
+	err := s.pool.QueryRow(ctx, q, subscriberID).Scan(&franchiseID)
+	if isNoRows(err) {
+		return nil, fmt.Errorf("db: subscriber %d: %w", subscriberID, ErrNotFound)
 	}
-	return nil
+	if err != nil {
+		return nil, fmt.Errorf("db: get franchise for subscriber %d: %w", subscriberID, err)
+	}
+	return franchiseID, nil
 }
 
 // ListFranchises returns franchise partners within a scope. A nil

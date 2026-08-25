@@ -878,6 +878,9 @@ func (h *Handler) WalletRecharge(w http.ResponseWriter, r *http.Request) {
 	middleware.Audit(r.Context(), "wallet.recharge", strconv.Itoa(req.SubscriberID), map[string]any{
 		"amount": req.Amount, "method": req.PaymentMethod,
 	})
+	if h.franchises != nil {
+		revenue.SettleCommissionForRecharge(r.Context(), h.franchises, req.SubscriberID, amount, req.TransactionToken)
+	}
 	h.enqueuePaymentReceipt(r.Context(), req.SubscriberID, req.Amount, tx.BalanceAfter.String())
 	writeJSON(w, http.StatusOK, tx)
 }

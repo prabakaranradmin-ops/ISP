@@ -30,6 +30,15 @@ type FranchiseQuerier interface {
 	CreateFranchise(ctx context.Context, req revenue.CreateFranchiseRequest) (*revenue.FranchiseRecord, error)
 	GetFranchisePnL(ctx context.Context, franchiseID int, from, to *time.Time) (*revenue.FranchisePnL, error)
 	ListConsolidatedPnL(ctx context.Context, from, to *time.Time) (*revenue.ConsolidatedPnL, error)
+	// The three below are revenue.FranchiseQuerier's own methods, embedded
+	// here (rather than embedding that interface directly) so this stays a
+	// single flat interface an API test double can implement without also
+	// pulling in every other revenue.FranchiseQuerier caller's expectations.
+	// Needed so h.franchises can be passed straight to
+	// revenue.SettleCommissionForRecharge after a recharge commits.
+	GetFranchiseByID(ctx context.Context, franchiseID int) (*revenue.Franchise, error)
+	CalculateAndStoreLCOCommission(ctx context.Context, entry revenue.LCOCommissionEntry) error
+	GetSubscriberFranchiseID(ctx context.Context, subscriberID int) (*int, error)
 }
 
 // callerFranchiseScope returns the franchise a caller is confined to, or nil

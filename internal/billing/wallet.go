@@ -20,6 +20,29 @@ const (
 	AccountAdjustmentClearing = "adjustment_clearing"
 )
 
+// GLAccountCode maps a wallet ledger leg's Account label to the
+// chart-of-accounts code its GL journal line posts against (migration 043,
+// plus 045 for AccountAdjustmentClearing's account). Every wallet_ledgers
+// leg's own EntryType ("debit"/"credit") already IS its GL journal line's
+// debit/credit side — Recharge and Post construct both legs of every
+// posting as a matched pair (one increases a GL-debit-normal account
+// exactly when the other increases a GL-credit-normal one), so nothing
+// here needs to flip a direction, only resolve which account.
+func GLAccountCode(account string) string {
+	switch account {
+	case AccountSubscriberWallet:
+		return "1200" // Subscriber Wallet Liability
+	case AccountGatewayClearing:
+		return "1000" // Cash / Bank
+	case AccountRevenueClearing:
+		return "4000" // Subscription Revenue
+	case AccountAdjustmentClearing:
+		return "5200" // Wallet Adjustments & Refunds
+	default:
+		return ""
+	}
+}
+
 // ErrInsufficientBalance is returned by Post when a debit would take the
 // wallet below zero. The application-level check that returns this is the
 // normal path (a clean 4xx for the caller); a DB-level CHECK constraint on
