@@ -366,8 +366,8 @@ new backend design work was needed.
 
 ### CRD-EXP-006 — General ledger / accounts management
 
-*(Phase 1 done 2026-08-24 — see DBD §6.2 "General ledger" for the schema.
-Phase 2 not built, and not authorized by this design.)* Today's
+*(Phase 1 done 2026-08-24, Phase 2 done 2026-08-25 — see DBD §6.2 "General
+ledger" for the schema.)* Today's
 "double-entry" (`internal/billing/wallet.go`) is a per-subscriber prepaid
 wallet ledger — correct and real, but not a chart of accounts. Before this,
 there was no way to record the ISP's own business expenses (rent, salaries,
@@ -392,13 +392,26 @@ The design splits this into two phases:
   would have silently reported all-time totals as if they were the
   requested period; fixed by moving the date check inside the `SUM`'s
   `CASE` instead.
-- **Phase 2 (needs its own sign-off when scoped)** — auto-posting from
-  wallet recharges, franchise commission, and received purchase orders. Each
-  of these adds a second write next to an already-correct, live financial
-  code path (`WalletService.Post`, `CalculateAndStoreLCOCommission`, the
-  procurement lifecycle) and needs its own review of failure/consistency
-  modes — not something this design pass or a wire-up pattern should decide
-  by default.
+- **Phase 2 (done 2026-08-25)** — auto-posting from wallet recharges,
+  franchise commission, and received purchase orders (migration
+  `045_gl_phase2_accounts.sql`). Each posts inside the same DB transaction
+  as the primary write it accompanies (`BillingStore.RecordRecharge`,
+  `RevenueStore.CalculateAndStoreLCOCommission`,
+  `ProcurementStore.UpdateFulfilment`), so there is no window where the
+  subledger and the GL can disagree. One real finding during scoping:
+  `CalculateAndStoreLCOCommission` was dead code — built and tested, but
+  never called from the live recharge path (the console's own P&L screens
+  compute commission on the fly instead) — so "add a GL posting next to an
+  already-correct live path" required wiring that path up for the first
+  time (`revenue.SettleCommissionForRecharge`), made idempotent on
+  `transaction_ref` since it now sits behind a gateway that can retry.
+  Two new accounts: Wallet Adjustments & Refunds (expense) and Commission
+  Payable to Partners (liability), so staff-issued wallet corrections and
+  partner commission don't blend into unrelated Operating Expenses /
+  Accounts Payable on reports. Purchase orders expense every category
+  (hardware included) to Operating Expenses rather than capitalising as a
+  fixed asset — no depreciation/asset-register concept exists anywhere in
+  this codebase, and adding one is its own design question.
 - Accounts payable (owed-but-unpaid tracking for a received purchase order)
   falls naturally out of Phase 2's procurement posting rather than needing
   separate design.
@@ -419,10 +432,10 @@ here — that table's `subscriber_id` is `NOT NULL` and its `action_type`
 CHECK only permits `wallet_credit`/`refund`/`terminate`, both correct for
 subscriber-affecting actions and wrong for a purchase order with no
 subscriber at all; `chk_po_distinct_approver` reproduces the same
-distinct-approver guarantee on its own table instead. Still and
-deliberately **not** posted to any ledger — depends on CRD-EXP-006 for a
-received order to post an accounts-payable entry automatically, and that
-work remains out of scope for now.
+distinct-approver guarantee on its own table instead. A received order now
+posts an accounts-payable entry automatically (CRD-EXP-006 Phase 2, done
+2026-08-25) — `ProcurementStore.UpdateFulfilment` posts the GL entry in the
+same transaction as the status change.
 
 ### CRD-EXP-008 — Network topology diagram
 
@@ -499,7 +512,7 @@ has a specific reason a bought-in HR system will not work for it.
 | Franchise-partner self-service login (§ CRD-EXP-005 follow-up) | Yes, fully | Low | **Done (2026-08-24)** |
 | CRD-EXP-007 (procurement lifecycle, no ledger posting) | Yes, fully | Medium | **Done (2026-08-24)** |
 | CRD-EXP-006 Phase 1 (standalone GL) | Yes, fully | Medium | **Done (2026-08-24)** |
-| CRD-EXP-006 Phase 2 (auto-posting integration) | No | High — touches 3 live financial code paths | Needs its own sign-off when scoped |
+| CRD-EXP-006 Phase 2 (auto-posting integration) | Yes, fully | High — touches 3 live financial code paths | **Done (2026-08-25)** |
 | CRD-EXP-010 (voucher reseller settlement) | Yes, fully | Medium | **Done (2026-08-24)** |
 | CRD-EXP-008 (network map) | Yes, fully | Low — no schema change | **Done (2026-08-24)** |
 | CRD-EXP-011 (HR/payroll) | No | High, and arguably not this product's job | P4 — recommend integration over build |
