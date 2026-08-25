@@ -142,6 +142,47 @@ func TestFR_AAA_002_SubscriberCache_ThrottledFieldsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFR_AAA_002_SubscriberCache_QuotaAndOverrideFieldsRoundTrip covers the
+// fields added after the cache's initial field list — VolumeGB,
+// SpeedOverrideRateLimit/ExpiresAt, and NTHash. This is exactly the class of
+// bug this file's own doc comment exists to prevent: cachedSubscriber is a
+// deliberately separate shape from radius.Subscriber, so a field added to
+// one and not the other compiles cleanly and then silently vanishes on every
+// cache hit. Found live: Accounting-Start immediately follows Access-Accept
+// for the same session, so the very first accounting record for a session
+// was served from a fresh cache entry missing VolumeGB, permanently
+// recording a 0-byte plan quota for that session.
+func TestFR_AAA_002_SubscriberCache_QuotaAndOverrideFieldsRoundTrip(t *testing.T) {
+	sub := sampleAuthSubscriber()
+	sub.VolumeGB = 1000
+	expiry := time.Now().Add(30 * time.Minute)
+	sub.SpeedOverrideRateLimit = "8M/8M"
+	sub.SpeedOverrideExpiresAt = &expiry
+	sub.NTHash = []byte{0xde, 0xad, 0xbe, 0xef}
+	db := &fakeAuthDB{sub: sub}
+	c := newSubscriberCache(t, db, time.Minute)
+
+	if _, err := c.GetSubscriberByUsername(context.Background(), "sub4242"); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+	got, err := c.GetSubscriberByUsername(context.Background(), "sub4242")
+	if err != nil {
+		t.Fatalf("cached lookup: %v", err)
+	}
+	if got.VolumeGB != 1000 {
+		t.Errorf("VolumeGB lost through the cache: got %d, want 1000", got.VolumeGB)
+	}
+	if got.SpeedOverrideRateLimit != "8M/8M" {
+		t.Errorf("SpeedOverrideRateLimit lost through the cache: got %q", got.SpeedOverrideRateLimit)
+	}
+	if got.SpeedOverrideExpiresAt == nil || !got.SpeedOverrideExpiresAt.Equal(expiry) {
+		t.Errorf("SpeedOverrideExpiresAt lost through the cache: got %v, want %v", got.SpeedOverrideExpiresAt, expiry)
+	}
+	if string(got.NTHash) != string([]byte{0xde, 0xad, 0xbe, 0xef}) {
+		t.Errorf("NTHash lost through the cache: got %x", got.NTHash)
+	}
+}
+
 // TestFR_AAA_002_SubscriberCache_CachedRecordIsACopy guards a hazard the JSON
 // wire format used to make impossible for free: the cache now stores a Go
 // struct rather than serialised bytes, so a caller mutating what it got back

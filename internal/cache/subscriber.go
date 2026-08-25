@@ -48,6 +48,15 @@ type cachedSubscriber struct {
 	FUPActive    bool
 	FUPThrottle  string
 	PlanID       int
+	VolumeGB     int
+	// SpeedOverrideRateLimit/Expiry and NTHash mirror radius.Subscriber's own
+	// fields (see that type's doc comments) — omitting them here would mean a
+	// subscriber who reconnects within the TTL after an owner applies a speed
+	// override, or who authenticates via EAP-MSCHAPv2, gets served a cache hit
+	// that silently drops the very state their Access-Accept depends on.
+	SpeedOverrideRateLimit string
+	SpeedOverrideExpiresAt *time.Time
+	NTHash                 []byte
 	// NotFound records a negative result, so a flood of requests for a username
 	// that does not exist cannot turn into a flood of database queries.
 	NotFound bool
@@ -92,14 +101,18 @@ func (c *SubscriberCache) GetSubscriberByUsername(ctx context.Context, username 
 			return nil, nil
 		}
 		return &radius.Subscriber{
-			ID:           entry.ID,
-			Username:     entry.Username,
-			PasswordHash: entry.PasswordHash,
-			Status:       entry.Status,
-			RateLimitStr: entry.RateLimitStr,
-			FUPActive:    entry.FUPActive,
-			FUPThrottle:  entry.FUPThrottle,
-			PlanID:       entry.PlanID,
+			ID:                     entry.ID,
+			Username:               entry.Username,
+			PasswordHash:           entry.PasswordHash,
+			Status:                 entry.Status,
+			RateLimitStr:           entry.RateLimitStr,
+			FUPActive:              entry.FUPActive,
+			FUPThrottle:            entry.FUPThrottle,
+			PlanID:                 entry.PlanID,
+			VolumeGB:               entry.VolumeGB,
+			SpeedOverrideRateLimit: entry.SpeedOverrideRateLimit,
+			SpeedOverrideExpiresAt: entry.SpeedOverrideExpiresAt,
+			NTHash:                 entry.NTHash,
 		}, nil
 	}
 	subscriberCacheMisses.Inc()
@@ -119,14 +132,18 @@ func (c *SubscriberCache) cacheResult(key string, sub *radius.Subscriber, userna
 	entry := cachedSubscriber{Username: username, NotFound: true}
 	if sub != nil {
 		entry = cachedSubscriber{
-			ID:           sub.ID,
-			Username:     sub.Username,
-			PasswordHash: sub.PasswordHash,
-			Status:       sub.Status,
-			RateLimitStr: sub.RateLimitStr,
-			FUPActive:    sub.FUPActive,
-			FUPThrottle:  sub.FUPThrottle,
-			PlanID:       sub.PlanID,
+			ID:                     sub.ID,
+			Username:               sub.Username,
+			PasswordHash:           sub.PasswordHash,
+			Status:                 sub.Status,
+			RateLimitStr:           sub.RateLimitStr,
+			FUPActive:              sub.FUPActive,
+			FUPThrottle:            sub.FUPThrottle,
+			PlanID:                 sub.PlanID,
+			VolumeGB:               sub.VolumeGB,
+			SpeedOverrideRateLimit: sub.SpeedOverrideRateLimit,
+			SpeedOverrideExpiresAt: sub.SpeedOverrideExpiresAt,
+			NTHash:                 sub.NTHash,
 		}
 	}
 
