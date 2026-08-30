@@ -1,5 +1,5 @@
 # Document 12: Operations & Incident Response Runbook
-**Version:** 2.1 | **Status:** Draft | **Date:** 2026-08-12 — §12.3.2 rewritten for automated Patroni failover (NFR-AVAIL-002); rest unchanged from v2.0
+**Version:** 2.2 | **Status:** Draft | **Date:** 2026-08-30 — Redis/Asynq procedures replaced: both were removed from the system (sessions → `live_sessions`, migration 036; task queue → `jobqueue_tasks`, migration 037) but this runbook still instructed on-call to debug them. §12.3.1 repurposed from "Redis Primary Failure" to the task queue's own stall modes; §12.3.3/§12.3.4 rewritten against the real schema; §12.2.3's reference to `scripts/fup_rollback.go` replaced with a working procedure (that script does not exist). §12.3.2 (Patroni) unchanged and still valid — the Docker topology it describes is still present alongside the native Windows install.
 **Document ID:** OPS
 **Traces From:** [IDD](08_IDD_Infrastructure_Design.md) → [SAD](03_SAD_System_Architecture.md)
 **Traces To:** —
@@ -19,9 +19,9 @@
 
 | Severity | Definition | Example |
 |---|---|---|
-| S1 | Full platform outage; all subscribers disconnected | PostgreSQL primary down, Redis primary down |
+| S1 | Full platform outage; all subscribers disconnected | PostgreSQL primary down; AAA service down |
 | S2 | Partial outage; subset of subscribers affected | NAS connectivity loss, FUP CoA failing |
-| S3 | Degraded performance; no subscriber impact | High RADIUS latency, Asynq queue depth growing |
+| S3 | Degraded performance; no subscriber impact | High RADIUS latency; task queue depth growing |
 | S4 | Minor issue; logged but no immediate action | Single webhook HMAC failure, one failed invoice PDF |
 
 ---
@@ -39,17 +39,34 @@ curl -X POST https://api.yourdomain.com/api/v1/sessions/{session_id}/disconnect 
 # Returns 202 Accepted; PoD is asynchronous
 
 # Verify task was enqueued
-redis-cli -h bss_redis_primary LLEN asynq:{bss}:network_commands
+psql -d isp_bss_oss -c "SELECT id, task_type, status, run_after FROM jobqueue_tasks
+                         WHERE queue = 'network_commands' AND status = 'pending'
+                         ORDER BY id DESC LIMIT 5;"
 ```
 
-If the Asynq task fails (check dead-letter queue):
+If the task fails, it retries with backoff and lands in the dead-letter state
+(`status = 'dead'`) once retries are exhausted:
 
 ```bash
-# Check dead-letter queue
-redis-cli -h bss_redis_primary ZCARD asynq:{bss}:dead
+# Dead-letter depth for this queue
+psql -d isp_bss_oss -c "SELECT count(*) FROM jobqueue_tasks
+                         WHERE queue = 'network_commands' AND status = 'dead';"
 
-# View dead-letter tasks
-asynq task ls --queue network_commands --state archived
+# Inspect the failed tasks themselves
+psql -d isp_bss_oss -c "SELECT id, task_type, retry_count, last_error, created_at
+                         FROM jobqueue_tasks
+                         WHERE queue = 'network_commands' AND status = 'dead'
+                         ORDER BY id DESC LIMIT 20;"
+```
+
+To retry a dead task, set it back to `pending` and release any stale lease — a
+worker picks it up on the next dequeue:
+
+```bash
+psql -d isp_bss_oss -c "UPDATE jobqueue_tasks
+                           SET status = 'pending', retry_count = 0, run_after = now(),
+                               locked_by = NULL, lease_expires_at = NULL
+                         WHERE id = {TASK_ID};"
 ```
 
 ### 12.2.2 Manually Apply / Remove FUP Throttle
@@ -74,18 +91,37 @@ curl -X POST https://api.yourdomain.com/api/v1/sessions/{session_id}/fup-overrid
 
 Use when a plan configuration error has incorrectly triggered FUP throttling across a subscriber cohort.
 
+> **No bulk rollback tool exists.** There is no single command for this — the
+> procedure below is a loop over the same audited per-session endpoint
+> § 12.2.2 uses. Do not clear `subscribers.fup_active` directly in SQL: that
+> changes the flag without sending any CoA, so the NAS keeps enforcing the
+> throttle it was last told about and the database then disagrees with the
+> live network.
+
 ```bash
-# Step 1: Identify affected sessions (Redis scan)
-redis-cli -h bss_redis_primary --scan --pattern "session:*" \
-  | xargs -I{} redis-cli -h bss_redis_primary HGET {} fup_applied \
-  | grep -c "1"
-# This gives count of FUP-applied sessions
+# Step 1: Count and list the affected live sessions
+psql -d isp_bss_oss -c "SELECT count(*) FROM live_sessions WHERE fup_throttled;"
 
-# Step 2: Enqueue CoA restore for all affected sessions via bulk script
-go run scripts/fup_rollback.go --plan-id {PLAN_ID} --action remove
+psql -d isp_bss_oss -At -c \
+  "SELECT l.session_id
+     FROM live_sessions l
+     JOIN subscribers s ON s.id = l.subscriber_id
+    WHERE l.fup_throttled AND s.plan_id = {PLAN_ID};" > /tmp/fup_sessions.txt
 
-# Step 3: Monitor CoA ACK rate on Grafana dashboard
-# Dashboard: "RADIUS / Network Commands" → CoA ACK rate should spike then normalize
+# Step 2: Remove the throttle per session (audited, and each enqueues its own
+# restoring CoA). Paced deliberately — a few hundred at once floods the
+# network_commands queue and the NAS with simultaneous CoA-Requests.
+while read -r sid; do
+  curl -fsS -X POST "https://api.yourdomain.com/api/v1/sessions/$sid/fup-override" \
+    -H "Authorization: Bearer {NOC_JWT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{"action": "remove"}' || echo "FAILED: $sid"
+  sleep 0.2
+done < /tmp/fup_sessions.txt
+
+# Step 3: Confirm the queue drains rather than backing up or dead-lettering
+psql -d isp_bss_oss -c "SELECT status, count(*) FROM jobqueue_tasks
+                         WHERE queue = 'network_commands' GROUP BY status;"
 ```
 
 ### 12.2.4 Extend Grace Period for a Subscriber
@@ -102,33 +138,55 @@ curl -X PATCH https://api.yourdomain.com/api/v1/subscribers/{id} \
 
 ## 12.3 Infrastructure Incident Procedures
 
-### 12.3.1 Redis Primary Failure
+### 12.3.1 Background Task Queue Stalled
 
-**Symptoms:** RADIUS auth latency spike; Grafana `redis_up` = 0 for primary node.
+> Replaces this document's former "Redis Primary Failure" procedure. There is
+> no Redis in this system: the task queue moved into PostgreSQL
+> (`jobqueue_tasks`, migration 037) and live session state with it
+> (`live_sessions`, migration 036). A datastore failure is now a PostgreSQL
+> failure — § 12.3.2 — and this section covers the queue's own stall modes
+> instead.
+
+**Symptoms:** CoA/PoD requests accepted (202) but never take effect on the
+NAS; dead-letter alert firing; `pending` depth climbing without draining.
 
 **Response:**
 
-1. Check Sentinel election status:
+1. Get the shape of the queue before changing anything:
    ```bash
-   redis-cli -p 26379 -h bss_redis_sentinel_1 sentinel master bss_master
-   # Verify 'ip' field shows the new primary
+   psql -d isp_bss_oss -c "SELECT queue, status, count(*) FROM jobqueue_tasks
+                            GROUP BY queue, status ORDER BY queue, status;"
    ```
-2. Sentinel should auto-promote a replica within 3 seconds. Verify new primary is accepting writes:
-   ```bash
-   redis-cli -h {NEW_PRIMARY_IP} set test_key test_val
-   redis-cli -h {NEW_PRIMARY_IP} get test_key
-   ```
-3. Restart failed Redis node container. It will rejoin as a replica:
-   ```bash
-   docker-compose restart redis_primary
-   ```
-4. Verify replication status:
-   ```bash
-   redis-cli -h bss_redis_primary INFO replication
-   ```
-5. Update monitoring alert to confirm `redis_up` returns to 1 for all nodes.
 
-**Escalate to L3 if:** Sentinel fails to elect a new primary within 30 seconds.
+2. **`pending` climbing, nothing in `processing`** — no worker is consuming.
+   The worker pool lives in the AAA service, so check it is actually running:
+   ```powershell
+   Get-Service ISPBSSAaaCore
+   Get-Content "C:\Program Files\ISP BSS\logs\ISPBSSAaaCore.log" -Tail 50
+   ```
+   A healthy start logs `radiusd: task workers started`. If the service is
+   stopped, `Start-Service ISPBSSAaaCore`.
+
+3. **Rows stuck in `processing`** — a worker died mid-task. These recover on
+   their own: the lease expires and the row returns to the pool, which is
+   what `lease_expires_at` exists for. Confirm leases are actually expiring
+   rather than being held by a live-but-wedged worker:
+   ```bash
+   psql -d isp_bss_oss -c "SELECT id, task_type, locked_by, lease_expires_at, now()
+                            FROM jobqueue_tasks WHERE status = 'processing'
+                            ORDER BY lease_expires_at LIMIT 20;"
+   ```
+   Only intervene if `lease_expires_at` is well in the past *and* the row has
+   not been reclaimed — that indicates the reclaim path itself is stuck, which
+   is an L3 escalation, not something to fix by hand-editing rows.
+
+4. **Rows in `dead`** — retries were exhausted. Read `last_error` before
+   retrying anything; a CoA that dead-lettered because the NAS is unreachable
+   will simply dead-letter again. Retry procedure is in § 12.2.1.
+
+**Escalate to L3 if:** the pool is running and leases are expiring, but
+`pending` still does not drain — that points at the dequeue path rather than
+at any individual task.
 
 ### 12.3.2 PostgreSQL Primary Failure
 
@@ -199,24 +257,43 @@ must not stall every write on an otherwise-healthy primary). Target RTO: under
 1 minute for the automated Patroni path; 15 minutes for the manual fallback,
 unchanged from before this section existed.
 
-### 12.3.3 Asynq Dead-Letter Queue Non-Empty
+### 12.3.3 Dead-Letter Queue Non-Empty
 
 **Symptoms:** PagerDuty alert `dead_letter_queue_non_empty`; Grafana `dead_letter_queue_depth` > 0.
 
 **Response:**
 
-1. Identify dead-letter tasks:
+1. Identify the dead tasks and, crucially, *why* they died — `last_error`
+   carries the failure the final retry hit:
    ```bash
-   asynq task ls --queue network_commands --state archived | head -20
+   psql -d isp_bss_oss -c "SELECT id, task_type, retry_count, last_error, created_at
+                            FROM jobqueue_tasks
+                            WHERE queue = 'network_commands' AND status = 'dead'
+                            ORDER BY id DESC LIMIT 20;"
    ```
-2. Check task payload and error message to determine root cause (NAS unreachable, malformed packet).
-3. If NAS is reachable: re-run dead-letter tasks:
+2. Read `last_error` before retrying anything. The common causes divide
+   cleanly: a NAS that is unreachable (timeouts) versus a request the NAS
+   actively refused (NAK) — the first is worth retrying once the device is
+   back, the second will fail identically no matter how many times it runs.
+3. **If the NAS is reachable**, return the tasks to the pool:
    ```bash
-   asynq task run --queue network_commands --state archived --all
+   psql -d isp_bss_oss -c "UPDATE jobqueue_tasks
+                              SET status = 'pending', retry_count = 0, run_after = now(),
+                                  locked_by = NULL, lease_expires_at = NULL
+                            WHERE queue = 'network_commands' AND status = 'dead';"
    ```
-4. If NAS is unreachable (CCR2004 down): do not retry. Escalate to network team. Affected subscribers will remain in their current state until NAS recovers.
-5. Once NAS recovers, re-run all dead-letter tasks.
-6. Archive tasks that cannot be retried with a documented reason.
+4. **If the NAS is unreachable**, do not retry — escalate to the network team.
+   Affected subscribers stay in their current state until the device recovers.
+   Retrying against a down NAS just re-exhausts the retries and refills this
+   queue.
+5. Once the NAS recovers, run step 3.
+6. For tasks that can never succeed (a subscriber since deleted, a session
+   long gone), record why in the incident, then mark them completed so the
+   alert clears and genuinely new failures stay visible:
+   ```bash
+   psql -d isp_bss_oss -c "UPDATE jobqueue_tasks SET status = 'completed', completed_at = now()
+                            WHERE id IN ({TASK_IDS});"
+   ```
 
 ### 12.3.4 High RADIUS Authentication Latency
 
@@ -224,26 +301,37 @@ unchanged from before this section existed.
 
 **Response:**
 
-1. Check Redis response time:
+1. Check the subscriber auth cache hit rate. This cache is in-process
+   (`internal/cache`, one map per running service — there is no external cache
+   tier to check), so a collapsed hit rate means entries are being invalidated
+   or expiring faster than they are reused:
    ```bash
-   redis-cli -h bss_redis_primary --latency-history
+   # Prometheus: radius_subscriber_cache_hits_total
+   #             radius_subscriber_cache_misses_total
+   # A miss rate climbing toward 100% sends every auth to PostgreSQL.
    ```
 2. Check RADIUS worker queue depth:
    ```bash
    # Prometheus metric: radius_worker_queue_depth
-   # If > 100: worker pool may be exhausted — check for slow DB fallback queries
+   # If > 100: worker pool may be exhausted — check for slow DB queries below
    ```
-3. Check PostgreSQL for slow queries:
+3. Check PostgreSQL for slow queries — with the cache in-process, PostgreSQL
+   is the only tier behind it, so a slow `GetSubscriberByUsername` shows up
+   directly in auth latency:
    ```sql
    SELECT query, mean_exec_time, calls
    FROM pg_stat_statements
    ORDER BY mean_exec_time DESC
    LIMIT 10;
    ```
-4. If DB fallback queries are causing latency: pre-warm Redis cache for sessions without active cache entries:
-   ```bash
-   go run scripts/cache_warmup.go
+4. Confirm `idx_sub_auth (username, status)` is still being used by the auth
+   lookup — this index is what holds NFR-PERF-001's 15 ms budget:
+   ```sql
+   EXPLAIN ANALYZE
+   SELECT s.id FROM subscribers s JOIN plans p ON p.id = s.plan_id
+    WHERE s.username = 'known_user';
    ```
+   A sequential scan here is the finding; a restart will not fix it.
 
 ---
 
@@ -267,21 +355,20 @@ psql -h localhost -U postgres -d isp_bss_oss \
   -c "SELECT COUNT(*) FROM subscribers WHERE status = 'active';"
 ```
 
-### Redis Restore from RDB
+### Live Session State — Nothing to Restore
 
-```bash
-# Stop Redis primary
-docker-compose stop redis_primary
+There is no separate cache tier to restore. Live session state is the
+`live_sessions` table (migration 036) inside the same PostgreSQL the restore
+above covers, so it comes back with the database.
 
-# Copy backup RDB into data volume
-docker cp /backup/redis/20250101.rdb bss_redis_primary:/data/dump.rdb
-
-# Restart Redis
-docker-compose start redis_primary
-
-# Verify key count
-redis-cli -h bss_redis_primary DBSIZE
-```
+It also does not *need* restoring to be correct. The table is a read surface
+for the health endpoint and the portal's usage panel, not the accounting
+record of truth — that is `subscriber_session_history`. Rows are rebuilt by
+the next Accounting-Interim-Update each live session sends (every few
+minutes), and a stale row is reclaimed by the staleness sweeper after
+`SessionTTL` (30 minutes). After a restore, expect the portal to briefly
+report subscribers as offline who are in fact online; it self-corrects on the
+next accounting round without operator action.
 
 ---
 
@@ -289,14 +376,15 @@ redis-cli -h bss_redis_primary DBSIZE
 
 ```
 □ Review and rotate RADIUS shared secrets on all NAS devices
-□ Verify PII re-encryption Asynq job completed successfully (check encryption_keys table)
+□ Verify the PII re-encryption job completed successfully (check encryption_keys table)
 □ Review dead-letter queue archive — any recurring failures indicate code or infra issues
 □ Test PostgreSQL replica promotion procedure in staging
 □ Confirm TLS certificate expiry dates (auto-renewal should trigger 30d before expiry)
 □ Review Prometheus alert firing history — tune thresholds if noisy
 □ Run database VACUUM ANALYZE on high-write tables
 □ Rotate JWT signing secret (coordinate with all API consumers)
-□ Review and purge Asynq task history older than 30 days
+□ Confirm completed task rows are being reaped (jobqueue_tasks retention_until);
+  investigate rather than hand-delete if the table is growing without bound
 ```
 
 ---
@@ -309,4 +397,4 @@ redis-cli -h bss_redis_primary DBSIZE
 | Network Commands (CoA/PoD) | `https://grafana.internal/d/network_cmds` |
 | Billing & Wallet | `https://grafana.internal/d/billing` |
 | Infrastructure Health | `https://grafana.internal/d/infra` |
-| Asynq Queue Depths | `https://grafana.internal/d/asynq` |
+| Task Queue Depths | `https://grafana.internal/d/jobqueue` |
