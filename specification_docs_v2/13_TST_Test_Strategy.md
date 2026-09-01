@@ -186,24 +186,28 @@ k6 run \
 
 | Test | Procedure | Pass Criteria |
 |---|---|---|
-| Redis primary kill | `docker-compose stop redis_primary` | Sentinel promotes replica within 8s; auth resumes within 10s |
 | PostgreSQL primary kill | `docker-compose stop postgres_primary` | API 500s for ≤ 5 min; operator escalates within 5 min per runbook |
 | AAA daemon container crash | `docker-compose kill aaa_core_daemon` | Container restarts within 10s; auth resumes |
-| Asynq worker crash during CoA flush | Send SIGKILL to worker goroutine | In-flight tasks resume on restart; no data loss |
+| Worker crash mid-CoA | `docker-compose kill aaa_core_daemon` while `network_commands` has in-flight tasks | Tasks left in `processing` return to the pool when their lease expires; none lost, none run twice |
 | Network partition: NAS to AAA | `iptables` block UDP 1812/1813 | Existing sessions unaffected; new auths queue and recover on unblock |
 
-**Redis primary kill's budget was retargeted from 3s to 8s on 2026-08-18**, after
-`scripts/run_sentinel_failover_test.sh` measured the original target as
-unachievable on this topology rather than merely slow. At the committed
-`down-after-milliseconds 3000`, the full detect-then-promote cycle measured
-5055ms. Lowering detection to 500ms (now the committed value in
-`config/redis/sentinel.conf`) brought it to 3086-3192ms — still over the old
-3s line by 100-200ms, and detection time, not promotion itself, is what
-dominates: quorum requires 2 of 3 Sentinels to independently time out talking
-to the primary before failover starts at all, so pushing detection much below
-500ms risks false-positive failovers on ordinary network jitter. 8s keeps
-comfortable headroom over the measured worst case rather than chasing a target
-this specific 3-node Sentinel-over-Docker-Compose setup cannot reliably hit.
+**The Redis primary-kill drill was removed on 2026-09-01**, along with
+`scripts/run_sentinel_failover_test.sh` that ran it. There is no Redis to
+kill: session state moved to `live_sessions` (migration 036) and the task
+queue to `jobqueue_tasks` (037), and the subscriber auth cache is now
+in-process. What that drill protected — "the datastore dies and
+authentication recovers" — is now entirely the PostgreSQL row above, which
+is why IDD § 8.2a's automatic failover matters more than it did when a
+second datastore shared the risk.
+
+One finding from that drill is worth keeping, because it generalises beyond
+Redis: the original 3s budget was unachievable and had to be retargeted to
+8s, and the reason was that *detection*, not promotion, dominated the cycle.
+A quorum-based failover cannot react faster than its members' timeout, and
+lowering that timeout to chase a budget buys false-positive failovers on
+ordinary network jitter. The same trade-off applies to the Patroni `ttl`
+setting now governing PostgreSQL promotion — a target chosen without
+measuring detection time will be wrong the same way.
 
 ---
 

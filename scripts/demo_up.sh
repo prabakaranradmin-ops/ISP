@@ -92,8 +92,7 @@ fi
 # ── Infrastructure ───────────────────────────────────────────────────────────
 
 head1 "Starting infrastructure"
-docker compose up -d postgres_primary redis_primary redis_replica_1 redis_replica_2 \
-    redis_sentinel_1 redis_sentinel_2 redis_sentinel_3 gotenberg_engine
+docker compose up -d postgres_primary gotenberg_engine
 
 info "waiting for PostgreSQL"
 for _ in $(seq 1 60); do
@@ -105,12 +104,6 @@ if ! docker compose exec -T postgres_primary pg_isready -U postgres -d isp_bss_o
     exit 1
 fi
 pass "PostgreSQL ready"
-
-# Sentinel takes 10-15s to elect a master after the replicas attach (IDD note);
-# api/radiusd retry via restart:always if they start before this finishes, but
-# a short wait here avoids the visible restart on a fresh boot.
-info "giving Redis Sentinel a moment to elect a master"
-sleep 12
 
 # ── Migrations + seed ────────────────────────────────────────────────────────
 
@@ -150,31 +143,39 @@ pass "demo data seeded (2 subscribers, 3 plans, 1 invoice, 4 past sessions)"
 
 # ── Live session for the dashboard ───────────────────────────────────────────
 #
-# The dashboard's "Live Usage" panel reads the active session from Redis, not
-# PostgreSQL, so seeding the database alone leaves it showing "you appear to be
-# offline". A real session only appears when a router actually authenticates,
+# The dashboard's "Live Usage" panel reads the live_sessions table (migration
+# 036), so seeding subscribers alone leaves it showing "you appear to be
+# offline". A real row only appears when a router actually authenticates,
 # which a demo box has no way to do — so one is written here directly.
 #
 # This is demo scaffolding, not a fixture the application depends on: nothing
-# reads it except the dashboard, and it disappears on its own. The usage figure
-# is deliberately set to 67% of the plan quota — high enough that the panel
-# shows a meaningful bar, below the 80% mark that would trigger a genuine FUP
+# reads it except that panel and the health endpoint. The usage figure is
+# deliberately set to 67% of the plan quota — high enough that the panel shows
+# a meaningful bar, below the 80% mark that would trigger a genuine FUP
 # warning and hand testers a notification nobody sent on purpose.
 #
-# The TTL is 24h rather than the 30 minutes the application uses. In
-# production a shorter window is the point: a record older than that belongs to
-# a session whose stop message was lost. Here the only goal is that the panel
-# still has something to show when someone opens the demo tomorrow.
+# updated_at is set to now() rather than backdated with started_at: reads
+# filter on it against SessionTTL (30 minutes), so a row written with a
+# three-hour-old updated_at would be swept as stale and the panel would show
+# offline anyway. started_at is what makes the session look established.
 SUB_ID=$(docker compose exec -T -e PGPASSWORD="${DB_SECURE_PASSWORD}" postgres_primary \
     psql -U postgres -d isp_bss_oss -tAc \
     "SELECT id FROM subscribers WHERE username='test_user';" 2>/dev/null | tr -d '[:space:]')
 
 if [ -n "$SUB_ID" ]; then
-    SESSION_JSON=$(printf '{"session_id":"demo-live-001","subscriber_id":%s,"nas_ip":"10.10.0.1","assigned_ip":"100.64.0.7","bytes_in":1800000000000,"bytes_out":600000000000,"bytes_total":3543348019200,"speed_profile":"100M/100M","fup_throttled":false,"started_at":"%s"}' \
-        "$SUB_ID" "$(date -u -d '3 hours ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u '+%Y-%m-%dT%H:%M:%SZ')")
-
-    if docker compose exec -T redis_primary \
-            redis-cli SET "session:active:${SUB_ID}" "$SESSION_JSON" EX 86400 >/dev/null 2>&1; then
+    if docker compose exec -T -e PGPASSWORD="${DB_SECURE_PASSWORD}" postgres_primary \
+            psql -U postgres -d isp_bss_oss -v ON_ERROR_STOP=1 -c "
+                INSERT INTO live_sessions (subscriber_id, session_id, nas_ip, assigned_ip,
+                                           bytes_in, bytes_out, bytes_total,
+                                           speed_profile, fup_throttled, started_at, updated_at)
+                VALUES (${SUB_ID}, 'demo-live-001', '10.10.0.1', '100.64.0.7',
+                        1800000000000, 600000000000, 3543348019200,
+                        '100M/100M', false, now() - interval '3 hours', now())
+                ON CONFLICT (subscriber_id) DO UPDATE SET
+                    session_id = EXCLUDED.session_id,
+                    bytes_in = EXCLUDED.bytes_in, bytes_out = EXCLUDED.bytes_out,
+                    bytes_total = EXCLUDED.bytes_total,
+                    started_at = EXCLUDED.started_at, updated_at = now();" >/dev/null 2>&1; then
         pass "live session seeded for test_user (dashboard shows 67% of quota used)"
     else
         # Not fatal: everything except one dashboard panel still works.
