@@ -14,7 +14,6 @@
 | Docker Engine | 24.0 | Local infrastructure containers |
 | Docker Compose | 2.0 | Orchestrate local service stack |
 | `psql` | 15 | Database access and seed script execution |
-| `redis-cli` | 7.2 | Cache inspection and debugging |
 | `radtest` | any | RADIUS authentication simulation |
 | `golangci-lint` | 1.55+ | Linting (required for CI parity) |
 
@@ -36,15 +35,15 @@ cp .env.example .env
 #   DB_SECURE_PASSWORD=localdevpassword
 #   JWT_SECRET=localdevjwtsecret32chars!!
 #   RAZORPAY_WEBHOOK_SECRET=localdevhmacsecret
-#   REDIS_MASTER_NAME=bss_master
 ```
 
 ### 3. Start infrastructure containers
 
 ```bash
-# Starts PostgreSQL, Redis (Sentinel cluster), and Gotenberg
-docker-compose up -d postgres_primary redis_primary redis_replica_1 redis_replica_2 \
-  redis_sentinel_1 redis_sentinel_2 redis_sentinel_3 gotenberg_engine
+# Starts PostgreSQL and Gotenberg — the only infrastructure the stack needs.
+# There is no cache or queue tier to bring up: both live in PostgreSQL
+# (migrations 036/037) and the auth cache is in-process. See IDD § 8.3.
+docker-compose up -d postgres_primary gotenberg_engine
 ```
 
 Wait for health checks to pass:
@@ -52,7 +51,7 @@ Wait for health checks to pass:
 ```bash
 docker-compose ps
 # postgres_primary  → healthy
-# redis_primary     → healthy
+# gotenberg_engine  → healthy
 ```
 
 ### 4. Run database migrations
@@ -131,7 +130,7 @@ Each feature or fix must include tests before the PR is opened. Follow these pha
 
 ### Phase 1: Unit Tests
 
-Test individual functions in isolation using mocks for Redis and PostgreSQL.
+Test individual functions in isolation using mocks for PostgreSQL.
 
 ```bash
 # Example: billing module unit tests
@@ -203,8 +202,8 @@ VALUES
 
 | Issue | Cause | Fix |
 |---|---|---|
-| `radtest` returns `Access-Reject` for `test_user` | Redis not seeded with session profile | Restart `aaa_core_daemon`; it seeds active subscribers from DB on startup |
+| `radtest` returns `Access-Reject` for `test_user` | Subscriber missing, suspended, or the auth cache holds a stale entry (60s TTL) | Confirm the row in `subscribers`; restart `aaa_core_daemon` to drop the in-process cache |
 | PostgreSQL connection refused | Healthcheck not yet passed | Wait 15s and retry; `docker-compose ps` to check |
-| Redis Sentinel connection error | Sentinel containers not yet elected a master | Wait 10s; check `redis-cli -p 26379 sentinel master bss_master` |
+| `go vet ./...` passes but the integration suite will not build | The suite is behind `//go:build integration`, so untagged commands skip it entirely | Run `go vet -tags=integration ./...` — it needs no database and catches drifted test doubles in seconds |
 | `go test` fails with `connection refused` | Infrastructure not running | Run `docker-compose up -d` first; use `-short` flag for unit-only tests |
 | Migration fails with `relation already exists` | Migration re-run on non-empty schema | Check `goose status`; migrations are idempotent only if using goose versioning |
