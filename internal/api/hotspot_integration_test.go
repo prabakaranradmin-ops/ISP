@@ -85,6 +85,21 @@ func (s *stubHotspot) DeactivateDevice(_ context.Context, mac string) (bool, err
 	return mac == "AA:BB:CC:DD:EE:FF", nil
 }
 
+// GetVoucherCommissionSummary backs the reseller-settlement endpoint
+// (CRD-EXP-010). Fixed figures rather than a running total over the vouchers
+// this stub recorded: the endpoint's own test asserts the handler returns
+// what the store gave it, which a computed value would make circular.
+func (s *stubHotspot) GetVoucherCommissionSummary(_ context.Context, franchiseID int) (*hotspot.VoucherCommissionSummary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return &hotspot.VoucherCommissionSummary{
+		FranchiseID:     franchiseID,
+		VoucherCount:    3,
+		TotalSales:      "300.00",
+		TotalCommission: "30.00",
+	}, nil
+}
+
 func (s *stubHotspot) snapshotCreated() []hotspot.NewVoucher {
 	s.mu.Lock()
 	defer s.mu.Unlock()

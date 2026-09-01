@@ -297,6 +297,21 @@ func (s *itFranchiseStore) CalculateAndStoreLCOCommission(_ context.Context, ent
 }
 
 // ListSubscribers applies the franchise filter the way a WHERE clause would.
+// GetSubscriberFranchiseID resolves a subscriber to its franchise the way
+// the real store's SQL does — from the seeded subscriber rows, returning nil
+// for one signed up directly rather than through a partner (which is what
+// SettleCommissionForRecharge reads as "no commission owed").
+func (s *itFranchiseStore) GetSubscriberFranchiseID(_ context.Context, subscriberID int) (*int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, row := range s.subscribers {
+		if row.ID == subscriberID {
+			return row.FranchiseID, nil
+		}
+	}
+	return nil, nil
+}
+
 func (s *itFranchiseStore) ListSubscribers(_ context.Context, franchiseID *int) ([]revenue.SubscriberRow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

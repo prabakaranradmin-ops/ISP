@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/shopspring/decimal"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
@@ -57,6 +58,9 @@ type stubFranchises struct {
 	pnl     *revenue.FranchisePnL
 	created *revenue.FranchiseRecord
 	err     error
+	// commissions records any settlement the handler triggered — see the
+	// CalculateAndStoreLCOCommission stub below.
+	commissions []revenue.LCOCommissionEntry
 }
 
 func (s *stubFranchises) ListFranchises(_ context.Context, franchiseID *int) ([]revenue.FranchiseRecord, error) {
@@ -103,6 +107,28 @@ func (s *stubFranchises) ListConsolidatedPnL(_ context.Context, _, _ *time.Time)
 		return nil, s.err
 	}
 	return &revenue.ConsolidatedPnL{TotalRecharges: "1000.00", CommissionEarned: "100.00", NetToISP: "900.00"}, nil
+}
+
+// The three below satisfy the revenue.FranchiseQuerier half of
+// api.FranchiseQuerier, which the handler passes to
+// revenue.SettleCommissionForRecharge after a wallet recharge commits
+// (CRD-EXP-006 Phase 2). None of the franchise HTTP handlers under test here
+// reach them, so they record rather than simulate: a commission settlement
+// that ran during a franchise-endpoint test would mean the wiring is wrong.
+func (s *stubFranchises) GetFranchiseByID(_ context.Context, id int) (*revenue.Franchise, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &revenue.Franchise{ID: id, Name: "stub", CommissionRatePct: decimal.NewFromInt(10), Status: "active"}, nil
+}
+
+func (s *stubFranchises) CalculateAndStoreLCOCommission(_ context.Context, entry revenue.LCOCommissionEntry) error {
+	s.commissions = append(s.commissions, entry)
+	return nil
+}
+
+func (s *stubFranchises) GetSubscriberFranchiseID(_ context.Context, _ int) (*int, error) {
+	return nil, nil
 }
 
 func newFranchiseMux(t *testing.T, fr *stubFranchises) *http.ServeMux {

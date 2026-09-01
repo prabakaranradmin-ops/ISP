@@ -123,7 +123,7 @@ func (s *stubAnnouncements) FinishAnnouncement(_ context.Context, id int, status
 	return nil
 }
 
-func (s *stubAnnouncements) ListSegmentSubscriberIDs(context.Context, *int, *int, *string) ([]int, error) {
+func (s *stubAnnouncements) ListSegmentSubscriberIDs(context.Context, int, *int, *int, *string) ([]int, error) {
 	return s.segment, nil
 }
 

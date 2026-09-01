@@ -74,9 +74,18 @@ type stubSessionCtl struct {
 	nasIP        string
 	resolveErr   error
 
-	mu       sync.Mutex
-	fupCalls []bool
-	setErr   error
+	mu        sync.Mutex
+	fupCalls  []bool
+	overrides []stubSpeedOverride
+	cleared   []int
+	setErr    error
+}
+
+// stubSpeedOverride is one recorded SetSpeedOverride call.
+type stubSpeedOverride struct {
+	SubscriberID int
+	RateLimit    string
+	ExpiresAt    *time.Time
 }
 
 func (s *stubSessionCtl) ResolveSessionSubscriber(context.Context, string) (int, string, error) {
@@ -94,6 +103,26 @@ func (s *stubSessionCtl) snapshot() []bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]bool(nil), s.fupCalls...)
+}
+
+// SetSpeedOverride / ClearSpeedOverride back the owner's temporary rate
+// change. Recorded rather than simulated so a test can assert both what was
+// applied and that clearing actually reached the store — the auto-revert
+// depends on the clear half being called, not just the apply half.
+func (s *stubSessionCtl) SetSpeedOverride(_ context.Context, subscriberID int, rateLimit string, expiresAt *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.overrides = append(s.overrides, stubSpeedOverride{
+		SubscriberID: subscriberID, RateLimit: rateLimit, ExpiresAt: expiresAt,
+	})
+	return s.setErr
+}
+
+func (s *stubSessionCtl) ClearSpeedOverride(_ context.Context, subscriberID int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleared = append(s.cleared, subscriberID)
+	return s.setErr
 }
 
 type stubTaskEnqueuer struct {

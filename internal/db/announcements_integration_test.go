@@ -110,8 +110,18 @@ func TestFR_ANN_001_SegmentAddressesExactlyTheIntendedSubscribers(t *testing.T) 
 
 	store := database.Announcements()
 
+	// ListSegmentSubscriberIDs checks announcement_recipients first and only
+	// falls through to the segment filters below when that table holds
+	// nothing for the id (migration 041 — an announcement may instead name
+	// an explicit console-selected list). No announcement has id 0, so no
+	// recipient row can ever match it: these subtests are about the segment
+	// query, and this keeps them on that path. The explicit-recipient path
+	// is covered separately by
+	// TestFR_ANN_001_ExplicitRecipientsOverrideSegmentFilters.
+	const segmentOnly = 0
+
 	t.Run("no filters addresses everyone except terminated", func(t *testing.T) {
-		ids, err := store.ListSegmentSubscriberIDs(ctx, nil, nil, nil)
+		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("ListSegmentSubscriberIDs: %v", err)
 		}
@@ -126,7 +136,7 @@ func TestFR_ANN_001_SegmentAddressesExactlyTheIntendedSubscribers(t *testing.T) 
 	})
 
 	t.Run("franchise filter narrows to that partner", func(t *testing.T) {
-		ids, err := store.ListSegmentSubscriberIDs(ctx, &f1, nil, nil)
+		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, &f1, nil, nil)
 		if err != nil {
 			t.Fatalf("ListSegmentSubscriberIDs: %v", err)
 		}
@@ -137,7 +147,7 @@ func TestFR_ANN_001_SegmentAddressesExactlyTheIntendedSubscribers(t *testing.T) 
 
 	t.Run("plan filter narrows to that plan", func(t *testing.T) {
 		planID := 2
-		ids, err := store.ListSegmentSubscriberIDs(ctx, nil, &planID, nil)
+		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, nil, &planID, nil)
 		if err != nil {
 			t.Fatalf("ListSegmentSubscriberIDs: %v", err)
 		}
@@ -148,7 +158,7 @@ func TestFR_ANN_001_SegmentAddressesExactlyTheIntendedSubscribers(t *testing.T) 
 
 	t.Run("status filter narrows to that status", func(t *testing.T) {
 		status := "hard_suspended"
-		ids, err := store.ListSegmentSubscriberIDs(ctx, nil, nil, &status)
+		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, nil, nil, &status)
 		if err != nil {
 			t.Fatalf("ListSegmentSubscriberIDs: %v", err)
 		}
@@ -159,7 +169,7 @@ func TestFR_ANN_001_SegmentAddressesExactlyTheIntendedSubscribers(t *testing.T) 
 
 	t.Run("filters compose rather than override one another", func(t *testing.T) {
 		planID := 1
-		ids, err := store.ListSegmentSubscriberIDs(ctx, &f1, &planID, nil)
+		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, &f1, &planID, nil)
 		if err != nil {
 			t.Fatalf("ListSegmentSubscriberIDs: %v", err)
 		}

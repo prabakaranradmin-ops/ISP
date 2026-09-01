@@ -40,6 +40,11 @@ type itFUPDB struct {
 	aboveFUP    []SessionStats
 	atWarning   []SessionStats
 	fupActiveOn map[int]bool
+	// expiredOverrides is what ListExpiredSpeedOverrides reports; cleared
+	// records which ids ClearSpeedOverride was actually called for, so a
+	// test can assert the auto-revert swept what it claimed to.
+	expiredOverrides []int
+	cleared          map[int]bool
 }
 
 func (db *itFUPDB) GetActiveSessionsAboveFUP(context.Context) ([]SessionStats, error) {
@@ -62,6 +67,33 @@ func (db *itFUPDB) SetFUPActive(_ context.Context, subscriberID int, active bool
 	}
 	db.fupActiveOn[subscriberID] = active
 	return nil
+}
+
+func (db *itFUPDB) ListExpiredSpeedOverrides(context.Context) ([]int, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.expiredOverrides, nil
+}
+
+func (db *itFUPDB) ClearSpeedOverride(_ context.Context, subscriberID int) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.cleared == nil {
+		db.cleared = map[int]bool{}
+	}
+	db.cleared[subscriberID] = true
+	return nil
+}
+
+// clearedOverrides returns the ids ClearSpeedOverride was called for.
+func (db *itFUPDB) clearedOverrides() map[int]bool {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	out := make(map[int]bool, len(db.cleared))
+	for id, v := range db.cleared {
+		out[id] = v
+	}
+	return out
 }
 
 // itCoADB is an in-memory CoAQuerier pointing at a stub NAS.
