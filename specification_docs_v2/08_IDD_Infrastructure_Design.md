@@ -1,5 +1,5 @@
 # Document 8: Infrastructure Design Document (IDD)
-**Version:** 2.1 | **Status:** Draft | **Date:** 2026-08-12 — §8.2a added (NFR-AVAIL-002, CRD §1.11 Phase 2); rest unchanged from v2.0
+**Version:** 2.2 | **Status:** Draft | **Date:** 2026-09-01 — Redis removed throughout: it had not been in the code since sessions moved to `live_sessions` (036) and the task queue to `jobqueue_tasks` (037), but this document still specified a six-container Sentinel cluster as production infrastructure. §8.3 repurposed from "Redis Sentinel Configuration" to a record of where each of that tier's responsibilities went. §8.2 no longer inlines a copy of `docker-compose.yml` — that duplication is what drifted in the first place; it now points at the file and describes it. §8.2a's rationale rewritten where it argued from a Redis comparison that no longer holds.
 **Document ID:** IDD
 **Traces From:** [SAD](03_SAD_System_Architecture.md)
 **Traces To:** [DXD](11_DXD_Developer_Setup.md) → [OPS](12_OPS_Operations_Runbook.md)
@@ -20,213 +20,58 @@ Internet / NAS (CCR2004)
                                         └── api_service :8080
 
 Internal network (bss_internal):
-  aaa_core_daemon ──► redis_sentinel_primary
-  api_service     ──► redis_sentinel_primary
   aaa_core_daemon ──► postgres_primary
   api_service     ──► postgres_primary
   api_service     ──► gotenberg_engine
 ```
 
+PostgreSQL is the only datastore. Live session state (`live_sessions`,
+migration 036) and the background task queue (`jobqueue_tasks`, migration
+037) both live there; the subscriber authentication cache is in-process
+(`internal/cache`, one map per service). There is no separate cache or
+queue tier to deploy, scale or fail over — see § 8.3.
+
 ---
 
 ## 8.2 Production Docker Compose Blueprint
 
-```yaml
-version: '3.8'
+The deployment is defined by [`docker-compose.yml`](../docker-compose.yml) in
+the repository root, with [`docker-compose.pg-ha.yml`](../docker-compose.pg-ha.yml)
+as the optional HA overlay described in § 8.2a.
 
-networks:
-  bss_internal:
-    driver: bridge
+**This section deliberately does not reproduce those files.** It used to
+inline the whole of `docker-compose.yml`, and that copy drifted: it still
+described a six-container Redis tier (primary, two replicas, three
+sentinels) for months after the code stopped using Redis at all, because
+nothing makes a pasted copy fail when the original changes. The files
+themselves are the specification; this section describes what they contain
+and why.
 
-services:
+### Services
 
-  # ── PostgreSQL Primary ──────────────────────────────────────────────────────
-  postgres_primary:
-    image: postgres:15-alpine
-    container_name: bss_postgres_primary
-    environment:
-      POSTGRES_DB: isp_bss_oss
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DB_SECURE_PASSWORD}
-    volumes:
-      - pg_data_primary:/var/lib/postgresql/data
-      - ./config/postgres/postgresql.conf:/etc/postgresql/postgresql.conf
-      - ./config/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf
-    ports:
-      - "5432:5432"
-    networks:
-      - bss_internal
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d isp_bss_oss"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 4096M
-    restart: always
+| Service | Image | Purpose |
+|---|---|---|
+| `postgres_primary` | `postgres:15-alpine` | The only datastore — application tables, live session state (migration 036) and the task queue (037) |
+| `aaa_core_daemon` | built from `Dockerfile` | RADIUS auth/accounting on UDP 1812/1813, plus every background scanner and the task worker pool |
+| `api_service` | built from `Dockerfile.api` | HTTPS API, staff console and subscriber portal on 8080 behind the proxy |
+| `gotenberg_engine` | `gotenberg/gotenberg:8` | HTML-to-PDF rendering for invoices |
+| `reverse_proxy` | Caddy | TLS termination on 443, the only externally published TCP port |
 
-  # ── Redis Sentinel Cluster (3-node) ────────────────────────────────────────
-  # Primary
-  redis_primary:
-    image: redis:7-alpine
-    container_name: bss_redis_primary
-    command: redis-server /etc/redis/redis.conf
-    volumes:
-      - redis_primary_data:/data
-      - ./config/redis/redis-primary.conf:/etc/redis/redis.conf
-    networks:
-      - bss_internal
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 2048M
-    restart: always
+Both application services `depend_on` `postgres_primary` with
+`condition: service_healthy`, so neither starts against a database that is
+not yet accepting connections.
 
-  # Replica 1
-  redis_replica_1:
-    image: redis:7-alpine
-    container_name: bss_redis_replica_1
-    command: redis-server /etc/redis/redis.conf
-    volumes:
-      - redis_replica_1_data:/data
-      - ./config/redis/redis-replica.conf:/etc/redis/redis.conf
-    networks:
-      - bss_internal
-    depends_on:
-      - redis_primary
-    restart: always
+### Networking
 
-  # Replica 2
-  redis_replica_2:
-    image: redis:7-alpine
-    container_name: bss_redis_replica_2
-    command: redis-server /etc/redis/redis.conf
-    volumes:
-      - redis_replica_2_data:/data
-      - ./config/redis/redis-replica.conf:/etc/redis/redis.conf
-    networks:
-      - bss_internal
-    depends_on:
-      - redis_primary
-    restart: always
+One internal bridge network, `bss_internal`. Only two things are published
+to the host: 443 on the proxy, and UDP 1812/1813 on `aaa_core_daemon` —
+the latter necessarily, since routers must reach it directly and RADIUS is
+not proxyable over HTTP.
 
-  # Sentinel 1
-  redis_sentinel_1:
-    image: redis:7-alpine
-    container_name: bss_redis_sentinel_1
-    command: redis-sentinel /etc/redis/sentinel.conf
-    volumes:
-      - ./config/redis/sentinel.conf:/etc/redis/sentinel.conf
-    networks:
-      - bss_internal
-    depends_on:
-      - redis_primary
-      - redis_replica_1
-      - redis_replica_2
-    restart: always
+### Volumes
 
-  # Sentinel 2
-  redis_sentinel_2:
-    image: redis:7-alpine
-    container_name: bss_redis_sentinel_2
-    command: redis-sentinel /etc/redis/sentinel.conf
-    volumes:
-      - ./config/redis/sentinel.conf:/etc/redis/sentinel.conf
-    networks:
-      - bss_internal
-    restart: always
-
-  # Sentinel 3
-  redis_sentinel_3:
-    image: redis:7-alpine
-    container_name: bss_redis_sentinel_3
-    command: redis-sentinel /etc/redis/sentinel.conf
-    volumes:
-      - ./config/redis/sentinel.conf:/etc/redis/sentinel.conf
-    networks:
-      - bss_internal
-    restart: always
-
-  # ── Gotenberg PDF Engine ────────────────────────────────────────────────────
-  gotenberg_engine:
-    image: gotenberg/gotenberg:8
-    container_name: bss_gotenberg_engine
-    networks:
-      - bss_internal
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 1024M
-    restart: always
-
-  # ── AAA Core Daemon ─────────────────────────────────────────────────────────
-  aaa_core_daemon:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: bss_aaa_core_daemon
-    depends_on:
-      postgres_primary:
-        condition: service_healthy
-      redis_primary:
-        condition: service_healthy
-    ports:
-      - "1812:1812/udp"
-      - "1813:1813/udp"
-      - "9100:9100"   # Prometheus metrics
-    environment:
-      - DB_DSN=host=postgres_primary user=postgres password=${DB_SECURE_PASSWORD} dbname=isp_bss_oss port=5432 sslmode=disable
-      - REDIS_SENTINEL_ADDRS=bss_redis_sentinel_1:26379,bss_redis_sentinel_2:26379,bss_redis_sentinel_3:26379
-      - REDIS_MASTER_NAME=bss_master
-      - LOG_FORMAT=json
-      - LOG_LEVEL=info
-    networks:
-      - bss_internal
-    restart: always
-
-  # ── API Service ─────────────────────────────────────────────────────────────
-  api_service:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    container_name: bss_api_service
-    depends_on:
-      postgres_primary:
-        condition: service_healthy
-      redis_primary:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-      - "9101:9101"   # Prometheus metrics
-    environment:
-      - DB_DSN=host=postgres_primary user=postgres password=${DB_SECURE_PASSWORD} dbname=isp_bss_oss port=5432 sslmode=disable
-      - REDIS_SENTINEL_ADDRS=bss_redis_sentinel_1:26379,bss_redis_sentinel_2:26379,bss_redis_sentinel_3:26379
-      - REDIS_MASTER_NAME=bss_master
-      - JWT_SECRET=${JWT_SECRET}
-      - RAZORPAY_WEBHOOK_SECRET=${RAZORPAY_WEBHOOK_SECRET}
-      - GOTENBERG_URL=http://gotenberg_engine:3000
-      - LOG_FORMAT=json
-      - LOG_LEVEL=info
-    networks:
-      - bss_internal
-    restart: always
-
-volumes:
-  pg_data_primary:
-  redis_primary_data:
-  redis_replica_1_data:
-  redis_replica_2_data:
-```
+`pg_data_primary` for the database, `caddy_data` and `caddy_config` for
+certificates and proxy state. Nothing else needs persistence.
 
 ---
 
@@ -234,9 +79,10 @@ volumes:
 
 ### Why this exists
 
-Redis has had real HA since v2.0 of this document — 3 Sentinels, quorum 2,
-tested failover (§8.3). PostgreSQL, where `subscribers`, `wallet_ledgers`,
-and every billing record live, has been a single container this whole time.
+PostgreSQL, where `subscribers`, `wallet_ledgers`, and every billing record
+live, has been a single container this whole time — and since the task
+queue and live session state moved into it (migrations 036/037), it is now
+the *only* datastore, so its availability is the platform's availability.
 OPS §12.3.2 already documents a promotion procedure that assumes a replica
 (`bss_postgres_replica`) and claims RPO = 0 — neither the replica nor any
 automation behind that claim has ever existed until this section. This
@@ -255,18 +101,18 @@ abstract:
   which OPS §12.3.2 already has a procedure for and which this section is
   explicitly trying to move beyond.
 - **pg_auto_failover** avoids a separate DCS (it uses a monitor node
-  instead of etcd/Consul), which is architecturally closer to how Redis
-  Sentinel works here — a real point in its favor — but it sees
+  instead of etcd/Consul), which is a real point in its favor given the
+  three extra containers etcd costs — but it sees
   meaningfully less production adoption and community troubleshooting
   material than Patroni, which matters for a small ops team debugging an
   incident at 3 a.m., not just for the failover mechanics themselves.
 - **Patroni** is the most widely deployed, most actively maintained option,
   with the deepest community/StackOverflow surface for exactly the kind of
-  incident OPS §12.3 is written for. The etcd dependency is real overhead
-  (three more containers) but is the same shape of overhead this codebase
-  already accepted for Redis Sentinel — three coordinator processes to get
-  automatic leader election — so it is not a new category of complexity,
-  just the Postgres-shaped version of one already running in production.
+  incident OPS §12.3 is written for. The etcd dependency is real overhead —
+  three coordinator containers whose only job is leader election — and it
+  is the price of automatic promotion; the alternative is the manual
+  procedure OPS §12.3.2 documents, with an operator in the loop for every
+  failover.
 
 ### Topology
 
@@ -301,9 +147,8 @@ abstract:
    client population.
 ```
 
-`postgres_primary`/`postgres_standby_N` are static service-name labels, the
-same relationship `redis_primary`/`redis_replica_N` already have to actual
-runtime role — after a failover, `postgres_standby_1` may be the real
+`postgres_primary`/`postgres_standby_N` are static service-name labels, not
+claims about runtime role — after a failover, `postgres_standby_1` may be the real
 primary. `curl postgres_primary:8008/primary` (Patroni's REST API, 200 only
 on the current leader) is the source of truth for current role, not the
 container name.
@@ -313,7 +158,7 @@ container name.
 | File | Purpose |
 |---|---|
 | `Dockerfile.postgres-ha` | `postgres:15-alpine` + Patroni, one image for all three nodes |
-| `config/postgres/patroni.yml` | Identical on every node; `PATRONI_NAME`/`PATRONI_*_CONNECT_ADDRESS`/passwords come from environment, not separate YAML files — see the file's own header comment for why that's the correct pattern for Patroni specifically (unlike Redis Sentinel's genuinely asymmetric primary/replica configs) |
+| `config/postgres/patroni.yml` | Identical on every node; `PATRONI_NAME`/`PATRONI_*_CONNECT_ADDRESS`/passwords come from environment, not separate YAML files — see the file's own header comment for why that's the correct pattern for Patroni specifically |
 | `docker-compose.pg-ha.yml` | Overlay, not an edit to `docker-compose.yml` — apply with `docker compose -f docker-compose.yml -f docker-compose.pg-ha.yml up -d`. Local/demo use (`scripts/demo_up.sh`) is unaffected and keeps running a single Postgres |
 
 ### Commit-durability setting
@@ -375,32 +220,34 @@ fire in either of the two most obvious failure drills.
 
 ---
 
-## 8.3 Redis Sentinel Configuration
+## 8.3 Caching and Queueing — No Separate Tier
 
-### `config/redis/redis-primary.conf`
+Earlier versions of this document specified a Redis Sentinel cluster here
+(a primary, two replicas, three sentinels) backing the subscriber
+authentication cache, live session state and the background task queue.
+**That tier no longer exists** and this section records where each of its
+responsibilities went, because the question "where is the cache?" has a
+different answer now than the rest of this document's history implies.
 
-```
-port 6379
-appendonly yes
-appendfsync everysec
-maxmemory 2gb
-maxmemory-policy volatile-ttl
-save 900 1
-save 300 10
-save 60 10000
-```
+| Was on Redis | Now | Why |
+|---|---|---|
+| Live session state | `live_sessions` table (migration 036) | It is read by the health endpoint and the portal's usage panel, and rebuilt from accounting traffic — durability was never the requirement, and one datastore is one thing to operate |
+| Background task queue | `jobqueue_tasks` table (migration 037) | `SELECT … FOR UPDATE SKIP LOCKED` gives the same weighted multi-queue dequeue with transactional enqueue — a task and the row that caused it now commit together, which Redis could not offer |
+| Subscriber auth cache | In-process map (`internal/cache`) | `radiusd` runs as a single process per host in the native install, so there are no peers to share a cache with; a network hop to a cache server was pure latency against NFR-PERF-001's 15 ms budget |
 
-### `config/redis/sentinel.conf`
+Consequences worth stating plainly, since they change how this system is
+operated:
 
-```
-port 26379
-sentinel monitor bss_master redis_primary 6379 2
-sentinel down-after-milliseconds bss_master 3000
-sentinel failover-timeout bss_master 10000
-sentinel parallel-syncs bss_master 1
-```
-
-> Quorum = 2 (2 of 3 sentinels must agree for failover).
+- **PostgreSQL is now a single point of failure for everything**, not just
+  billing data. That is the argument § 8.2a exists to answer.
+- **The auth cache does not survive a restart** and is not shared between
+  services. This is fine — it is a read-through cache with a 60-second TTL
+  (`cache.DefaultSubscriberTTL`); a cold start means the first
+  authentication per subscriber reaches PostgreSQL, not that anything
+  fails.
+- **There is no cache tier to fail over, back up, or restore.** OPS § 12.3
+  and § 12.4 were rewritten accordingly; a restore of PostgreSQL restores
+  everything.
 
 ---
 
@@ -412,8 +259,6 @@ sentinel parallel-syncs bss_master 1
 | `PG_REPLICATION_PASSWORD` | Only with `docker-compose.pg-ha.yml` | Postgres replication user password (§8.2a) |
 | `JWT_SECRET` | Yes | HMAC secret for JWT signing |
 | `RAZORPAY_WEBHOOK_SECRET` | Yes | HMAC secret for Razorpay webhook validation |
-| `REDIS_SENTINEL_ADDRS` | Yes | Comma-separated sentinel addresses |
-| `REDIS_MASTER_NAME` | Yes | Sentinel master name |
 | `AES_KEY_STORE_URL` | Yes | Secret manager URL for AES key retrieval |
 | `PAGERDUTY_ROUTING_KEY` | Yes | PagerDuty Events API v2 routing key |
 | `LOG_FORMAT` | No | `json` (default) or `text` |
@@ -440,18 +285,19 @@ pg_dump -h localhost -U postgres -Fc isp_bss_oss \
 # Point-in-time restore target (RPO = last WAL archive ~5 min)
 ```
 
-### Redis
+### Everything else
 
-```bash
-# Verify AOF is enabled and healthy
-redis-cli -h bss_redis_primary INFO persistence | grep aof_enabled
+Nothing else needs backing up. The PostgreSQL dump above is the complete
+backup of this system's state: live sessions and the task queue are tables
+inside it (§ 8.3), and the auth cache is in-process and rebuilt on demand.
 
-# Manual RDB snapshot
-redis-cli -h bss_redis_primary BGSAVE
+Two things are deliberately *not* in that dump and are not recoverable from
+it — they belong to whatever provisions the host, not to a database backup:
 
-# Copy RDB to backup location
-docker cp bss_redis_primary:/data/dump.rdb /backup/redis/$(date +%Y%m%d).rdb
-```
+- `AES_KEY_STORE_URL`'s key material. Losing it makes every encrypted PII
+  column unreadable, and no PostgreSQL restore brings it back.
+- Caddy's certificate store (`caddy_data`), which is cheap to re-acquire
+  from the CA but will re-trigger rate limits if lost repeatedly.
 
 ---
 
@@ -461,7 +307,6 @@ docker cp bss_redis_primary:/data/dump.rdb /backup/redis/$(date +%Y%m%d).rdb
 |---|---|---|---|
 | `postgres_primary` | TCP + query | `pg_isready` | 10s |
 | `postgres_primary`/`_standby_N` (pg-ha overlay only) | HTTP | `GET :8008/primary` returns 200 only on the current leader (§8.2a) | operator/OPS-script use, not a container healthcheck |
-| `redis_primary` | TCP | `redis-cli ping` | 5s |
 | `aaa_core_daemon` | Prometheus scrape | `:9100/metrics` | 15s |
 | `api_service` | HTTP | `GET /health` | 15s |
 | `gotenberg_engine` | HTTP | `GET /health` | 30s |
