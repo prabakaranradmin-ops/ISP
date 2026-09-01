@@ -32,98 +32,6 @@ services:
           memory: 4096M
     restart: always
 
-  # ── Redis Primary ───────────────────────────────────────────────────────────
-  redis_primary:
-    image: redis:7-alpine
-    container_name: bss_redis_primary
-    command: >
-      redis-server
-      --appendonly yes
-      --appendfsync everysec
-      --maxmemory 2gb
-      --maxmemory-policy volatile-ttl
-    volumes:
-      - redis_primary_data:/data
-    networks:
-      - bss_internal
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 2048M
-    restart: always
-
-  # ── Redis Replica 1 ─────────────────────────────────────────────────────────
-  redis_replica_1:
-    image: redis:7-alpine
-    container_name: bss_redis_replica_1
-    command: redis-server --replicaof redis_primary 6379 --appendonly yes
-    volumes:
-      - redis_replica_1_data:/data
-    networks:
-      - bss_internal
-    depends_on:
-      - redis_primary
-    restart: always
-
-  # ── Redis Replica 2 ─────────────────────────────────────────────────────────
-  redis_replica_2:
-    image: redis:7-alpine
-    container_name: bss_redis_replica_2
-    command: redis-server --replicaof redis_primary 6379 --appendonly yes
-    volumes:
-      - redis_replica_2_data:/data
-    networks:
-      - bss_internal
-    depends_on:
-      - redis_primary
-    restart: always
-
-  # ── Redis Sentinel 1 ────────────────────────────────────────────────────────
-  redis_sentinel_1:
-    image: redis:7-alpine
-    container_name: bss_redis_sentinel_1
-    command: >
-      redis-sentinel /etc/redis/sentinel.conf
-    volumes:
-      - ./config/redis/sentinel.conf:/etc/redis/sentinel.conf
-    ports:
-      - "26379:26379"
-    networks:
-      - bss_internal
-    depends_on:
-      - redis_primary
-      - redis_replica_1
-      - redis_replica_2
-    restart: always
-
-  # ── Redis Sentinel 2 ────────────────────────────────────────────────────────
-  redis_sentinel_2:
-    image: redis:7-alpine
-    container_name: bss_redis_sentinel_2
-    command: redis-sentinel /etc/redis/sentinel.conf
-    volumes:
-      - ./config/redis/sentinel.conf:/etc/redis/sentinel.conf
-    networks:
-      - bss_internal
-    restart: always
-
-  # ── Redis Sentinel 3 ────────────────────────────────────────────────────────
-  redis_sentinel_3:
-    image: redis:7-alpine
-    container_name: bss_redis_sentinel_3
-    command: redis-sentinel /etc/redis/sentinel.conf
-    volumes:
-      - ./config/redis/sentinel.conf:/etc/redis/sentinel.conf
-    networks:
-      - bss_internal
-    restart: always
-
   # ── Gotenberg PDF Engine ────────────────────────────────────────────────────
   gotenberg_engine:
     image: gotenberg/gotenberg:8
@@ -145,8 +53,6 @@ services:
     container_name: bss_aaa_core_daemon
     depends_on:
       postgres_primary:
-        condition: service_healthy
-      redis_primary:
         condition: service_healthy
     ports:
       - "1812:1812/udp"
@@ -172,8 +78,6 @@ services:
       # still run as postgres (see scripts/demo_up.sh); only the running
       # application's own connection uses this least-privilege role.
       - DB_DSN=host=postgres_primary user=bss_app password=${APP_DB_PASSWORD} dbname=isp_bss_oss port=5432 sslmode=disable
-      - REDIS_SENTINEL_ADDRS=bss_redis_sentinel_1:26379,bss_redis_sentinel_2:26379,bss_redis_sentinel_3:26379
-      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
       - RADIUS_SECRET=${RADIUS_SECRET}
       - RADIUS_VERIFIER_SECRET=${RADIUS_VERIFIER_SECRET}
       - AES_KEY_STORE_URL=${AES_KEY_STORE_URL}
@@ -201,8 +105,6 @@ services:
     depends_on:
       postgres_primary:
         condition: service_healthy
-      redis_primary:
-        condition: service_healthy
     expose:
       - "8080"
     ports:
@@ -215,8 +117,6 @@ services:
     environment:
       # bss_app, not postgres — see the same note on aaa_core_daemon above.
       - DB_DSN=host=postgres_primary user=bss_app password=${APP_DB_PASSWORD} dbname=isp_bss_oss port=5432 sslmode=disable
-      - REDIS_SENTINEL_ADDRS=bss_redis_sentinel_1:26379,bss_redis_sentinel_2:26379,bss_redis_sentinel_3:26379
-      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
       - JWT_SECRET=${JWT_SECRET}
       - RAZORPAY_WEBHOOK_SECRET=${RAZORPAY_WEBHOOK_SECRET}
       - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID}
@@ -256,8 +156,5 @@ services:
 
 volumes:
   pg_data_primary:
-  redis_primary_data:
-  redis_replica_1_data:
-  redis_replica_2_data:
   caddy_data:
   caddy_config:

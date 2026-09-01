@@ -81,7 +81,7 @@ type planChangeRequest struct {
 // ChangeSubscriberPlan handles POST /api/v1/subscribers/{id}/plan-change.
 //
 // Prorates the unused value of the old plan into bonus days on the new one,
-// invalidates the Redis auth-cache entry, and enqueues a CoA to any active
+// invalidates the subscriber's auth-cache entry, and enqueues a CoA to any active
 // session — closing FR-AAA-007, which was specified but never implemented.
 //
 // FR: FR-LC-001 | MDS §4.14

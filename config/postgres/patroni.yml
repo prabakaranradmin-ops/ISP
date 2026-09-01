@@ -43,9 +43,8 @@ bootstrap:
     synchronous_mode: true
     # Degrade to async rather than stall every write when the synchronous
     # standby is unreachable. Without this, one dead standby turns into a
-    # full write outage on an otherwise-healthy primary — the same failure
-    # mode a naive "always require the standby" setting would recreate for
-    # Postgres that Sentinel's quorum design already avoids for Redis.
+    # full write outage on an otherwise-healthy primary — which is exactly
+    # what a naive "always require the standby" setting would produce.
     synchronous_mode_strict: false
     postgresql:
       use_pg_rewind: true

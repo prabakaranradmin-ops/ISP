@@ -4,10 +4,7 @@
 # One image, three identical containers. Patroni supervises a normal
 # `postgres` process and coordinates leader election via etcd — which node
 # is primary is DCS state, not something baked into the image or chosen at
-# build time. This mirrors how Redis Sentinel already works in this stack
-# (redis_primary/redis_replica_N run the same redis-server binary; Sentinel
-# decides who is master), just with Patroni/etcd as Postgres's equivalent
-# of Sentinel.
+# build time.
 FROM postgres:15-alpine
 
 RUN apk add --no-cache python3 py3-pip py3-psycopg2 \

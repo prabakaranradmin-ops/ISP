@@ -34,7 +34,7 @@ USER bss
 
 EXPOSE 8080 9101
 
-# Readiness rather than liveness: /readyz fails while PostgreSQL or Redis is
+# Readiness rather than liveness: /readyz fails while PostgreSQL is
 # unreachable, so an instance that cannot serve is kept out of rotation.
 # Flags kept to what busybox wget supports.
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
