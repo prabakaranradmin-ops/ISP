@@ -176,11 +176,25 @@ func (s *ProcurementStore) UpdateFulfilment(ctx context.Context, id int, status,
 
 		const insertLine = `
 			INSERT INTO gl_journal_lines (journal_entry_id, account_id, debit, credit)
-			VALUES ($1, (SELECT id FROM chart_of_accounts WHERE code = $2), $3::numeric, $4::numeric)`
-		if _, err := dbTx.Exec(ctx, insertLine, journalID, "5100", po.Amount, "0"); err != nil {
+			VALUES ($1, $2, $3::numeric, $4::numeric)`
+
+		// Both codes predate this path (migration 043), so this is the
+		// defensive case rather than the live hazard the wallet and
+		// commission postings face — resolved the same way regardless, so a
+		// chart of accounts edited by hand cannot turn into a not-null
+		// violation nobody can trace. See glAccountID.
+		expenseID, err := glAccountID(ctx, dbTx, "5100")
+		if err != nil {
+			return err
+		}
+		payableID, err := glAccountID(ctx, dbTx, "2000")
+		if err != nil {
+			return err
+		}
+		if _, err := dbTx.Exec(ctx, insertLine, journalID, expenseID, po.Amount, "0"); err != nil {
 			return fmt.Errorf("db: insert purchase order expense line: %w", err)
 		}
-		if _, err := dbTx.Exec(ctx, insertLine, journalID, "2000", "0", po.Amount); err != nil {
+		if _, err := dbTx.Exec(ctx, insertLine, journalID, payableID, "0", po.Amount); err != nil {
 			return fmt.Errorf("db: insert purchase order payable line: %w", err)
 		}
 		return nil

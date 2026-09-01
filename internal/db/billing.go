@@ -174,10 +174,6 @@ func postWalletGLEntry(ctx context.Context, dbTx pgx.Tx, p billing.RechargePosti
 		return fmt.Errorf("db: insert wallet GL journal entry: %w", err)
 	}
 
-	const insertLine = `
-		INSERT INTO gl_journal_lines (journal_entry_id, account_id, debit, credit)
-		VALUES ($1, (SELECT id FROM chart_of_accounts WHERE code = $2), $3::numeric, $4::numeric)`
-
 	// Each leg posts to whichever of debit/credit its own EntryType names —
 	// a leg is never both, chk_gl_line_not_both would reject the ambiguity.
 	for _, leg := range []struct {
@@ -188,17 +184,49 @@ func postWalletGLEntry(ctx context.Context, dbTx pgx.Tx, p billing.RechargePosti
 		{debitCode, p.Debit.EntryType, p.Debit.Amount},
 		{creditCode, p.Credit.EntryType, p.Credit.Amount},
 	} {
+		accountID, err := glAccountID(ctx, dbTx, leg.code)
+		if err != nil {
+			return err
+		}
 		debit, credit := "0", "0"
 		if leg.entryType == "debit" {
 			debit = leg.amount.String()
 		} else {
 			credit = leg.amount.String()
 		}
-		if _, err := dbTx.Exec(ctx, insertLine, entryID, leg.code, debit, credit); err != nil {
+		if _, err := dbTx.Exec(ctx, `
+			INSERT INTO gl_journal_lines (journal_entry_id, account_id, debit, credit)
+			VALUES ($1, $2, $3::numeric, $4::numeric)`,
+			entryID, accountID, debit, credit,
+		); err != nil {
 			return fmt.Errorf("db: insert wallet GL journal line (%s): %w", leg.code, err)
 		}
 	}
 	return nil
+}
+
+// glAccountID resolves a chart-of-accounts code to its id.
+//
+// Separated from the INSERT, rather than left as an inline subquery, so a
+// missing account is reported as itself. Inlined, an unknown code makes the
+// subquery yield NULL and the failure surfaces as a not-null violation on
+// gl_journal_lines.account_id — which reads as a bug in the posting code
+// rather than as what it actually is: the binary running ahead of its
+// migration. That ordering is a live hazard, not a hypothetical one —
+// codes 5200 and 2100 arrive in migration 045, and deploying GL Phase 2's
+// binary before applying it would otherwise roll back every staff wallet
+// adjustment with a message pointing nowhere near the cause.
+func glAccountID(ctx context.Context, dbTx pgx.Tx, code string) (int, error) {
+	var id int
+	err := dbTx.QueryRow(ctx, `SELECT id FROM chart_of_accounts WHERE code = $1`, code).Scan(&id)
+	if isNoRows(err) {
+		return 0, fmt.Errorf(
+			"db: chart of accounts has no code %q — the general ledger schema is behind this binary; apply the pending migrations (bootstrap.exe) before serving traffic", code)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("db: resolve GL account %q: %w", code, err)
+	}
+	return id, nil
 }
 
 // GetSubscriberDunningState returns the current dunning stage and plan expiry.

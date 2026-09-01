@@ -206,3 +206,40 @@ func TestWalletService_Post_IdempotentOnToken(t *testing.T) {
 		t.Errorf("a replayed token must not move money a second time, got %d RecordRecharge calls", fake.postingCalls)
 	}
 }
+
+// TestGLAccountCode_EveryWalletAccountIsMapped guards the failure mode that
+// makes a missing mapping expensive rather than merely wrong.
+//
+// db.postWalletGLEntry refuses to write a wallet posting at all when either
+// leg's account has no GL code — fail-closed, because a wallet subledger and
+// a general ledger that disagree is worse than a rejected transaction. The
+// cost of that choice is that an account constant added here and forgotten
+// in GLAccountCode does not degrade the ledger quietly; it breaks recharges
+// outright, in production, for whichever flow uses the new account.
+//
+// Enumerated by hand rather than by reflection: Go has no way to iterate a
+// package's untyped string constants, so the real guard is that adding one
+// to wallet.go and not to this list is a visible omission in review.
+func TestGLAccountCode_EveryWalletAccountIsMapped(t *testing.T) {
+	for _, account := range []string{
+		billing.AccountSubscriberWallet,
+		billing.AccountGatewayClearing,
+		billing.AccountRevenueClearing,
+		billing.AccountAdjustmentClearing,
+	} {
+		if code := billing.GLAccountCode(account); code == "" {
+			t.Errorf("wallet account %q has no chart-of-accounts code: a posting against it "+
+				"would fail the whole transaction, not just the ledger entry", account)
+		}
+	}
+}
+
+// TestGLAccountCode_UnknownAccountIsRejected pins the fail-closed half: an
+// account this mapping does not know must return empty so the caller aborts,
+// never a plausible-looking default that would post real money to the wrong
+// account.
+func TestGLAccountCode_UnknownAccountIsRejected(t *testing.T) {
+	if code := billing.GLAccountCode("some_account_added_later"); code != "" {
+		t.Errorf("unknown account mapped to %q; it must return empty so the posting is refused", code)
+	}
+}

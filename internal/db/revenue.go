@@ -275,11 +275,23 @@ func (s *RevenueStore) CalculateAndStoreLCOCommission(ctx context.Context, entry
 
 		const insertLine = `
 			INSERT INTO gl_journal_lines (journal_entry_id, account_id, debit, credit)
-			VALUES ($1, (SELECT id FROM chart_of_accounts WHERE code = $2), $3::numeric, $4::numeric)`
-		if _, err := dbTx.Exec(ctx, insertLine, journalID, "5000", entry.CommissionAmount.String(), "0"); err != nil {
+			VALUES ($1, $2, $3::numeric, $4::numeric)`
+
+		// Resolved rather than sub-selected inline so a schema that is behind
+		// this binary says so — see glAccountID's own comment. Code 2100
+		// arrives in migration 045 alongside this code path.
+		expenseID, err := glAccountID(ctx, dbTx, "5000")
+		if err != nil {
+			return err
+		}
+		payableID, err := glAccountID(ctx, dbTx, "2100")
+		if err != nil {
+			return err
+		}
+		if _, err := dbTx.Exec(ctx, insertLine, journalID, expenseID, entry.CommissionAmount.String(), "0"); err != nil {
 			return fmt.Errorf("db: insert commission expense line: %w", err)
 		}
-		if _, err := dbTx.Exec(ctx, insertLine, journalID, "2100", "0", entry.CommissionAmount.String()); err != nil {
+		if _, err := dbTx.Exec(ctx, insertLine, journalID, payableID, "0", entry.CommissionAmount.String()); err != nil {
 			return fmt.Errorf("db: insert commission payable line: %w", err)
 		}
 		return nil
