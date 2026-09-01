@@ -43,5 +43,25 @@ jobs:
     - name: Build
       run: go build -v ./...
 
+    - name: Vet
+      run: go vet ./...
+
+    # The integration suite is behind `//go:build integration`, so every
+    # other step in this workflow skips it entirely — it is not in `go
+    # build ./...`, not in `go vet ./...`, and not in `go test ./...`.
+    # That invisibility let it rot until it no longer compiled at all:
+    # five interfaces moved (ListSegmentSubscriberIDs gaining an
+    # announcement id, ClearSpeedOverride/SetSpeedOverride,
+    # GetVoucherCommissionSummary, and the franchise queriers' commission
+    # methods) and each left its test double behind, with nothing to
+    # report it. The suite did not fail; it could not build.
+    #
+    # This step is the cheap guard against that recurring. It compiles
+    # and vets the tagged files without needing PostgreSQL, so it runs
+    # here in seconds while the tests themselves still require the real
+    # database that scripts/run_db_tests.sh provisions.
+    - name: Vet (integration-tagged tests)
+      run: go vet -tags=integration ./...
+
     - name: Test
       run: go test -v ./...
