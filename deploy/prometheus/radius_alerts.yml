@@ -69,3 +69,161 @@ groups:
             This NAS was authenticating an hour ago and has gone quiet. A
             failure rate alert cannot catch this: zero attempts is zero
             failures.
+
+  # ── Capacity and saturation ───────────────────────────────────────────────
+  #
+  # These three form a sequence, and the order matters for triage:
+  #
+  #   verifier cache hit rate falls  ->  every auth pays bcrypt (~280ms CPU)
+  #   queue depth rises              ->  workers cannot keep up
+  #   packets shed                   ->  the daemon is refusing work
+  #
+  # The first is usually the cause and the last is what subscribers feel, so
+  # an operator who sees all three should treat the cache alert as the
+  # finding, not the drop alert.
+  #
+  # A caveat on the depth gauge that is worth knowing before trusting it:
+  # radius_worker_queue_depth is set on enqueue and dequeue, so a scrape
+  # samples whatever the instantaneous value happened to be. During a bursty
+  # storm the true peak sits between scrapes and is simply not visible. That
+  # is precisely why the drop counter matters alongside it — a counter
+  # cannot miss an event the way a sampled gauge can. Depth is the early
+  # warning; drops are the ground truth.
+  - name: radius-capacity
+    interval: 30s
+    rules:
+      # Any sustained shedding at all. The daemon drops rather than blocks
+      # by design (internal/radius/daemon.go's tryEnqueue), and RADIUS
+      # clients retransmit, so a shed packet is survivable — but the queue
+      # is 512 deep against a 128-worker pool and should never fill in
+      # normal operation. Reaching it means the daemon is over capacity now.
+      #
+      # increase() rather than rate() > 0 so the threshold reads in packets
+      # rather than fractional packets per second, and `for: 2m` so a single
+      # burst that the pool absorbs does not page anyone.
+      - alert: RadiusPacketsShed
+        expr: |
+          sum by (listener) (increase(radius_packets_dropped_total[5m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: radius
+        annotations:
+          summary: "RADIUS is shedding {{ $labels.listener }} packets"
+          description: >-
+            The worker queue has been full for at least two minutes and the
+            daemon is refusing packets. Subscribers are retransmitting and
+            some are failing to authenticate. Check RadiusVerifierCacheCold
+            first — a cold cache is the usual cause, because bcrypt at
+            ~280ms makes roughly 7 authentications per second the ceiling on
+            2 vCPUs regardless of how the queues are tuned.
+          runbook: "specification_docs_v2/12_OPS_Operations_Runbook.md#1234-high-radius-authentication-latency"
+
+      # Sustained heavy shedding. Distinguished from the warning above by
+      # rate rather than duration, because these are different situations: a
+      # trickle of drops is a capacity problem to schedule, ten a second is
+      # an outage in progress.
+      - alert: RadiusPacketsShedSevere
+        expr: |
+          sum by (listener) (rate(radius_packets_dropped_total[5m])) > 10
+        for: 2m
+        labels:
+          severity: critical
+          component: radius
+        annotations:
+          summary: "RADIUS shedding >10 {{ $labels.listener }} packets/sec"
+          description: >-
+            Sustained heavy loss. A substantial share of subscribers cannot
+            authenticate. Also check the kernel counters, which no metric
+            here can show: `nstat -az | grep -i udp` for RcvbufErrors, and
+            nf_conntrack_count against nf_conntrack_max. Drops there happen
+            before the daemon sees the packet at all, so this alert
+            understates the real loss.
+          runbook: "specification_docs_v2/12_OPS_Operations_Runbook.md#1234-high-radius-authentication-latency"
+
+      # The leading indicator: depth rises before anything is shed.
+      #
+      # Divided by the exported capacity rather than a hard-coded 512, so
+      # this rule stays correct if the pool is resized — the daemon
+      # publishes radius_worker_queue_capacity for exactly this reason. Both
+      # series come from the same target, so the division matches on
+      # instance and job without any on()/ignoring() needed.
+      #
+      # avg_over_time rather than the instantaneous value because of the
+      # sampling caveat above: a single scrape catching a momentary spike is
+      # not saturation, and a 10-minute average that stays above half
+      # capacity is.
+      - alert: RadiusWorkerQueueSaturated
+        expr: |
+          (
+            avg_over_time(radius_worker_queue_depth[10m])
+            /
+            avg_over_time(radius_worker_queue_capacity[10m])
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: radius
+        annotations:
+          summary: "RADIUS worker queue over half full for 10 minutes"
+          description: >-
+            Averaging {{ $value | humanizePercentage }} of capacity. The pool
+            is not keeping up and will start shedding if load rises further.
+            This fires before RadiusPacketsShed and is the point at which
+            the problem is still cheap to fix.
+          runbook: "specification_docs_v2/12_OPS_Operations_Runbook.md#1234-high-radius-authentication-latency"
+
+      # The root cause behind most of the above. A collapsed hit rate means
+      # nearly every authentication is paying bcrypt cost-12 — the daemon
+      # goes from thousands of auths per second to roughly seven on 2 vCPUs.
+      #
+      # Expected briefly after a restart, which is why `for: 15m` is long:
+      # migration 046's persistent tier warms the cache at startup, so a
+      # sustained cold cache means either that warmup failed or something is
+      # invalidating entries far faster than they are created.
+      #
+      # The `> 1` guard is the same reasoning as authAlertMinAttempts in the
+      # auth group: on an idle deployment a single cache miss is a 0% hit
+      # rate, and without the guard this fires forever on quiet sites.
+      - alert: RadiusVerifierCacheCold
+        expr: |
+          (
+            sum(rate(radius_verifier_cache_hit_total[10m]))
+            /
+            sum(rate(radius_auth_accept_total[10m]))
+          ) < 0.5
+          and
+          sum(rate(radius_auth_accept_total[10m])) > 1
+        for: 15m
+        labels:
+          severity: warning
+          component: radius
+        annotations:
+          summary: "RADIUS verifier cache hit rate below 50%"
+          description: >-
+            Most authentications are paying full bcrypt (~280ms of CPU
+            each), which caps throughput near 7/sec on 2 vCPUs. Brief after
+            a restart and expected; sustained means warmup is not working.
+            Check for "verifier cache warmed restored=0" in the daemon log
+            alongside a non-empty radius_verifier_cache table — that
+            combination means the persistent tier is unreachable.
+          runbook: "deploy/gcp/CANARY.md"
+
+      # The alert that catches the failure nothing else can. If the daemon
+      # stops exporting entirely — OOM-killed, crash-looping, or wedged —
+      # every rule above evaluates against absent series and stays silent,
+      # while no subscriber can authenticate at all.
+      - alert: RadiusDaemonMetricsAbsent
+        expr: absent(radius_worker_queue_capacity)
+        for: 2m
+        labels:
+          severity: critical
+          component: radius
+        annotations:
+          summary: "RADIUS daemon is not exporting metrics"
+          description: >-
+            No scrape for two minutes. Every other rule in this file is
+            silent right now because their series do not exist, not because
+            anything is healthy. Check that the container is running and has
+            not been restarting.
+          runbook: "specification_docs_v2/12_OPS_Operations_Runbook.md"
