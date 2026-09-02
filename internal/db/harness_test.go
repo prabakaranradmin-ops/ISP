@@ -76,6 +76,12 @@ var truncateOrder = []string{
 	"invoices",
 	"gst_rates",
 	"kyc_verifications",
+	// Migration 046. CASCADE from subscribers would take it anyway, but it
+	// is listed for the same reason cpe_device_types and announcements are:
+	// so the dependency order this slice documents stays true, and so a
+	// reader can see verifier state is reset between tests rather than
+	// leaking a cached verifier from one test into the next.
+	"radius_verifier_cache",
 	"subscribers",
 	"plans",
 	// Migration 034 seeds nas_devices with explicit ids, so it must be reset
