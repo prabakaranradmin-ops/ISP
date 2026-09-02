@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"hash"
 	"time"
 
@@ -55,7 +56,46 @@ var radiusVerifierCacheHit = promauto.NewCounter(prometheus.CounterOpts{
 type VerifierCache struct {
 	store  *localcache.Store[[]byte]
 	secret []byte
+	// persist is the optional L2 (migration 046). Nil keeps the entirely
+	// in-memory behaviour this cache shipped with.
+	//
+	// Two tiers rather than one because they solve different problems and
+	// have different costs. L1 is a map lookup in microseconds and carries
+	// the steady-state hot path; L2 is a database round trip, which is
+	// cheap next to bcrypt's ~280ms but not next to L1, so it is read only
+	// at startup (Warm) and written only on the path that just paid for
+	// bcrypt anyway (Store). Nothing on the per-request fast path touches
+	// the database.
+	persist VerifierStore
 }
+
+// VerifierStore persists verifiers across restarts and makes them visible
+// to other processes. Satisfied by *db.VerifierCacheStore.
+//
+// Every method takes a context and may fail; VerifierCache treats all such
+// failures as non-fatal and falls through to bcrypt, because a cache that
+// can take authentication down when its backing store is unavailable is
+// worse than no cache.
+type VerifierStore interface {
+	// LoadActive returns every unexpired verifier, for warmup.
+	LoadActive(ctx context.Context) ([]PersistedVerifier, error)
+	// Save upserts one verifier.
+	Save(ctx context.Context, subscriberID int, username string, verifier []byte, expiresAt time.Time) error
+	// DeleteByUsername removes a subscriber's verifier — the immediate
+	// invalidation a password change needs.
+	DeleteByUsername(ctx context.Context, username string) error
+}
+
+// PersistedVerifier is one stored verifier, as warmup reads it back.
+type PersistedVerifier struct {
+	Username  string
+	Verifier  []byte
+	ExpiresAt time.Time
+}
+
+// SetPersistence enables the L2 tier. Optional and settable only before the
+// daemon starts serving.
+func (c *VerifierCache) SetPersistence(s VerifierStore) { c.persist = s }
 
 // NewVerifierCache constructs a VerifierCache. secret is what makes the
 // cached verifier unforgeable — config.Load enforces a 32-byte minimum on
@@ -112,10 +152,94 @@ func (c *VerifierCache) Check(_ context.Context, username, password, passwordHas
 // Store caches password's verifier for username, bound to the passwordHash
 // it was just bcrypt-verified against, so the next request with the same
 // password (and no intervening password change) can skip bcrypt entirely.
-func (c *VerifierCache) Store(_ context.Context, username, password, passwordHash string) error {
+//
+// subscriberID is used only by the L2 tier, which keys on it so a deleted
+// subscriber's verifier is removed by the foreign key rather than by
+// remembering to.
+func (c *VerifierCache) Store(ctx context.Context, subscriberID int, username, password, passwordHash string) error {
 	if c == nil || c.store == nil {
 		return nil
 	}
-	c.store.Set(verifierKey(username), c.verifier(password, passwordHash), verifierCacheTTL)
+	mac := c.verifier(password, passwordHash)
+	expiresAt := time.Now().Add(verifierCacheTTL)
+	c.store.Set(verifierKey(username), mac, verifierCacheTTL)
+
+	// Write-through, and only on this path — which has just spent ~280ms in
+	// bcrypt, so a millisecond insert is not measurable against it. The
+	// error is returned to the caller, which logs and continues: a failed
+	// L2 write costs a bcrypt on the next restart, not a failed
+	// authentication.
+	if c.persist != nil {
+		if err := c.persist.Save(ctx, subscriberID, username, mac, expiresAt); err != nil {
+			return fmt.Errorf("radius: persist verifier for %q: %w", username, err)
+		}
+	}
+	return nil
+}
+
+// Warm repopulates L1 from L2 at startup and reports how many entries were
+// restored.
+//
+// This is the whole reason the L2 tier exists. An empty cache after a
+// restart means every reconnecting subscriber pays full bcrypt, and on a
+// 2-vCPU host that is roughly 7 authentications a second — so a restart
+// during a reconnect event turns into a queue that drains for tens of
+// minutes while clients retransmit into it.
+//
+// Entries are loaded with their *remaining* TTL rather than a fresh one, so
+// warmup cannot extend the lifetime of a verifier beyond what it would have
+// had without a restart. A row that expires in 40 seconds is restored with
+// 40 seconds left.
+//
+// Never fatal: a failure here costs performance on a cold start, which is
+// exactly the situation without this feature at all.
+func (c *VerifierCache) Warm(ctx context.Context) (int, error) {
+	if c == nil || c.store == nil || c.persist == nil {
+		return 0, nil
+	}
+	rows, err := c.persist.LoadActive(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("radius: warm verifier cache: %w", err)
+	}
+
+	now := time.Now()
+	restored := 0
+	for _, row := range rows {
+		ttl := row.ExpiresAt.Sub(now)
+		if ttl <= 0 {
+			// Raced with expiry between the query and here. The reaper will
+			// collect it; skipping keeps a stale verifier out of L1.
+			continue
+		}
+		c.store.Set(verifierKey(row.Username), row.Verifier, ttl)
+		restored++
+	}
+	return restored, nil
+}
+
+// Invalidate drops a subscriber's verifier from both tiers immediately.
+//
+// The verifier already self-invalidates on a password change — it is bound
+// to the bcrypt hash, so a changed hash can never match a stored MAC (see
+// this type's doc comment). This exists for the cases where that binding
+// does not help: a suspension or termination leaves the hash untouched, and
+// the cached verifier would otherwise stay valid for its remaining TTL.
+//
+// It is also what lets api_service invalidate radiusd's cache at all.
+// Before the L2 tier, cmd/api/main.go's subCacheInvalidator was necessarily
+// a no-op — one process cannot reach into another's memory — and
+// invalidation waited out a TTL. Deleting the shared row is visible to both.
+func (c *VerifierCache) Invalidate(ctx context.Context, username string) error {
+	if c == nil {
+		return nil
+	}
+	if c.store != nil {
+		c.store.Delete(verifierKey(username))
+	}
+	if c.persist != nil {
+		if err := c.persist.DeleteByUsername(ctx, username); err != nil {
+			return fmt.Errorf("radius: invalidate persisted verifier for %q: %w", username, err)
+		}
+	}
 	return nil
 }

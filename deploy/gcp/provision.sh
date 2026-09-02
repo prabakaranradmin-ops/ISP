@@ -144,9 +144,69 @@ ensure_firewall_rule "${NETWORK_TAG}-radius" "udp:1812,udp:1813" "$NAS_SOURCE_RA
 
 STARTUP_SCRIPT="$(cat <<'STARTUP'
 #!/usr/bin/env bash
-# Installs Docker Engine + compose plugin on first boot. Debian 12.
+# Installs Docker Engine + compose plugin and applies kernel tuning for a
+# high-packet-rate UDP service. Debian 12. Runs on every boot; both halves
+# are idempotent.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
+
+# ── Kernel tuning ───────────────────────────────────────────────────────────
+#
+# Written on every boot rather than once, because a sysctl file is cheap to
+# rewrite and the alternative — assuming a VM keeps state across a recreate —
+# is how hosts drift from the configuration that was reasoned about.
+#
+# Applied before Docker so the daemon and its containers start against the
+# final values rather than inheriting defaults and needing a restart.
+cat >/etc/sysctl.d/60-isp-bss.conf <<'SYSCTL'
+# ISP BSS — kernel tuning for RADIUS (high-rate UDP). See deploy/gcp/README.md.
+
+# ── UDP socket receive buffers ─────────────────────────────────────────────
+# The RADIUS daemon requests 4MiB per listener (readBufferBytes in
+# internal/radius/daemon.go), but SetReadBuffer is a request the kernel
+# clamps to rmem_max. Without raising this ceiling the daemon silently keeps
+# roughly the default 212KB — a few hundred packets — and a mass reconnect
+# overruns it in well under a second. The overrun is invisible to the
+# application: the kernel discards, nothing surfaces in any application
+# metric, and the only evidence is `nstat -az '*Udp*'` / `netstat -su`.
+#
+# The daemon logs the size it was actually granted at startup, so a host
+# missing this file reports itself rather than waiting for a storm.
+net.core.rmem_max = 16777216
+net.core.rmem_default = 4194304
+
+# Backlog for packets the NIC has delivered but no socket has read yet.
+# The default (1000) is sized for ordinary traffic, not a reconnect burst.
+net.core.netdev_max_backlog = 5000
+
+# ── conntrack ──────────────────────────────────────────────────────────────
+# Belt-and-braces: docker-compose.gcp.yml puts the RADIUS daemon on host
+# networking specifically so its traffic creates no conntrack entries at
+# all. These values protect the case where that overlay is not applied, and
+# the rest of the stack (TCP to Caddy and Postgres) which is still NAT'd.
+#
+# When this table fills, the kernel drops new flows host-wide — including
+# the SSH session of whoever is investigating — and logs
+# "nf_conntrack: table full, dropping packet" to dmesg.
+net.netfilter.nf_conntrack_max = 262144
+
+# UDP has no connection to observe, so conntrack keeps an entry for a fixed
+# window after the last packet. RADIUS is request/response with retransmits
+# measured in seconds; 30s of retention per flow buys nothing and is what
+# makes the table fill under a storm of distinct source ports.
+net.netfilter.nf_conntrack_udp_timeout = 10
+net.netfilter.nf_conntrack_udp_timeout_stream = 60
+SYSCTL
+
+# nf_conntrack settings live under a module that may not be loaded yet on a
+# fresh boot; without this, `sysctl --system` warns and skips those keys.
+modprobe nf_conntrack 2>/dev/null || true
+sysctl --system >/dev/null
+
+echo "kernel tuning applied:"
+sysctl net.core.rmem_max net.netfilter.nf_conntrack_max 2>/dev/null || true
+
+# ── Docker ──────────────────────────────────────────────────────────────────
 
 if command -v docker >/dev/null 2>&1; then
     echo "docker already present; nothing to do"

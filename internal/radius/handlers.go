@@ -107,7 +107,7 @@ func (d *RadiusDaemon) handleAuth(ctx context.Context, w radius.ResponseWriter, 
 			d.authRejected(r)
 			return
 		}
-		if err := d.verifierCache.Store(ctx, username, password, sub.PasswordHash); err != nil {
+		if err := d.verifierCache.Store(ctx, sub.ID, username, password, sub.PasswordHash); err != nil {
 			log.Warn().Err(err).Str("username", username).Msg("radius: verifier cache store failed")
 		}
 	}

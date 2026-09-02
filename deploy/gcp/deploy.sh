@@ -38,6 +38,13 @@ command -v gcloud >/dev/null 2>&1 || die "gcloud is not installed"
 
 remote() { gcloud compute ssh "$INSTANCE" --zone "$ZONE" --project "$PROJECT" --command "$1"; }
 
+# The GCP overlay (host networking for RADIUS, memory limits) is applied on
+# top of the base file rather than replacing it — same pattern as the pg-ha
+# overlay. Every compose invocation below must carry both, or the daemon
+# comes up on the bridge network with no memory limit and the tuning is
+# silently absent.
+COMPOSE_FILES="-f docker-compose.yml -f deploy/gcp/docker-compose.gcp.yml"
+
 # ── Preflight: does DNS actually point here? ────────────────────────────────
 #
 # Checked rather than assumed, because getting this wrong is expensive in a
@@ -68,6 +75,28 @@ if ! remote "command -v docker >/dev/null 2>&1"; then
          gcloud compute ssh $INSTANCE --zone $ZONE --command 'sudo journalctl -u google-startup-scripts -n 50'"
 fi
 ok "docker present"
+
+# docker-compose.gcp.yml uses the `!reset` tag to clear the base file's port
+# publishing, which Compose only understands from v2.24. Checked here rather
+# than left to fail mid-deploy: without `!reset`, sequence fields merge
+# instead of replacing, and the overlay would try to publish ports on a
+# host-networked service.
+info "checking Docker Compose supports the overlay"
+COMPOSE_VER="$(remote "sudo docker compose version --short 2>/dev/null" | tr -d '\r' | head -1)"
+if [ -z "$COMPOSE_VER" ]; then
+    die "Could not determine the Docker Compose version on the instance."
+fi
+COMPOSE_MAJOR="${COMPOSE_VER%%.*}"
+COMPOSE_MINOR="$(printf '%s' "$COMPOSE_VER" | cut -d. -f2)"
+if [ "$COMPOSE_MAJOR" -lt 2 ] || { [ "$COMPOSE_MAJOR" -eq 2 ] && [ "${COMPOSE_MINOR:-0}" -lt 24 ]; }; then
+    die "Docker Compose $COMPOSE_VER on the instance is too old for deploy/gcp/docker-compose.gcp.yml,
+       which needs the \`!reset\` tag (v2.24+) to clear the base file's port
+       publishing under host networking.
+
+       Upgrade on the instance:
+         sudo apt-get update && sudo apt-get install --only-upgrade docker-compose-plugin"
+fi
+ok "docker compose $COMPOSE_VER supports !reset"
 
 # ── Ship the working tree ───────────────────────────────────────────────────
 #
@@ -108,7 +137,7 @@ ok "secrets in place"
 # entirely instead of relying on it failing gracefully.
 
 info "starting PostgreSQL"
-remote "cd $REMOTE_DIR && sudo docker compose up -d postgres_primary"
+remote "cd $REMOTE_DIR && sudo docker compose $COMPOSE_FILES up -d postgres_primary"
 
 info "waiting for PostgreSQL to accept connections"
 remote "cd $REMOTE_DIR && for i in \$(seq 1 60); do
@@ -122,7 +151,7 @@ remote "cd $REMOTE_DIR && bash deploy/gcp/remote_migrate.sh"
 ok "migrations applied"
 
 info "starting the rest of the stack"
-remote "cd $REMOTE_DIR && sudo docker compose up -d"
+remote "cd $REMOTE_DIR && sudo docker compose $COMPOSE_FILES up -d"
 
 info "waiting for the API to report ready"
 if remote "for i in \$(seq 1 45); do

@@ -198,7 +198,7 @@ func run(ctx context.Context) error {
 		// (it already owns wallet_ledgers, which payment_refunds references).
 		Lifecycle: database.API(),
 		Refunds:   database.Billing(),
-		SubCache:  &subCacheInvalidator{},
+		SubCache:  &subCacheInvalidator{verifiers: database.VerifierCache()},
 		// Task & approval workflows (FR-WFL-001..002). WorkflowStore
 		// satisfies both queriers — approvals and field tasks share a
 		// migration and a store, but nothing else.
@@ -548,10 +548,33 @@ func createRenewalInvoice(ctx context.Context, inv renewalInvoicer, subscriberID
 // SubCache interface stay intact: Phase 2 of the native port stands up
 // Postgres LISTEN/NOTIFY for the job queue, and this becomes a NOTIFY the
 // daemon subscribes to, closing the window to milliseconds.
-type subCacheInvalidator struct{}
+//
+// UPDATE (migration 046): half of this is no longer true. The subscriber
+// auth cache is still process-local and still relies on its 60-second TTL,
+// so the paragraph above stands for that. But the *fast-verifier* cache now
+// has a shared PostgreSQL tier, and deleting a subscriber's row there is
+// visible to radiusd immediately — so that half of the invalidation is
+// exact rather than eventual.
+//
+// This matters most for the case the verifier's own design cannot cover.
+// A password change self-invalidates, because the verifier is bound to the
+// bcrypt hash and a changed hash can never match a stored MAC. A suspension
+// or termination does not change the hash, so before this the cached
+// verifier stayed usable for its remaining TTL — the fast path would keep
+// answering for an account that had just been cut off. Now it does not.
+type subCacheInvalidator struct {
+	verifiers *db.VerifierCacheStore
+}
 
-func (s *subCacheInvalidator) InvalidateSubscriber(_ context.Context, _ string) error {
-	return nil
+func (s *subCacheInvalidator) InvalidateSubscriber(ctx context.Context, username string) error {
+	if s.verifiers == nil {
+		return nil
+	}
+	// Errors are returned to the caller, which already logs and continues:
+	// the lifecycle action itself (suspend, terminate, password change) has
+	// committed by this point and must not be failed or rolled back because
+	// a cache entry outlived it by up to its TTL.
+	return s.verifiers.DeleteByUsername(ctx, username)
 }
 
 // extendPlanExpiry computes and applies the new plan_expiry for a renewal:

@@ -130,6 +130,46 @@ to chart-of-accounts codes that arrive in migrations (5200 and 2100 in
 migration 045), and a binary running ahead of its schema refuses those
 postings rather than writing a ledger it cannot balance.
 
+## Hardening applied by this deployment
+
+`deploy.sh` applies [`docker-compose.gcp.yml`](docker-compose.gcp.yml) on top
+of the base compose file. Three things it changes, all aimed at surviving a
+mass-reconnect UDP storm:
+
+**Host networking for the RADIUS daemon.** Docker's bridge publishing NATs
+every packet, and every NAT'd UDP flow takes an `nf_conntrack` entry. A
+reconnect storm from a BNG using many source ports can exhaust
+`nf_conntrack_max` — at which point the kernel drops *new flows for the whole
+host*, including the SSH session of whoever is diagnosing it, and none of it
+is visible to the application. Host networking removes the NAT hop, so RADIUS
+creates no conntrack entries at all. The daemon reaches PostgreSQL on
+`127.0.0.1` instead of via Docker DNS.
+
+**Memory limits.** With the non-blocking enqueue the daemon sheds load rather
+than accumulating goroutines, so the 2 GB limit should never be approached.
+It exists because "should never" is not "cannot" — it makes an unexpected
+leak a predictable container restart instead of the kernel OOM killer picking
+the largest process on the box, which here would often be PostgreSQL.
+
+**Kernel tuning** (`/etc/sysctl.d/60-isp-bss.conf`, written by
+`provision.sh` on every boot): `net.core.rmem_max` so the daemon's 4 MiB
+socket-buffer request is not silently clamped to ~212 KB, and conntrack
+sizing and timeouts for the traffic still on the bridge.
+
+Requires Docker Compose **v2.24+** for the `!reset` tag; `deploy.sh` checks
+this before it starts anything.
+
+### Verifying it
+
+```bash
+go run ./scripts/seed_load -users-out .nfr_users.csv
+COLD_RESTART=1 USERS_CSV=.nfr_users.csv bash scripts/storm_test_radius.sh
+```
+
+Runs a cold and a warm pass at deliberate overload and reports application
+shedding alongside the kernel counters — the latter being the loss no
+Prometheus metric can ever show. Establish this baseline before you need it.
+
 ## Step 4 — Register the routers
 
 On each NAS, point RADIUS authentication and accounting at the static IP,

@@ -184,6 +184,26 @@ func run(ctx context.Context) error {
 	// process memory: a single-machine install runs exactly one radiusd, so
 	// consecutive packets of one authentication always land on it.
 	daemon.SetEAPSessionStore(radius.NewEAPSessionStore())
+	// Persistent fast-verifier cache (migration 046).
+	//
+	// Without this the cache is empty after every restart, and a restart is
+	// usually followed by exactly the traffic it exists to absorb — a
+	// reconnect wave, where every subscriber pays bcrypt cost-12 (~280ms).
+	// On a 2-vCPU host that is roughly 7 authentications a second, so a
+	// deploy during a reconnect event becomes a queue draining for tens of
+	// minutes with clients retransmitting into it.
+	verifierStore := database.VerifierCache()
+	daemon.SetVerifierPersistence(verifierStore)
+	if restored, err := daemon.WarmVerifierCache(ctx); err != nil {
+		// Never fatal: a cold cache is a slow start, which is precisely the
+		// situation without this feature at all. Logged loudly because a
+		// warmup that silently never works would leave the storm-recovery
+		// behaviour untested and nobody any the wiser.
+		log.Error().Err(err).Msg("radiusd: verifier cache warmup failed — starting cold, " +
+			"the first authentication per subscriber will pay full bcrypt")
+	} else {
+		log.Info().Int("restored", restored).Msg("radiusd: verifier cache warmed")
+	}
 	// MAC Auth Bypass for hotspot NAS devices (FR-HSP-002, MDS §4.23). Wiring
 	// the querier does not enable MAB anywhere: nas_devices.allow_mab defaults
 	// FALSE, so it stays unreachable until an operator turns it on for a
@@ -214,6 +234,35 @@ func run(ctx context.Context) error {
 		log.Info().Msg("radiusd: live session staleness sweeper started")
 		sessionSweeper.Run(ctx)
 		log.Info().Msg("radiusd: live session staleness sweeper stopped")
+	}()
+	// Expired verifiers are already inert — warmup filters them, and a stale
+	// verifier cannot match a current password hash regardless — so this
+	// bounds table growth and, with it, how much an attacker holding both
+	// the database and RADIUS_VERIFIER_SECRET could attack offline. Ten
+	// minutes against a five-minute TTL keeps the table roughly one
+	// authentication cycle deep without a tight loop over a small table.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		log.Info().Msg("radiusd: verifier cache reaper started")
+		for {
+			select {
+			case <-ctx.Done():
+				log.Info().Msg("radiusd: verifier cache reaper stopped")
+				return
+			case <-ticker.C:
+				reaped, err := verifierStore.ReapExpired(ctx)
+				if err != nil {
+					log.Error().Err(err).Msg("radiusd: verifier cache reap failed")
+					continue
+				}
+				if reaped > 0 {
+					log.Debug().Int64("reaped", reaped).Msg("radiusd: expired verifiers removed")
+				}
+			}
+		}
 	}()
 	daemon.SetAcctAddr(cfg.RadiusAcctAddr)
 	wg.Add(1)

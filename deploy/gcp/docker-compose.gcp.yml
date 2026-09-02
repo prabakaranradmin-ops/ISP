@@ -1,0 +1,94 @@
+# GCP production overlay — apply on top of the base compose file:
+#
+#   docker compose -f docker-compose.yml -f deploy/gcp/docker-compose.gcp.yml up -d
+#
+# deploy.sh does this for you. An overlay rather than an edit to
+# docker-compose.yml because `network_mode: host` does not mean the same
+# thing on Docker Desktop (macOS/Windows), where the daemon runs inside a
+# VM and "the host" is that VM rather than the developer's machine. Putting
+# it in the base file would silently break scripts/demo_up.sh for anyone not
+# on Linux, which is most people running it.
+#
+# REQUIRES Docker Compose v2.24+ for the `!reset` tag. Sequence fields like
+# `ports` are *appended* across compose files, not replaced, so without
+# `!reset` the base file's published ports would survive into a
+# host-networked service — which is a configuration error, not a no-op.
+# deploy.sh checks the version before invoking this.
+
+services:
+
+  # ── RADIUS daemon: host networking ────────────────────────────────────────
+  #
+  # The reason is conntrack, not throughput. Docker's bridge publishing NATs
+  # every packet, and every NAT'd UDP flow takes an nf_conntrack entry held
+  # for nf_conntrack_udp_timeout. A reconnect storm from a BNG using many
+  # source ports can exhaust nf_conntrack_max, and when that table fills the
+  # kernel drops *new flows for the whole host* — including the SSH session
+  # of whoever is trying to diagnose it. Those drops are invisible to this
+  # process: no error, no metric, nothing in any log the application writes.
+  #
+  # Host networking removes the NAT hop entirely, so RADIUS traffic creates
+  # no conntrack entries at all. It also removes a small amount of latency
+  # from the auth path, which matters against NFR-PERF-001's 15ms budget.
+  #
+  # The trade is that this container no longer has Docker DNS, so
+  # postgres_primary must be reached as 127.0.0.1 — which works because the
+  # base file publishes 5432 to the host.
+  aaa_core_daemon:
+    network_mode: host
+    # Both must be cleared: `ports` is meaningless under host networking
+    # (the process binds host ports directly), and a service using
+    # network_mode cannot also join a bridge network.
+    ports: !reset []
+    networks: !reset []
+    environment:
+      # 127.0.0.1, not postgres_primary: there is no Docker DNS on the host
+      # network. Everything else about this DSN is unchanged — still the
+      # least-privilege bss_app role, so PostgreSQL RLS continues to apply
+      # (migration 014's append-only lea_audit_log policy would be bypassed
+      # by a superuser or table owner).
+      - DB_DSN=host=127.0.0.1 user=bss_app password=${APP_DB_PASSWORD} dbname=isp_bss_oss port=5432 sslmode=disable
+    deploy:
+      resources:
+        limits:
+          # Bounds the blast radius of a packet flood.
+          #
+          # With the non-blocking enqueue (internal/radius/daemon.go's
+          # tryEnqueue) the daemon sheds load rather than accumulating
+          # goroutines, so this limit should never be approached. It exists
+          # because "should never" is not "cannot": if some other unbounded
+          # growth appears, this makes the failure a predictable container
+          # restart instead of the kernel OOM killer picking the largest
+          # process on the box — which, on this host, would often be
+          # PostgreSQL rather than the daemon that actually misbehaved.
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # ── API service ───────────────────────────────────────────────────────────
+  #
+  # Deliberately left on the bridge network. It is TCP behind Caddy, so the
+  # conntrack argument above does not apply, and keeping it isolated
+  # preserves the property SecD §9.7 relies on: port 8080 is reachable only
+  # from the reverse proxy, never from the host or the internet.
+  api_service:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  #
+  # Given a hard limit so a runaway query cannot take the whole VM with it.
+  # On an e2-standard-2 (8GB) this leaves headroom for the two Go services
+  # and the OS page cache, which Postgres depends on for read performance
+  # more than it depends on its own shared_buffers.
+  postgres_primary:
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+        reservations:
+          memory: 1G

@@ -310,11 +310,26 @@ unchanged from before this section existed.
    #             radius_subscriber_cache_misses_total
    # A miss rate climbing toward 100% sends every auth to PostgreSQL.
    ```
-2. Check RADIUS worker queue depth:
+2. Check the RADIUS worker queue and whether anything is being shed:
    ```bash
-   # Prometheus metric: radius_worker_queue_depth
-   # If > 100: worker pool may be exhausted — check for slow DB queries below
+   # radius_worker_queue_depth / radius_worker_queue_capacity
+   #   Sustained utilisation above ~50% means the pool is not keeping up.
+   #   Depth is the leading indicator — it rises before anything is dropped.
+   #
+   # radius_packets_dropped_total{listener="auth"|"acct"}
+   #   Non-zero means the daemon is over capacity NOW and is shedding.
+   #   This is deliberate (the NAS retransmits) but it is never normal.
+   #
+   # radius_verifier_cache_hit_total
+   #   A hit rate collapsing toward zero means every authentication is
+   #   paying bcrypt cost-12 (~280ms of CPU each). On a 2-vCPU host that
+   #   caps throughput near 7 auths/sec regardless of queue tuning — see
+   #   step 5.
    ```
+
+   **If drops are non-zero but the kernel counters in step 5 are clean**, the
+   daemon is shedding load it genuinely cannot serve. That is capacity, not
+   configuration: the fix is CPU or a warm verifier cache, not tuning.
 3. Check PostgreSQL for slow queries — with the cache in-process, PostgreSQL
    is the only tier behind it, so a slow `GetSubscriberByUsername` shows up
    directly in auth latency:
@@ -332,6 +347,38 @@ unchanged from before this section existed.
     WHERE s.username = 'known_user';
    ```
    A sequential scan here is the finding; a restart will not fix it.
+
+5. **Check for loss the application cannot see.** Packets discarded by the
+   kernel never reach the daemon, so no Prometheus metric will ever show
+   them. A dashboard that looks entirely healthy while subscribers cannot
+   authenticate is this, and it is the most misleading state the system has.
+   ```bash
+   nstat -az | grep -i udp        # RcvbufErrors / InErrors: socket buffer overflow
+   netstat -su                    # same, on hosts without nstat
+   cat /proc/sys/net/netfilter/nf_conntrack_count \
+       /proc/sys/net/netfilter/nf_conntrack_max
+   dmesg | grep -i conntrack      # "table full, dropping packet"
+   ```
+   - **RcvbufErrors rising** — the socket receive buffer is too small for
+     the burst. The daemon requests 4 MiB per listener but the kernel caps
+     it at `net.core.rmem_max`; it logs the size it was actually granted at
+     startup, so check that line before assuming the request took effect.
+     `deploy/gcp/provision.sh` writes the sysctl.
+   - **conntrack near max** — when that table fills the kernel drops *new
+     flows host-wide*, including the SSH session you are diagnosing from.
+     `deploy/gcp/docker-compose.gcp.yml` puts the daemon on host networking
+     specifically so RADIUS creates no conntrack entries at all.
+
+6. **After a restart, expect a cold verifier cache.** The daemon logs
+   `verifier cache warmed` with a count at startup (migration 046). A count
+   of zero after a restart means every reconnecting subscriber will pay full
+   bcrypt — check that the persistent tier is reachable, because this is the
+   difference between a recovery measured in seconds and one measured in
+   tens of minutes.
+
+`scripts/storm_test_radius.sh` runs all of the above as a single measured
+cold-vs-warm comparison, and is the right way to establish a baseline for
+this host *before* an incident rather than during one.
 
 ---
 

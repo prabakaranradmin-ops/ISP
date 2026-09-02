@@ -23,6 +23,22 @@ const (
 	workerCount = 128 // fixed pool — prevents goroutine storms during auth peaks
 	// shutdownGrace bounds how long in-flight packets may finish on shutdown.
 	shutdownGrace = 10 * time.Second
+	// readBufferBytes is the UDP socket receive buffer requested per listener.
+	//
+	// Without this the socket runs on net.core.rmem_default (~212KB on
+	// Linux), a few hundred RADIUS packets. A mass reconnect — a BNG
+	// rebooting and every subscriber behind it re-authenticating at once —
+	// overruns that in well under a second, and the kernel discards the
+	// excess silently: no error reaches this process, nothing appears in any
+	// metric here, and the only evidence is the host's own counters
+	// (`nstat -az '*Udp*'`, `netstat -su`).
+	//
+	// Requested, not guaranteed. The kernel caps this at net.core.rmem_max,
+	// so the sysctl in deploy/gcp/provision.sh is what makes the larger
+	// value actually take effect; on a host with the default ceiling this
+	// silently yields a smaller buffer, which is why StartContext logs the
+	// size it actually got rather than the size it asked for.
+	readBufferBytes = 4 << 20 // 4 MiB
 )
 
 // Prometheus metrics
@@ -35,6 +51,34 @@ var (
 	radiusDedupSkipped = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "radius_acct_dedup_skipped_total",
 		Help: "Accounting packets skipped due to deduplication",
+	})
+	// radiusPacketsDropped counts packets shed because the worker queue was
+	// full. Non-zero means the daemon is over capacity right now — the
+	// single most important number during a reconnect storm, and until this
+	// existed there was nothing anywhere that reported overload.
+	//
+	// Labelled by port so a flood of accounting traffic is distinguishable
+	// from an authentication storm; they have very different causes and very
+	// different responses.
+	radiusPacketsDropped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "radius_packets_dropped_total",
+		Help: "RADIUS packets shed without processing because the worker queue was saturated",
+	}, []string{"listener"})
+	// radiusQueueDepth is the live occupancy of the worker queue.
+	//
+	// OPS §12.3.4 has cited a metric by this name for some time; it did not
+	// exist. Rising depth is the leading indicator that precedes drops, so
+	// alerting on this buys warning that the counter above cannot.
+	radiusQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "radius_worker_queue_depth",
+		Help: "Packets currently queued for the RADIUS worker pool",
+	})
+	// radiusQueueCapacity is exported alongside depth so a dashboard can plot
+	// utilisation without hard-coding workerCount*4, which would then be
+	// wrong the moment the pool is resized.
+	radiusQueueCapacity = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "radius_worker_queue_capacity",
+		Help: "Maximum packets the RADIUS worker queue can hold",
 	})
 	radiusAuthAccept = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "radius_auth_accept_total",
@@ -214,6 +258,28 @@ type LiveSession struct {
 	FUPThrottled bool
 }
 
+// SetVerifierPersistence enables the fast-verifier cache's L2 tier
+// (migration 046), so verifiers survive a restart and are visible to
+// api_service for immediate invalidation.
+//
+// Optional. Without it the cache is in-process only and behaves exactly as
+// it did before — correct, but empty after every restart, which is when a
+// reconnect storm is most likely and bcrypt is least affordable.
+func (d *RadiusDaemon) SetVerifierPersistence(s VerifierStore) {
+	d.verifierCache.SetPersistence(s)
+}
+
+// WarmVerifierCache repopulates the fast-verifier cache from its persistent
+// tier. Call once before serving; returns the number of entries restored.
+func (d *RadiusDaemon) WarmVerifierCache(ctx context.Context) (int, error) {
+	return d.verifierCache.Warm(ctx)
+}
+
+// InvalidateVerifier drops one subscriber's cached verifier from both tiers.
+func (d *RadiusDaemon) InvalidateVerifier(ctx context.Context, username string) error {
+	return d.verifierCache.Invalidate(ctx, username)
+}
+
 // SetLiveSessionStore enables live session tracking for the health endpoint
 // and the subscriber portal's live-usage panel (DDS §5.9, IDD §8.4).
 // Optional: without it, accounting still persists to subscriber_session_history
@@ -233,7 +299,7 @@ func (d *RadiusDaemon) SetLiveSessionStore(s LiveSessionWriter) {
 // internal/localcache's package doc — so they are constructed here rather
 // than threaded in from cmd/radiusd.
 func NewRadiusDaemon(addr string, secret []byte, db DBQuerier, verifierSecret []byte) *RadiusDaemon {
-	return &RadiusDaemon{
+	d := &RadiusDaemon{
 		addr:          addr,
 		secret:        secret,
 		db:            db,
@@ -242,6 +308,12 @@ func NewRadiusDaemon(addr string, secret []byte, db DBQuerier, verifierSecret []
 		verifierCache: NewVerifierCache(localcache.New[[]byte](0), verifierSecret),
 		packetQueue:   make(chan radiusJob, workerCount*4),
 	}
+	// Published at construction so utilisation (depth/capacity) is plottable
+	// from the moment the process starts, including for a daemon that never
+	// receives a packet — a flat zero is a meaningful reading, an absent
+	// series is not.
+	radiusQueueCapacity.Set(float64(cap(d.packetQueue)))
+	return d
 }
 
 // Start binds the UDP port, launches the worker pool, and begins serving.
@@ -271,6 +343,7 @@ func (d *RadiusDaemon) StartContext(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("radius: listen UDP %s: %w", d.addr, err)
 	}
+	applyReadBuffer(conn, "auth", d.addr)
 
 	// Accounting is bound before the worker pool starts, so a port already in
 	// use fails startup rather than leaving the daemon authenticating happily
@@ -286,6 +359,7 @@ func (d *RadiusDaemon) StartContext(ctx context.Context) error {
 		conn.Close() //nolint:errcheck,gosec
 		return fmt.Errorf("radius: listen UDP %s (accounting): %w", d.effectiveAcctAddr(), err)
 	}
+	applyReadBuffer(acctConn, "acct", d.effectiveAcctAddr())
 
 	// Said out loud because the alternative is the failure this listener was
 	// added to end: a daemon that authenticates perfectly, acknowledges every
@@ -316,22 +390,42 @@ func (d *RadiusDaemon) StartContext(ctx context.Context) error {
 	// authentication and shares the same backends, so a second pool would only
 	// add tuning surface; what matters is that neither port can starve the
 	// other, which the shared bounded queue already ensures.
-	enqueue := radius.HandlerFunc(func(w radius.ResponseWriter, r *radius.Request) {
-		select {
-		case d.packetQueue <- radiusJob{w: w, r: r}:
-		case <-ctx.Done():
+	// Shed rather than block when the queue is full.
+	//
+	// This looks like it throws work away, and that is the point. The
+	// alternative — the blocking send this replaced — does not preserve the
+	// packet, it preserves the goroutine holding it, and layeh's PacketServer
+	// spawns one goroutine per packet with no bound (server-packet.go's read
+	// loop calls `go func(...)` for every datagram and never waits). So a
+	// full queue did not apply backpressure to the socket; it converted
+	// offered load into resident memory, without limit, until the OOM killer
+	// chose this process. Restarting then emptied the verifier cache, making
+	// the next minute of authentication ~19x more expensive (bcrypt cost 12
+	// on every request instead of a cache hit) and refilling the queue faster
+	// than before — a crash loop that got worse each cycle rather than
+	// recovering.
+	//
+	// Dropping is also what the protocol expects. RADIUS is request/response
+	// over UDP with client-side retransmission (RFC 2865 §2.5): a NAS that
+	// gets no answer retries, typically after 3-5s. A shed packet costs one
+	// retransmit. A blocked one costs the daemon.
+	//
+	// ctx.Done() stays in the select so shutdown is not gated on queue space.
+	enqueueTo := func(listener string) radius.HandlerFunc {
+		return func(w radius.ResponseWriter, r *radius.Request) {
+			d.tryEnqueue(ctx, listener, w, r)
 		}
-	})
+	}
 
 	server := &radius.PacketServer{
 		Addr:         d.addr,
 		SecretSource: packetSecretSource,
-		Handler:      enqueue,
+		Handler:      enqueueTo("auth"),
 	}
 	acctServer := &radius.PacketServer{
 		Addr:         d.effectiveAcctAddr(),
 		SecretSource: packetSecretSource,
-		Handler:      enqueue,
+		Handler:      enqueueTo("acct"),
 	}
 
 	// Buffered for both, so whichever listener does not fail first can still
@@ -369,8 +463,54 @@ func (d *RadiusDaemon) StartContext(ctx context.Context) error {
 //
 // ctx is the daemon lifetime; each request still gets its own deadline so one
 // slow backend cannot pin a worker indefinitely.
+// tryEnqueue offers one packet to the worker pool, shedding it if the queue
+// is already full. Reports whether it was accepted.
+//
+// The `default` arm is the whole point, and it replaced a blocking send.
+// This looks like it throws work away; what it actually prevents is worse.
+// layeh's PacketServer spawns one goroutine per datagram with no bound
+// (server-packet.go's read loop calls `go func(...)` for every packet and
+// never waits on it), so a blocking send here did not apply backpressure to
+// the socket — it parked an unbounded number of goroutines, each holding a
+// copied packet, until the OOM killer chose this process. Restarting then
+// emptied the verifier cache, making the next minute of authentication far
+// more expensive (bcrypt cost 12 on every request rather than a cache hit)
+// and refilling the queue faster than before: a crash loop that deepened
+// each cycle instead of recovering.
+//
+// Shedding is also what the protocol expects. RADIUS is request/response
+// over UDP with client-side retransmission (RFC 2865 §2.5) — a NAS that
+// gets no answer retries, typically after 3-5s. A dropped packet costs one
+// retransmit; a blocked one costs the daemon.
+//
+// ctx.Done() remains a case so a shutdown in progress does not keep
+// accepting work. Note that `default` makes this select non-blocking
+// regardless, so ctx is consulted only when it is already cancelled.
+func (d *RadiusDaemon) tryEnqueue(ctx context.Context, listener string, w radius.ResponseWriter, r *radius.Request) bool {
+	select {
+	case d.packetQueue <- radiusJob{w: w, r: r}:
+		radiusQueueDepth.Set(float64(len(d.packetQueue)))
+		return true
+	case <-ctx.Done():
+		return false
+	default:
+		// Deliberately not logged. One line per shed packet during a storm is
+		// itself a load source on the very process that is already
+		// overloaded; the counter is the signal, and alerting belongs at the
+		// Prometheus layer.
+		radiusPacketsDropped.WithLabelValues(listener).Inc()
+		radiusQueueDepth.Set(float64(len(d.packetQueue)))
+		return false
+	}
+}
+
 func (d *RadiusDaemon) workerPoolConsumer(ctx context.Context) {
 	for job := range d.packetQueue {
+		// Sampled on both sides of the queue rather than by a ticker: depth
+		// during a storm changes far faster than any sane scrape interval,
+		// and the value that matters for alerting is the peak, which a
+		// periodic sample would mostly miss.
+		radiusQueueDepth.Set(float64(len(d.packetQueue)))
 		d.handleRequest(ctx, job.w, job.r)
 	}
 }
