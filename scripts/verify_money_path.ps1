@@ -113,13 +113,19 @@ function Invoke-Sql {
 # script failure, so the preference is relaxed for the call and the exit code
 # is read deliberately.
 function Invoke-Mockpay {
-    param([string[]]$Args = @())
+    # NOT named $Args: that is a PowerShell automatic variable, and a
+    # parameter of that name silently binds to nothing — every extra flag
+    # was dropped, so -bad-signature and -payment-id never reached mockpay.
+    # The script then reported that a forged payload was accepted and that a
+    # replay double-credited, when in truth it had sent a valid, distinct
+    # payment each time and the application behaved correctly.
+    param([string[]]$ExtraArgs = @())
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
         $all = @('run', './scripts/mockpay',
                  '-subscriber', "$SubscriberId", '-amount', $Amount,
-                 '-secret', $webhookSecret, '-url', $WebhookUrl) + $Args
+                 '-secret', $webhookSecret, '-url', $WebhookUrl) + $ExtraArgs
         $out = & go @all 2>&1
         return [PSCustomObject]@{ Text = ($out -join "`n"); ExitCode = $LASTEXITCODE }
     } finally { $ErrorActionPreference = $prev }
@@ -160,7 +166,7 @@ Add-Result "RAZORPAY_WEBHOOK_SECRET present in app.env" $true ""
 # answers 400 (signature rejected), an unconfigured one 503 (refuses before
 # looking). Without this, the run continues and the signature check passes
 # against a 503, certifying verification on an endpoint doing none.
-$probe = Invoke-Mockpay -Args @('-bad-signature')
+$probe = Invoke-Mockpay -ExtraArgs @('-bad-signature')
 $probeStatus = Get-StatusCode $probe.Text
 if ($probeStatus -eq 503) {
     Abort "The RUNNING api_service has no webhook secret loaded — it answers 503, refusing before it examines any signature. The value in app.env has not reached the process." @"
@@ -252,7 +258,7 @@ try {
 
     # This runs FIRST on purpose. If a forged payload is accepted, anyone on
     # the network can credit any wallet, and every later assertion is moot.
-    $bad = Invoke-Mockpay -Args @('-bad-signature')
+    $bad = Invoke-Mockpay -ExtraArgs @('-bad-signature')
     $badStatus = Get-StatusCode $bad.Text
 
     # 400 specifically, not merely "not 200".
@@ -271,7 +277,7 @@ try {
     # ── 2. A valid signature must be accepted ───────────────────────────────
     Section "2. Valid payment"
     $paymentId = "pay_verify$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
-    $good = Invoke-Mockpay -Args @('-payment-id', $paymentId)
+    $good = Invoke-Mockpay -ExtraArgs @('-payment-id', $paymentId)
     $goodStatus = Get-StatusCode $good.Text
     Add-Result "Signed payload accepted" ($goodStatus -eq 200) "HTTP $goodStatus"
 
@@ -301,7 +307,7 @@ SELECT COALESCE(SUM(CASE WHEN entry_type='credit' THEN amount ELSE -amount END),
 
     # Razorpay retries webhooks. A replay must not credit twice — this is the
     # single most expensive bug this path can have.
-    $null = Invoke-Mockpay -Args @('-payment-id', $paymentId)
+    $null = Invoke-Mockpay -ExtraArgs @('-payment-id', $paymentId)
     Start-Sleep -Seconds 1
     $balanceReplay = [decimal](Invoke-Sql "SELECT wallet_balance FROM subscribers WHERE id = $SubscriberId;")
     Add-Result "Replayed payment did not double-credit" ($balanceReplay -eq $balanceAfter) "after replay=$balanceReplay (want $balanceAfter)"
@@ -388,4 +394,7 @@ if ($failed -eq 0) {
 }
 Write-Host "────────────────────────────────────────────────`n" -ForegroundColor White
 
-exit ($(if ($failed -eq 0) { 0 } else { 1 }))
+# Assigned first rather than inlined. `exit ($(if ...))` returned -1 on a
+# fully passing run: the subexpression yielded something exit could not
+# interpret, so a green run reported failure to any CI step reading the code.
+if ($failed -eq 0) { exit 0 } else { exit 1 }
