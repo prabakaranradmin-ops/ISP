@@ -131,6 +131,21 @@ function Invoke-Mockpay {
     } finally { $ErrorActionPreference = $prev }
 }
 
+# Reads the delivery count as a scalar the gateway computes.
+#
+# Counting a JSON array from PowerShell is genuinely ambiguous:
+# Invoke-RestMethod unrolls one onto the pipeline, so
+# (Invoke-RestMethod ...).Count and @(Invoke-RestMethod ...).Count disagree —
+# 2 versus 1 for the same two records. This script used one form for its
+# baseline and the other in the poll loop, compared 1 against 2, and reported
+# that no notification had been delivered when two had. The gateway now
+# returns {count, deliveries}, so there is a number to read rather than a
+# collection to interpret.
+function Get-DeliveryCount {
+    try { return [int](Invoke-RestMethod -Uri "$gatewayUrl/_deliveries" -TimeoutSec 5).count }
+    catch { return 0 }
+}
+
 # Reads the HTTP status mockpay echoed. Asserting on the code rather than on
 # mockpay's own wording matters: it prints "the invalid signature was
 # rejected" for ANY non-200, including a 503 that means the endpoint never
@@ -235,7 +250,7 @@ if (-not $SkipNotifications) {
             -WorkingDirectory $RepoRoot -PassThru -WindowStyle Hidden
         Start-Sleep -Seconds 4
         try {
-            $null = Invoke-RestMethod -Uri "$gatewayUrl/_deliveries" -TimeoutSec 5
+            $null = Get-DeliveryCount
             Add-Result "Mock gateway listening on $GatewayPort" $true ""
         } catch {
             Add-Result "Mock gateway listening on $GatewayPort" $false $_.Exception.Message
@@ -250,7 +265,7 @@ try {
     $balanceBefore = [decimal](Invoke-Sql "SELECT wallet_balance FROM subscribers WHERE id = $SubscriberId;")
     $ledgerBefore  = [int](Invoke-Sql "SELECT count(*) FROM wallet_ledgers WHERE subscriber_id = $SubscriberId;")
     $glBefore      = if ($SkipGL) { 0 } else { [int](Invoke-Sql "SELECT count(*) FROM gl_journal_entries;") }
-    $notifBefore   = if ($SkipNotifications) { 0 } else { (Invoke-RestMethod -Uri "$gatewayUrl/_deliveries").Count }
+    $notifBefore   = if ($SkipNotifications) { 0 } else { Get-DeliveryCount }
     Write-Host "  wallet=$balanceBefore  ledger_rows=$ledgerBefore  gl_entries=$glBefore" -ForegroundColor DarkGray
 
     # ── 1. An invalid signature must be rejected ────────────────────────────
@@ -339,13 +354,13 @@ SELECT count(*) FROM (
 
         # The receipt is enqueued, then delivered by radiusd's worker pool —
         # so this is genuinely asynchronous and needs a moment.
-        $deliveries = @()
+        $deliveredNow = $notifBefore
         for ($i = 0; $i -lt 15; $i++) {
             Start-Sleep -Seconds 2
-            $deliveries = @(Invoke-RestMethod -Uri "$gatewayUrl/_deliveries")
-            if ($deliveries.Count -gt $notifBefore) { break }
+            $deliveredNow = Get-DeliveryCount
+            if ($deliveredNow -gt $notifBefore) { break }
         }
-        $new = $deliveries.Count - $notifBefore
+        $new = $deliveredNow - $notifBefore
         $detail = if ($new -gt 0) {
             "$new new delivery/ies at the gateway"
         } else {
@@ -356,9 +371,12 @@ SELECT count(*) FROM (
         Add-Result "A receipt notification was dispatched" ($new -gt 0) $detail
 
         if ($new -gt 0) {
-            $providers = ($deliveries | Select-Object -Last $new | ForEach-Object { $_.provider } | Sort-Object -Unique) -join ', '
+            $last = (Invoke-RestMethod -Uri "$gatewayUrl/_deliveries" -TimeoutSec 5).deliveries |
+                    Select-Object -Last $new
+            $providers = ($last | ForEach-Object { $_.provider } | Sort-Object -Unique) -join ', '
             Write-Host "         providers: $providers" -ForegroundColor DarkGray
         }
+
     }
 
 } finally {

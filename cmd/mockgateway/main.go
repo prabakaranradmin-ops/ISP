@@ -210,8 +210,18 @@ verification this page exists to let you test. Fire the webhook instead:</p>
 	// What was sent, as JSON. This is what makes the gateway useful beyond
 	// "it did not error": an integration test can assert that a dunning run
 	// actually attempted an SMS to the right number with the right text.
+	// Returns an object with an explicit count rather than a bare array.
+	//
+	// A bare array is ambiguous to count from PowerShell: Invoke-RestMethod
+	// unrolls a JSON array onto the pipeline, so `(Invoke-RestMethod ...).Count`
+	// and `@(Invoke-RestMethod ...).Count` disagree — 2 versus 1 for the same
+	// two records. scripts/verify_money_path.ps1 used one form for its
+	// baseline and the other in its poll loop, compared 1 against 2, and
+	// reported that no notification had been delivered when two had. A scalar
+	// the client does not have to interpret removes the trap.
 	mux.HandleFunc("GET /_deliveries", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, rec.all())
+		all := rec.all()
+		writeJSON(w, map[string]any{"count": len(all), "deliveries": all})
 	})
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
