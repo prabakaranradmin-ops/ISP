@@ -235,6 +235,41 @@ func run(ctx context.Context) error {
 		sessionSweeper.Run(ctx)
 		log.Info().Msg("radiusd: live session staleness sweeper stopped")
 	}()
+	// Sessions whose Accounting-Stop never arrived stay open in
+	// subscriber_session_history forever, and the FUP scanner sums octets
+	// across every open session a subscriber has — so each abandoned row
+	// permanently inflates that subscriber's measured usage and throttles
+	// them earlier than their quota warrants. Hourly rather than on the FUP
+	// scanner's own 10s tick: this corrects data, it does not gate an
+	// enforcement decision, and a reconnect only needs closing once.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		sweep := func() {
+			closed, err := database.FUP().CloseSupersededSessions(ctx)
+			if err != nil {
+				log.Error().Err(err).Msg("radiusd: closing superseded sessions failed")
+				return
+			}
+			if closed > 0 {
+				log.Info().Int64("closed", closed).
+					Msg("radiusd: closed sessions left open by a missing Accounting-Stop")
+			}
+		}
+		sweep() // once at startup, so a restart also repairs what accumulated while down
+		log.Info().Msg("radiusd: superseded-session sweeper started")
+		for {
+			select {
+			case <-ctx.Done():
+				log.Info().Msg("radiusd: superseded-session sweeper stopped")
+				return
+			case <-ticker.C:
+				sweep()
+			}
+		}
+	}()
 	// Expired verifiers are already inert — warmup filters them, and a stale
 	// verifier cannot match a current password hash regardless — so this
 	// bounds table growth and, with it, how much an attacker holding both

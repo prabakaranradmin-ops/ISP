@@ -256,6 +256,65 @@ func (s *FUPStore) StartSession(ctx context.Context, subscriberID int, sessionID
 	return nil
 }
 
+// CloseSupersededSessions closes session-history rows left open by an
+// Accounting-Stop that never arrived, and reports how many it closed.
+//
+// This is a correctness fix, not housekeeping. liveSessionUsage (this file,
+// top) sums octets across *every* open session a subscriber has, because a
+// reconnect legitimately opens a new row mid-cycle and the quota is
+// per-cycle. That is right when the old rows get closed and badly wrong when
+// they do not: each abandoned row keeps contributing its octets forever, so
+// the FUP scanner sees more usage than the subscriber has had and throttles
+// them early. Observed on this deployment at 7680 MB counted against 4096 MB
+// actually used — an 87% over-count from five abandoned rows, which on a
+// plan with a FUP threshold means throttling at roughly half the real quota.
+//
+// Nothing closed these before. A lost Accounting-Stop is not an edge case —
+// a NAS reboot, a power cut, or one dropped UDP datagram all produce it — so
+// in production these accumulate indefinitely and the over-count grows.
+//
+// The rule is deliberately conservative: a session is closed only when the
+// same subscriber has a *newer* session on the *same NAS*, which means the
+// older one demonstrably ended (a device cannot hold two concurrent PPPoE
+// sessions on one NAS). stop_time is set to the successor's start_time — the
+// latest moment the old session could still have been alive, so the closure
+// never claims more precision than is actually known.
+//
+// Deliberately NOT closed: an open session with no successor. It may be a
+// genuinely long-running one, and there is no updated_at on this table to
+// distinguish "connected for three weeks" from "abandoned three weeks ago".
+// Closing those needs a signal this table does not carry, so they are left
+// for an operator rather than guessed at.
+func (s *FUPStore) CloseSupersededSessions(ctx context.Context) (int64, error) {
+	// The correlated subquery finds the earliest later session for the same
+	// subscriber on the same NAS. Matching on nas_ip_address as well as
+	// subscriber keeps a subscriber with two genuine concurrent lines on
+	// different NAS devices from having one closed by the other.
+	const q = `
+		UPDATE subscriber_session_history h
+		SET stop_time = successor.start_time,
+		    terminate_cause = COALESCE(h.terminate_cause, 'superseded-no-acct-stop')
+		FROM (
+			SELECT a.id, a.start_time AS row_start,
+			       MIN(b.start_time) AS start_time
+			  FROM subscriber_session_history a
+			  JOIN subscriber_session_history b
+			    ON b.subscriber_id  = a.subscriber_id
+			   AND b.nas_ip_address = a.nas_ip_address
+			   AND b.start_time     > a.start_time
+			 WHERE a.stop_time IS NULL
+			 GROUP BY a.id, a.start_time
+		) AS successor
+		WHERE h.id = successor.id AND h.start_time = successor.row_start
+		  AND h.stop_time IS NULL`
+
+	tag, err := s.pool.Exec(ctx, q)
+	if err != nil {
+		return 0, fmt.Errorf("db: close superseded sessions: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // UpdateSessionOctets applies an Interim-Update counter to the open session,
 // reporting whether one was found.
 //
