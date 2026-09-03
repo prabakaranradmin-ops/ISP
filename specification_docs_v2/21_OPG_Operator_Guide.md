@@ -130,10 +130,18 @@ What a subscriber sees at `https://localhost/ui`:
 | Support | Raise and track tickets |
 | Notifications | Delivery history of messages sent to them |
 
-The live-usage panel reads a Redis session record. On a demo stack left running
-more than 24 hours that record expires and the panel shows the offline state —
-this is the seed expiring, not a fault. Reseed with the `redis-cli SET
-session:active:{id} … EX 86400` command from `demo_up.sh`.
+The live-usage panel reads the `live_sessions` table (migration 036). On a
+demo stack the seeded row ages out after 30 minutes without an accounting
+update (`cache.SessionTTL`) and the panel shows the offline state — this is
+the seed going stale, not a fault. Re-run `scripts/demo_up.sh`, which
+reseeds it.
+
+On a real deployment the same panel goes quiet for a different reason worth
+knowing: the row is refreshed by Accounting-Interim-Updates from the router,
+so a subscriber who is genuinely online but whose NAS has stopped sending
+accounting will also read as offline here. Check
+`subscriber_session_history` before concluding the subscriber is
+disconnected.
 
 ---
 
@@ -285,7 +293,7 @@ Metrics worth watching:
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| Portal dashboard shows offline state | Demo Redis session expired (24 h TTL) | `redis-cli TTL session:active:1` returns `-2` |
+| Portal dashboard shows offline state | The live-session row aged out (30 min without an accounting update) | `SELECT session_id, updated_at FROM live_sessions WHERE subscriber_id = 1;` returns nothing, or an `updated_at` older than 30 minutes |
 | New API route returns 404 | Container running an old image | `docker ps` shows a long uptime; rebuild |
 | `api_service` crash-looping | Missing AES key file | Logs show `load AES key store`; regenerate `config/keys/aes_keys.json` |
 | MAB authentication refused | `allow_mab` off, or cache not refreshed | `GET /api/v1/nas`; wait 60 s after enabling |

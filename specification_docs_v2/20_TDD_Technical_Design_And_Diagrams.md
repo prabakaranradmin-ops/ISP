@@ -496,7 +496,7 @@ sequenceDiagram
 ```
 
 Both paths share one encoder, so a scheduled report is byte-identical to the
-one on screen. Exports run on their own Asynq queue below `network_commands`,
+one on screen. Exports run on their own queue below `network_commands`,
 because a ten-year aggregate ahead of a CoA leaves a subscriber unthrottled for
 its duration.
 

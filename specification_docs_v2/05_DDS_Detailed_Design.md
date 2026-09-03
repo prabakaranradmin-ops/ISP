@@ -334,7 +334,7 @@ func (h *Handler) GetSubscriberHealth(w http.ResponseWriter, r *http.Request) {
 ## 5.10 Revenue Assurance Jobs (MOD-REV)
 **FR:** FR-REV-001..004 | **CRD:** CRD-REV-001..002
 
-Nightly Asynq task `revenue:reconcile` runs at 02:00 IST:
+Nightly task `revenue:reconcile` runs at 02:00 IST:
 
 ```go
 // internal/revenue/reconcile.go

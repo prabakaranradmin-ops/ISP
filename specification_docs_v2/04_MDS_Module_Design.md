@@ -26,17 +26,17 @@
 ## 4.2 Module 2: Cache & Real-Time FUP Monitoring
 **Module ID:** MOD-FUP | **SAD Ref:** SAD-COMP-002 | **FR:** FR-FUP-001..005
 
-`internal/fup` — Maintains write-through subscriber profiles in Redis. Background goroutine samples active sessions every 10s, compares usage vs threshold, emits Asynq tasks.
+`internal/fup` — Maintains write-through subscriber profiles in Redis. Background goroutine samples active sessions every 10s, compares usage vs threshold, enqueues tasks.
 
 **FUP Threshold Events:**
 
-| Threshold | Asynq Task Enqueued | Idempotency Key |
+| Threshold | Task Enqueued | Idempotency Key |
 |---|---|---|
 | 80% of plan bytes | `notif:fup_warning` | `fup_warn:{session_id}:{day}` |
 | 100% of plan bytes | `coa:send` + `notif:fup_throttle` | `coa:{session_id}:{breach_epoch_minute}` |
 | Plan expiry | `pod:send` | `pod:{session_id}:{expiry_date}` |
 
-**Asynq Task Definitions:**
+**Task Definitions:**
 
 | Task | Queue | Max Retries | Backoff | Dead-letter Action |
 |---|---|---|---|---|
@@ -130,7 +130,7 @@ Speed applied:         100 Mbps / 100 Mbps (full speed)
 ## 4.7 Module 7: Notification Service (WhatsApp + SMS + Email) *(new — gap CRD-NOTIF-001)*
 **Module ID:** MOD-NOTIF | **SAD Ref:** SAD-COMP-005 | **FR:** FR-NOTIF-001..011
 
-`internal/notifications` — Dedicated dispatcher invoked exclusively by Asynq tasks. Never called synchronously from the request path.
+`internal/notifications` — Dedicated dispatcher invoked exclusively by queued tasks. Never called synchronously from the request path.
 
 **WhatsApp Business API Integration:**
 - Provider: Meta Cloud API (v17+)
@@ -234,7 +234,7 @@ CROSS JOIN (SELECT entry_type, amount FROM wallet_ledgers) wl;
 
 **LCO Commission Flow:**
 1. Subscriber recharge event fires
-2. `commission:calculate` Asynq task runs, applies LCO commission rate (configurable per LCO)
+2. `commission:calculate` task runs, applies LCO commission rate (configurable per LCO)
 3. Credit entry posted to `lco_ledger` (separate from subscriber `wallet_ledger`)
 4. Parent ISP dashboard aggregates across all LCOs for consolidated P&L
 
@@ -1095,7 +1095,7 @@ knows.
 **A missing destination is a logged failure, not an error.** A subscriber
 with no email address, or no registered push token, is a normal state — most
 subscribers will never install the app. Returning an error would send the
-Asynq task into retry-and-dead-letter for a condition retrying cannot fix,
+task into retry-and-dead-letter for a condition retrying cannot fix,
 so these are written to `notification_log` as `failed` with a reason and
 return nil. This is the same judgment `PoDHandler` makes with
 `asynq.SkipRetry` for a subscriber with no live session.

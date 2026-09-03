@@ -20,7 +20,7 @@ IDX  ← You are here (master index)
 ├── SAD  03_SAD_System_Architecture.md     11 components, data flows, HA/DR
 │     ├── traces to MDS, DDS, IDD
 │
-├── MDS  04_MDS_Module_Design.md           10 modules, Asynq task catalogue, metrics
+├── MDS  04_MDS_Module_Design.md           10 modules, task catalogue, metrics
 │     ├── traces to DDS, DBD, API, TST
 │
 ├── DDS  05_DDS_Detailed_Design.md         Go code patterns, WhatsApp API, health API, revenue jobs

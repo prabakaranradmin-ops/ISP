@@ -164,7 +164,7 @@ go run scripts/session_hold.go --sessions 20000 --duration 3600s --interim-inter
 #   No goroutine leak (pprof heap stable)
 #   No worker pool starvation (radius_worker_queue_depth < 50 sustained)
 #   RADIUS auth p99 remains ≤ 15ms throughout hold period
-#   Asynq queue depth does not grow unbounded
+#   Task queue depth does not grow unbounded
 ```
 
 ### NFR-PERF-002: API p99 ≤ 200 ms at 500 Concurrent Users
