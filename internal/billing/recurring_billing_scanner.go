@@ -152,10 +152,30 @@ func (s *RecurringBillingScanner) Scan(ctx context.Context) error {
 func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate) error {
 	now := s.now()
 
-	_, err := s.wallet.Post(ctx, PostRequest{
+	// The invoice is computed BEFORE the debit, because its total is what the
+	// subscriber owes.
+	//
+	// plans.price is GST-exclusive, so a renewal costs price + GST. This
+	// previously debited c.PlanPrice while invoicing price + GST on top — so
+	// every renewal collected 18% less than it billed. That is not a rounding
+	// discrepancy: the invoice is what gets declared on GSTR-1, so the
+	// operator was remitting tax on money never collected, and the gap grew
+	// with every cycle.
+	//
+	// Ordering it this way also means a missing GST rate stops the renewal
+	// rather than producing an uninvoiced charge. Refusing to renew is the
+	// safer failure: the subscriber keeps their money and dunning picks them
+	// up, whereas charging without an invoice is money taken with no tax
+	// record behind it.
+	inv, err := s.buildInvoice(ctx, c)
+	if err != nil {
+		return fmt.Errorf("price renewal for subscriber %d: %w", c.SubscriberID, err)
+	}
+
+	_, err = s.wallet.Post(ctx, PostRequest{
 		SubscriberID:   c.SubscriberID,
 		FranchiseID:    c.FranchiseID,
-		Amount:         c.PlanPrice,
+		Amount:         inv.TotalAmount,
 		Direction:      "debit",
 		CounterAccount: AccountRevenueClearing,
 		Description:    fmt.Sprintf("auto-renewal: %s", c.PlanName),
@@ -187,10 +207,10 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 		return fmt.Errorf("extend plan_expiry for subscriber %d: %w", c.SubscriberID, err)
 	}
 
-	if err := s.invoice(ctx, c); err != nil {
+	if err := s.persistInvoice(ctx, inv); err != nil {
 		// The wallet debit above already committed and must not be undone
-		// just because invoicing failed — log for reconciliation rather
-		// than leaving a paid subscriber uncharged on a retry.
+		// just because persisting failed — log for reconciliation rather
+		// than leaving a charged subscriber un-invoiced on a retry.
 		autorenewalInvoiceFailures.Inc()
 		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Msg("billing: auto-renewal invoice failed")
 	}
@@ -213,15 +233,26 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 // plan's volume so the invoice is not silently missing FR-BIL-007's summary,
 // but the "used" half of that summary is a known limitation for the
 // auto-renewal path until that aggregation exists.
-func (s *RecurringBillingScanner) invoice(ctx context.Context, c RenewalCandidate) error {
+// buildInvoice computes the cycle's invoice without persisting it, so renew
+// can debit exactly what the invoice says is owed.
+//
+// Split from persistence deliberately: the total has to be known before the
+// wallet is touched, and building it is pure computation that can fail
+// (a missing GST rate) without any side effect to unwind.
+func (s *RecurringBillingScanner) buildInvoice(ctx context.Context, c RenewalCandidate) (Invoice, error) {
 	rate, err := s.db.GetActiveGstRate(ctx)
 	if err != nil {
-		return fmt.Errorf("get active gst rate: %w", err)
+		return Invoice{}, fmt.Errorf("get active gst rate: %w", err)
 	}
 	inv := CalculateGstInvoice(c.PlanPrice, c.RegisteredState, rate)
 	inv.SubscriberID = c.SubscriberID
 	inv.GbIncluded = c.PlanVolumeGB
 	inv.GbUsed = decimal.Zero
+	return inv, nil
+}
+
+// persistInvoice writes the computed invoice and announces it.
+func (s *RecurringBillingScanner) persistInvoice(ctx context.Context, inv Invoice) error {
 	invoiceID, err := s.db.CreateInvoice(ctx, inv)
 	if err != nil {
 		return fmt.Errorf("create invoice: %w", err)

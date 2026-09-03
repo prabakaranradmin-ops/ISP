@@ -201,7 +201,14 @@ func TestRecurringBillingScanner_RestoresDunningStateImmediately(t *testing.T) {
 func TestRecurringBillingScanner_InvoiceFailureDoesNotUndoTheDebit(t *testing.T) {
 	db := newFakeRenewalScanQuerier()
 	db.states = map[int]billing.DunningState{1: billing.DunningActive}
-	db.gstRateErr = errors.New("gst_rates unavailable")
+	// A *persistence* failure, not a rate failure. The two are no longer the
+	// same thing: the invoice is computed before the debit (its total is what
+	// the subscriber owes), so an unavailable GST rate now stops the renewal
+	// before any money moves — covered by
+	// TestRecurringBillingScanner_MissingGstRateChargesNothing below. What
+	// this test protects is the other half: once the debit has committed, a
+	// failure to write the invoice row must not unwind it.
+	db.createInvoiceErr = errors.New("invoices table unavailable")
 	db.candidates = []billing.RenewalCandidate{{
 		SubscriberID: 1, Username: "sub@isp", RegisteredState: "TN",
 		PlanPrice: decFromString(t, "500.00"), PlanValidityDays: 30, PlanExpiry: scanDay(-1),
@@ -220,6 +227,78 @@ func TestRecurringBillingScanner_InvoiceFailureDoesNotUndoTheDebit(t *testing.T)
 	}
 	if _, ok := db.setExpiryCalls[1]; !ok {
 		t.Error("plan_expiry must still have been extended despite the invoice failure")
+	}
+}
+
+// TestRecurringBillingScanner_ChargesTheTaxInclusiveTotal pins the
+// relationship the billing path got wrong: plans.price is GST-exclusive, so
+// the amount debited must equal the invoice total, not the bare price.
+//
+// It previously debited the price while invoicing price + GST, so every
+// renewal collected 18% less than it billed. That is not a rounding
+// discrepancy — the invoice is what goes on GSTR-1, so the operator remitted
+// tax on money never collected, and the shortfall compounded every cycle.
+func TestRecurringBillingScanner_ChargesTheTaxInclusiveTotal(t *testing.T) {
+	db := newFakeRenewalScanQuerier()
+	db.states = map[int]billing.DunningState{1: billing.DunningActive}
+	db.candidates = []billing.RenewalCandidate{{
+		SubscriberID: 1, Username: "sub@isp", RegisteredState: "TN", // intrastate: 9% + 9%
+		PlanPrice: decFromString(t, "500.00"), PlanValidityDays: 30, PlanExpiry: scanDay(-1),
+		DunningState: billing.DunningActive,
+	}}
+	fakeWallet := newFakeWalletQuerier("1000.00")
+	wallet := billing.NewWalletService(fakeWallet)
+	scanner := billing.NewRecurringBillingScanner(db, wallet)
+	billing.SetRecurringBillingScannerClock(scanner, func() time.Time { return renewalNow })
+
+	if err := scanner.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if len(db.invoiceCalls) != 1 {
+		t.Fatalf("want 1 invoice, got %d", len(db.invoiceCalls))
+	}
+	inv := db.invoiceCalls[0]
+
+	// 500 + 9% + 9% = 590.00
+	if got := inv.TotalAmount.StringFixed(2); got != "590.00" {
+		t.Errorf("invoice total: got %s, want 590.00", got)
+	}
+	if got := fakeWallet.lastPosting.Credit.Amount.StringFixed(2); got != "590.00" {
+		t.Errorf("wallet was debited %s but invoiced %s — the subscriber is billed for tax "+
+			"that was never collected, and the difference is remitted on GSTR-1 out of pocket",
+			got, inv.TotalAmount.StringFixed(2))
+	}
+}
+
+// TestRecurringBillingScanner_MissingGstRateChargesNothing — with no GST rate
+// there is no lawful invoice, and charging without one takes money with no
+// tax record behind it. Refusing to renew leaves the subscriber their balance
+// and lets dunning handle them, which is the recoverable outcome.
+func TestRecurringBillingScanner_MissingGstRateChargesNothing(t *testing.T) {
+	db := newFakeRenewalScanQuerier()
+	db.states = map[int]billing.DunningState{1: billing.DunningActive}
+	db.gstRateErr = errors.New("gst_rates unavailable")
+	db.candidates = []billing.RenewalCandidate{{
+		SubscriberID: 1, Username: "sub@isp", RegisteredState: "TN",
+		PlanPrice: decFromString(t, "500.00"), PlanValidityDays: 30, PlanExpiry: scanDay(-1),
+		DunningState: billing.DunningActive,
+	}}
+	fakeWallet := newFakeWalletQuerier("1000.00")
+	wallet := billing.NewWalletService(fakeWallet)
+	scanner := billing.NewRecurringBillingScanner(db, wallet)
+	billing.SetRecurringBillingScannerClock(scanner, func() time.Time { return renewalNow })
+
+	if err := scanner.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan must not fail the batch: %v", err)
+	}
+	if fakeWallet.postingCalls != 0 {
+		t.Errorf("charged %d time(s) with no GST rate available — money taken with no invoice behind it",
+			fakeWallet.postingCalls)
+	}
+	if _, ok := db.setExpiryCalls[1]; ok {
+		t.Error("plan_expiry was extended without a charge: free service, and the subscriber " +
+			"is no longer a renewal candidate so it would not self-correct")
 	}
 }
 

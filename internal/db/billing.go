@@ -338,6 +338,19 @@ func (s *BillingStore) ListRenewalCandidates(ctx context.Context) ([]billing.Ren
 		   AND s.plan_expiry IS NOT NULL
 		   AND s.plan_expiry <= NOW()
 		   AND s.wallet_balance >= p.price`
+	// The balance test is a coarse pre-filter, not the affordability rule.
+	//
+	// plans.price is GST-exclusive, so a renewal actually costs price + GST
+	// and the scanner debits the invoice total. This still selects on price
+	// alone because that is a strict superset — anyone who cannot afford the
+	// base certainly cannot afford the taxed total — and the precise check
+	// belongs where the money moves: the debit returns ErrInsufficientBalance
+	// and renew() leaves that subscriber for dunning.
+	//
+	// Joining gst_rates here to filter exactly would duplicate the rate
+	// resolution (effective_from ordering and all) in a second place, and a
+	// disagreement between the two would show up as subscribers who are
+	// selected every tick and never renewed.
 
 	rows, err := s.pool.Query(ctx, q)
 	if err != nil {
