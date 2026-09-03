@@ -104,6 +104,38 @@ function Invoke-Sql {
     } finally { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
 }
 
+# ── mockpay wrapper ─────────────────────────────────────────────────────────
+#
+# mockpay exits non-zero on any non-200, and `go run` reports that on stderr.
+# With $ErrorActionPreference = 'Stop' PowerShell turns that into a
+# terminating NativeCommandError, which aborts the run mid-way and hides the
+# result the script was about to assert on. A non-200 is data here, not a
+# script failure, so the preference is relaxed for the call and the exit code
+# is read deliberately.
+function Invoke-Mockpay {
+    param([string[]]$Args = @())
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $all = @('run', './scripts/mockpay',
+                 '-subscriber', "$SubscriberId", '-amount', $Amount,
+                 '-secret', $webhookSecret, '-url', $WebhookUrl) + $Args
+        $out = & go @all 2>&1
+        return [PSCustomObject]@{ Text = ($out -join "`n"); ExitCode = $LASTEXITCODE }
+    } finally { $ErrorActionPreference = $prev }
+}
+
+# Reads the HTTP status mockpay echoed. Asserting on the code rather than on
+# mockpay's own wording matters: it prints "the invalid signature was
+# rejected" for ANY non-200, including a 503 that means the endpoint never
+# examined a signature.
+function Get-StatusCode {
+    param([string]$Text)
+    $m = [regex]::Match($Text, '(?m)^\s*(\d{3})\s')
+    if ($m.Success) { return [int]$m.Groups[1].Value }
+    return 0
+}
+
 Write-Host "`nMoney path verification" -ForegroundColor White
 Write-Host "  subscriber $SubscriberId, amount $Amount`n" -ForegroundColor DarkGray
 
@@ -118,7 +150,31 @@ if (-not $webhookSecret) {
     Restart-Service ISPBSSApi
 "@
 }
-Add-Result "RAZORPAY_WEBHOOK_SECRET configured" $true ""
+Add-Result "RAZORPAY_WEBHOOK_SECRET present in app.env" $true ""
+
+# app.env is what the service will read on its NEXT start. What matters is
+# what the RUNNING one loaded, and the two diverge exactly when someone has
+# just added the secret — which is the common case for a first run.
+#
+# Probed by sending a deliberately unsigned request: a configured endpoint
+# answers 400 (signature rejected), an unconfigured one 503 (refuses before
+# looking). Without this, the run continues and the signature check passes
+# against a 503, certifying verification on an endpoint doing none.
+$probe = Invoke-Mockpay -Args @('-bad-signature')
+$probeStatus = Get-StatusCode $probe.Text
+if ($probeStatus -eq 503) {
+    Abort "The RUNNING api_service has no webhook secret loaded — it answers 503, refusing before it examines any signature. The value in app.env has not reached the process." @"
+    (elevated PowerShell)
+    Restart-Service ISPBSSApi
+
+    app.env is read at startup, so a secret added since the service last
+    started is not in effect yet.
+"@
+}
+if ($probeStatus -eq 0) {
+    Abort "Could not reach $WebhookUrl — no HTTP status came back." "Check that ISPBSSApi is running, and that -url is right."
+}
+Add-Result "Running service has the secret loaded (probe: HTTP $probeStatus)" ($probeStatus -eq 400) "503 would mean unconfigured; 400 means it checked and refused"
 
 if (-not $SkipGL) {
     $glAccounts = [int](Invoke-Sql "SELECT count(*) FROM chart_of_accounts WHERE code IN ('5200','2100');")
@@ -196,11 +252,18 @@ try {
 
     # This runs FIRST on purpose. If a forged payload is accepted, anyone on
     # the network can credit any wallet, and every later assertion is moot.
-    $bad = & go run ./scripts/mockpay -subscriber $SubscriberId -amount $Amount `
-              -secret $webhookSecret -bad-signature -url $WebhookUrl 2>&1
-    $badText = $bad -join "`n"
-    $rejected = $badText -match '400|401|invalid signature'
-    Add-Result "Forged signature rejected" $rejected ($badText -split "`n" | Where-Object { $_ -match '^\d{3} ' } | Select-Object -First 1)
+    $bad = Invoke-Mockpay -Args @('-bad-signature')
+    $badStatus = Get-StatusCode $bad.Text
+
+    # 400 specifically, not merely "not 200".
+    #
+    # An earlier version of this check accepted any rejection and reported a
+    # PASS against a 503 — which means the endpoint refused before looking at
+    # the signature at all, because RAZORPAY_WEBHOOK_SECRET was unset in the
+    # RUNNING process. That is the precise failure this script exists to
+    # catch, so accepting it here made the script worse than useless: it
+    # certified signature verification on an endpoint doing none.
+    Add-Result "Forged signature rejected with 400" ($badStatus -eq 400) "HTTP $badStatus"
 
     $balanceAfterBad = [decimal](Invoke-Sql "SELECT wallet_balance FROM subscribers WHERE id = $SubscriberId;")
     Add-Result "Forged payload moved no money" ($balanceAfterBad -eq $balanceBefore) "before=$balanceBefore after=$balanceAfterBad"
@@ -208,11 +271,9 @@ try {
     # ── 2. A valid signature must be accepted ───────────────────────────────
     Section "2. Valid payment"
     $paymentId = "pay_verify$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
-    $good = & go run ./scripts/mockpay -subscriber $SubscriberId -amount $Amount `
-               -secret $webhookSecret -payment-id $paymentId -url $WebhookUrl 2>&1
-    $goodText = $good -join "`n"
-    $accepted = $goodText -match '200 OK'
-    Add-Result "Signed payload accepted" $accepted ($goodText -split "`n" | Where-Object { $_ -match '^\d{3} ' } | Select-Object -First 1)
+    $good = Invoke-Mockpay -Args @('-payment-id', $paymentId)
+    $goodStatus = Get-StatusCode $good.Text
+    Add-Result "Signed payload accepted" ($goodStatus -eq 200) "HTTP $goodStatus"
 
     Start-Sleep -Seconds 2  # commission settlement and the receipt enqueue are post-commit
 
@@ -240,8 +301,7 @@ SELECT COALESCE(SUM(CASE WHEN entry_type='credit' THEN amount ELSE -amount END),
 
     # Razorpay retries webhooks. A replay must not credit twice — this is the
     # single most expensive bug this path can have.
-    $null = & go run ./scripts/mockpay -subscriber $SubscriberId -amount $Amount `
-               -secret $webhookSecret -payment-id $paymentId -url $WebhookUrl 2>&1
+    $null = Invoke-Mockpay -Args @('-payment-id', $paymentId)
     Start-Sleep -Seconds 1
     $balanceReplay = [decimal](Invoke-Sql "SELECT wallet_balance FROM subscribers WHERE id = $SubscriberId;")
     Add-Result "Replayed payment did not double-credit" ($balanceReplay -eq $balanceAfter) "after replay=$balanceReplay (want $balanceAfter)"
