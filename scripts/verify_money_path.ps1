@@ -127,7 +127,7 @@ if (-not $SkipGL) {
     (elevated PowerShell)
     Stop-Service ISPBSSApi, ISPBSSAaaCore -Force
     `$pw  = (Get-Content "$ConfigDir\postgres_superuser.txt" -Raw).Trim()
-    & "C:\Program Files\ISP BSS\bootstrap.exe" -superuser-dsn "postgres://postgres:`$pw@127.0.0.1:5432/$dbName?sslmode=disable" -config-dir "$ConfigDir"
+    & "C:\Program Files\ISP BSS\bootstrap.exe" -superuser-dsn "postgres://postgres:`$pw@127.0.0.1:5432/${dbName}?sslmode=disable" -config-dir "$ConfigDir"
     Start-Service ISPBSSApi, ISPBSSAaaCore
 
     Or re-run with -SkipGL to verify only the wallet and notification halves.
@@ -153,6 +153,13 @@ if (-not $SkipNotifications) {
     # not reach an already-running process. Checked rather than assumed:
     # otherwise the notification assertion below fails for a reason that has
     # nothing to do with the code under test.
+    #
+    # Note the limit of this check: it reads app.env, which is what the
+    # service will use on its NEXT start, not necessarily what the running
+    # one loaded. Adding the variable and running this script without
+    # restarting ISPBSSAaaCore in between passes this check and then fails
+    # the delivery assertion — so the failure text below says so explicitly
+    # rather than leaving it looking like a code fault.
     $mockConfigured = Get-EnvValue 'MOCK_GATEWAY_URL'
     if (-not $mockConfigured) {
         Write-Host "  MOCK_GATEWAY_URL is not in app.env." -ForegroundColor Yellow
@@ -273,7 +280,14 @@ SELECT count(*) FROM (
             if ($deliveries.Count -gt $notifBefore) { break }
         }
         $new = $deliveries.Count - $notifBefore
-        Add-Result "A receipt notification was dispatched" ($new -gt 0) "$new new delivery/ies at the gateway"
+        $detail = if ($new -gt 0) {
+            "$new new delivery/ies at the gateway"
+        } else {
+            "nothing reached the gateway in 30s. If MOCK_GATEWAY_URL was added to " +
+            "app.env without restarting ISPBSSAaaCore since, the daemon is still " +
+            "sending to the real provider (or nowhere) and this is configuration, not code."
+        }
+        Add-Result "A receipt notification was dispatched" ($new -gt 0) $detail
 
         if ($new -gt 0) {
             $providers = ($deliveries | Select-Object -Last $new | ForEach-Object { $_.provider } | Sort-Object -Unique) -join ', '
