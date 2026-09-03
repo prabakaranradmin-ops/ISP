@@ -127,12 +127,28 @@ psql -d isp_bss_oss -c "SELECT status, count(*) FROM jobqueue_tasks
 ### 12.2.4 Extend Grace Period for a Subscriber
 
 ```bash
-# Update plan_expiry directly via API
+# Requires billing_admin or isp_owner (the route's own gate), not any staff token.
 curl -X PATCH https://api.yourdomain.com/api/v1/subscribers/{id} \
-  -H "Authorization: Bearer {BILLING_JWT_TOKEN}" \
+  -H "Authorization: Bearer {BILLING_OR_OWNER_JWT}" \
   -H "Content-Type: application/json" \
-  -d '{"plan_expiry": "2025-02-15T23:59:59Z"}'
+  -d '{"plan_expiry": "2026-02-15T23:59:59Z"}'
 ```
+
+Confirm it actually applied — the response echoes the subscriber, so check
+the field rather than trusting the 200:
+
+```bash
+curl -s ... | grep -o '"plan_expiry":"[^"]*"'
+```
+
+> This procedure was documented for some time before the endpoint supported
+> it. `plan_expiry` was not among the fields the handler decoded, and unknown
+> JSON fields were silently discarded — so the call returned 200 with the
+> subscriber unchanged, and an operator following this runbook would believe
+> a grace period had been extended for a customer who then got suspended on
+> schedule anyway. The field is now supported, and the handler rejects
+> unknown fields with a 400 rather than ignoring them, so a future
+> divergence of this kind fails loudly instead of silently.
 
 ---
 

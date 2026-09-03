@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
@@ -29,7 +30,7 @@ func (s *stubDB) GetSubscriberByID(_ context.Context, id int) (*api.SubscriberRe
 	return &api.SubscriberRecord{ID: id, Username: "test", Status: "active"}, nil
 }
 
-func (s *stubDB) UpdateSubscriber(_ context.Context, id int, _ *int, _ *string) (*api.SubscriberRecord, error) {
+func (s *stubDB) UpdateSubscriber(_ context.Context, id int, _ *int, _ *string, _ *time.Time) (*api.SubscriberRecord, error) {
 	return &api.SubscriberRecord{ID: id, Status: "active"}, nil
 }
 

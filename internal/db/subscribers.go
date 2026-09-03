@@ -183,22 +183,26 @@ func (s *APIStore) GetSubscriberByUsername(ctx context.Context, username string)
 //
 // The leading ctx CTE attributes any status change to the calling operator for
 // the migration-031 capture trigger (see actor.go).
-func (s *APIStore) UpdateSubscriber(ctx context.Context, id int, planID *int, status *string) (*api.SubscriberRecord, error) {
+// planExpiry extends or shortens the billed period — OPS §12.2.4's "extend
+// grace period" procedure. Nil leaves it untouched, which is what every
+// caller that only changes plan or status passes.
+func (s *APIStore) UpdateSubscriber(ctx context.Context, id int, planID *int, status *string, planExpiry *time.Time) (*api.SubscriberRecord, error) {
 	const q = `
 		WITH ctx AS (
-			SELECT set_config('app.actor', $4, true)         AS actor,
+			SELECT set_config('app.actor', $5, true)         AS actor,
 			       set_config('app.change_reason', 'operator', true) AS reason
 		), upd AS (
 			UPDATE subscribers
-			SET plan_id = COALESCE($2, plan_id),
-			    status  = COALESCE($3, status)
+			SET plan_id     = COALESCE($2, plan_id),
+			    status      = COALESCE($3, status),
+			    plan_expiry = COALESCE($4, plan_expiry)
 			FROM ctx
 			WHERE subscribers.id = $1 AND ctx.actor IS NOT NULL
 			RETURNING subscribers.*
 		)
 		SELECT ` + apiSubscriberColumns + ` FROM upd s`
 
-	rec, err := scanAPISubscriber(s.pool.QueryRow(ctx, q, id, planID, status, actorFromContext(ctx)))
+	rec, err := scanAPISubscriber(s.pool.QueryRow(ctx, q, id, planID, status, planExpiry, actorFromContext(ctx)))
 	if isNoRows(err) {
 		return nil, nil
 	}

@@ -89,7 +89,7 @@ func (s *itSubscriberStore) GetSubscriberByID(_ context.Context, id int) (*api.S
 	return nil, nil
 }
 
-func (s *itSubscriberStore) UpdateSubscriber(ctx context.Context, id int, _ *int, _ *string) (*api.SubscriberRecord, error) {
+func (s *itSubscriberStore) UpdateSubscriber(ctx context.Context, id int, _ *int, _ *string, _ *time.Time) (*api.SubscriberRecord, error) {
 	return s.GetSubscriberByID(ctx, id)
 }
 

@@ -163,7 +163,7 @@ func TestFR_RPT_001_TransitionCapturedWithActor(t *testing.T) {
 
 	opCtx := middleware.WithSubject(ctx, "csr:meena")
 	suspended := "soft_suspended"
-	if _, err := database.API().UpdateSubscriber(opCtx, 1, nil, &suspended); err != nil {
+	if _, err := database.API().UpdateSubscriber(opCtx, 1, nil, &suspended, nil); err != nil {
 		t.Fatalf("UpdateSubscriber: %v", err)
 	}
 

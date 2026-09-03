@@ -65,7 +65,7 @@ func TestFR_RPT_001_GrowthSeparatesChurnFromSuspension(t *testing.T) {
 
 	opCtx := middleware.WithSubject(ctx, "csr:test")
 	suspended := "hard_suspended"
-	if _, err := database.API().UpdateSubscriber(opCtx, 2, nil, &suspended); err != nil {
+	if _, err := database.API().UpdateSubscriber(opCtx, 2, nil, &suspended, nil); err != nil {
 		t.Fatalf("suspend: %v", err)
 	}
 	if _, err := database.API().TerminateSubscriber(opCtx, 3); err != nil {

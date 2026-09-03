@@ -66,7 +66,7 @@ type CreateSubscriberRequest struct {
 type SubscriberQuerier interface {
 	CreateSubscriber(ctx context.Context, sub SubscriberRecord, passwordHash string) (*SubscriberRecord, error)
 	GetSubscriberByID(ctx context.Context, id int) (*SubscriberRecord, error)
-	UpdateSubscriber(ctx context.Context, id int, planID *int, status *string) (*SubscriberRecord, error)
+	UpdateSubscriber(ctx context.Context, id int, planID *int, status *string, planExpiry *time.Time) (*SubscriberRecord, error)
 	GetSubscriberByUsername(ctx context.Context, username string) (*SubscriberRecord, error)
 }
 
@@ -809,18 +809,32 @@ func (h *Handler) UpdateSubscriber(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		PlanID *int    `json:"plan_id"`
 		Status *string `json:"status"`
+		// PlanExpiry backs OPS §12.2.4's grace-period extension. It was
+		// documented as a supported field long before it was one: the
+		// decoder below ignored anything it did not recognise, so that
+		// procedure returned 200 with the subscriber unchanged and an
+		// operator following the runbook during an incident would believe
+		// they had extended a customer who then got suspended anyway.
+		PlanExpiry *time.Time `json:"plan_expiry"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	// DisallowUnknownFields is what stops that recurring. A silently
+	// discarded field is worse than a rejected one in both directions — the
+	// caller thinks the change landed, and nothing anywhere records that it
+	// did not. A 400 naming the field is a bad request; a 200 that did
+	// nothing is a lie.
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", err.Error())
 		return
 	}
-	updated, err := h.db.UpdateSubscriber(r.Context(), id, body.PlanID, body.Status)
+	updated, err := h.db.UpdateSubscriber(r.Context(), id, body.PlanID, body.Status, body.PlanExpiry)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "update failed")
 		return
 	}
 	middleware.Audit(r.Context(), "subscriber.update", strconv.Itoa(id), map[string]any{
-		"plan_id": body.PlanID, "status": body.Status,
+		"plan_id": body.PlanID, "status": body.Status, "plan_expiry": body.PlanExpiry,
 	})
 	// Only on an actual status change. A plan-only edit is not a lifecycle
 	// event, and emitting one would have partners reacting to a suspension

@@ -168,7 +168,7 @@ func TestFR_SUB_001_APIStore_SubscriberLifecycle(t *testing.T) {
 
 	t.Run("partial update leaves unspecified fields alone", func(t *testing.T) {
 		newPlan := 2
-		updated, err := store.UpdateSubscriber(ctx, created.ID, &newPlan, nil)
+		updated, err := store.UpdateSubscriber(ctx, created.ID, &newPlan, nil, nil)
 		if err != nil {
 			t.Fatalf("UpdateSubscriber: %v", err)
 		}
@@ -180,7 +180,7 @@ func TestFR_SUB_001_APIStore_SubscriberLifecycle(t *testing.T) {
 		}
 
 		suspended := "soft_suspended"
-		updated, err = store.UpdateSubscriber(ctx, created.ID, nil, &suspended)
+		updated, err = store.UpdateSubscriber(ctx, created.ID, nil, &suspended, nil)
 		if err != nil {
 			t.Fatalf("UpdateSubscriber status: %v", err)
 		}

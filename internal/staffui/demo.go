@@ -206,7 +206,7 @@ func (h *Handler) LoadDemoData(w http.ResponseWriter, r *http.Request) {
 
 		if ds.setStatus != "" {
 			status := ds.setStatus
-			if _, err := h.subscribers.UpdateSubscriber(ctx, created.ID, nil, &status); err != nil {
+			if _, err := h.subscribers.UpdateSubscriber(ctx, created.ID, nil, &status, nil); err != nil {
 				log.Error().Err(err).Str("username", ds.username).Msg("staffui: demo subscriber status change failed")
 			}
 		}

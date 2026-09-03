@@ -88,7 +88,7 @@ type SubscriberQuerier interface {
 	// something in every status to show a client. *db.APIStore already
 	// implements this exact signature for internal/api, so exposing it here
 	// costs no new store code.
-	UpdateSubscriber(ctx context.Context, id int, planID *int, status *string) (*api.SubscriberRecord, error)
+	UpdateSubscriber(ctx context.Context, id int, planID *int, status *string, planExpiry *time.Time) (*api.SubscriberRecord, error)
 }
 
 // SessionReader reports whether a subscriber is online right now. Live session

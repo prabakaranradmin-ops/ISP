@@ -145,7 +145,9 @@ func (h *Handler) BulkUpdateStatus(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) UpdateStatusForMany(ctx context.Context, ids []int, status string) []BulkResult {
 	results := make([]BulkResult, 0, len(ids))
 	for _, id := range ids {
-		updated, err := h.db.UpdateSubscriber(ctx, id, nil, &status)
+		// nil plan_expiry: a bulk suspend/resume changes status only and must
+		// never move anyone's billed period as a side effect.
+		updated, err := h.db.UpdateSubscriber(ctx, id, nil, &status, nil)
 		if err != nil {
 			results = append(results, BulkResult{SubscriberID: id, Error: err.Error()})
 			continue
