@@ -90,12 +90,13 @@ func (h *Handler) RazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	amount := decimal.NewFromInt(entity.Amount).Div(decimal.NewFromInt(100))
-	if _, err := h.walletSvc.Recharge(r.Context(), billing.RechargeRequest{
+	tx, err := h.walletSvc.Recharge(r.Context(), billing.RechargeRequest{
 		SubscriberID:     subscriberID,
 		Amount:           amount,
 		TransactionToken: entity.ID,
 		Description:      "recharge via razorpay webhook",
-	}); err != nil {
+	})
+	if err != nil {
 		log.Error().Err(err).Str("payment_id", entity.ID).Int("subscriber_id", subscriberID).
 			Msg("api: razorpay webhook credit failed")
 		// Non-2xx tells Razorpay to retry — appropriate here since the
@@ -107,6 +108,17 @@ func (h *Handler) RazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 	if h.franchises != nil {
 		revenue.SettleCommissionForRecharge(r.Context(), h.franchises, subscriberID, amount, entity.ID)
 	}
+
+	// The receipt FR-NOTIF-004 asks for ("on successful wallet recharge").
+	//
+	// This was missing here while the manual staff-recharge path in
+	// routes.go had it, which is backwards: a subscriber whose payment a
+	// CSR keyed in got a confirmation, and one who paid through the gateway
+	// — the path every real customer uses — got silence. It also suppressed
+	// FR-NOTIF-006's "you are back online" message for exactly the people
+	// most likely to need it, since paying to clear a suspension is what
+	// the gateway is for.
+	h.enqueuePaymentReceipt(r.Context(), subscriberID, amount.StringFixed(2), tx.BalanceAfter.String())
 
 	// Emitted only after the wallet credit committed. Publishing before it
 	// would tell a partner money arrived that a rollback then unwound.

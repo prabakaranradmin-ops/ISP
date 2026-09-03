@@ -1,0 +1,317 @@
+﻿<#
+.SYNOPSIS
+    End-to-end verification of the money path: signed webhook -> wallet ->
+    general ledger -> subscriber notification.
+
+.DESCRIPTION
+    Drives a simulated Razorpay payment through the running install and
+    asserts what actually happened in the database and at the notification
+    gateway, rather than trusting an HTTP 200.
+
+    WHY IT CHECKS PRECONDITIONS FIRST
+
+    Most of what this script asserts can fail *silently* on a system that is
+    not fully deployed: the GL posts nothing if migration 045 has not run,
+    notifications reach nobody if MOCK_GATEWAY_URL was set after the service
+    started, and the webhook returns 503 if RAZORPAY_WEBHOOK_SECRET is
+    absent. A script that reported PASS in any of those states would be
+    worse than no script — so it refuses to run instead, naming what is
+    missing.
+
+    NOTHING HERE IS MOCKED EXCEPT THE FACT THAT MONEY MOVED
+
+    Razorpay signs its webhooks with a secret this deployment chooses, so a
+    correctly-signed payload is indistinguishable from a real one to the
+    receiving code. Signature verification, the double-entry wallet credit,
+    franchise commission settlement, GL posting and the receipt notification
+    all run for real.
+
+.PARAMETER SubscriberId
+    Subscriber to credit. Default 14 (chrtest).
+
+.PARAMETER Amount
+    Rupees. Default 599.00.
+
+.EXAMPLE
+    pwsh scripts/verify_money_path.ps1
+    pwsh scripts/verify_money_path.ps1 -SubscriberId 14 -Amount 250.00 -SkipNotifications
+#>
+[CmdletBinding()]
+param(
+    [int]    $SubscriberId      = 14,
+    [string] $Amount            = '599.00',
+    [int]    $GatewayPort       = 9999,
+    [string] $WebhookUrl        = 'https://localhost/webhooks/razorpay',
+    [string] $ConfigDir         = 'C:\ProgramData\ISP BSS\config',
+    [string] $PgBin             = 'C:\Program Files\ISP BSS\pgsql\bin\psql.exe',
+    [switch] $SkipNotifications,
+    [switch] $SkipGL
+)
+
+$ErrorActionPreference = 'Stop'
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+
+# ── Result tracking ─────────────────────────────────────────────────────────
+$script:Checks = @()
+function Add-Result {
+    param([string]$Name, [bool]$Ok, [string]$Detail)
+    $script:Checks += [PSCustomObject]@{ Check = $Name; Ok = $Ok; Detail = $Detail }
+    $mark = if ($Ok) { 'PASS' } else { 'FAIL' }
+    $colour = if ($Ok) { 'Green' } else { 'Red' }
+    Write-Host ("  [{0}] {1}" -f $mark, $Name) -ForegroundColor $colour
+    if ($Detail) { Write-Host ("         {0}" -f $Detail) -ForegroundColor DarkGray }
+}
+function Section { param([string]$T) Write-Host "`n$T" -ForegroundColor Cyan }
+function Abort {
+    param([string]$Why, [string]$Fix)
+    Write-Host "`nPRECONDITION NOT MET" -ForegroundColor Yellow
+    Write-Host "  $Why"
+    if ($Fix) { Write-Host "`n  Fix:`n$Fix" -ForegroundColor Gray }
+    Write-Host "`nRefusing to run: a PASS from here would not mean what it says.`n" -ForegroundColor Yellow
+    exit 2
+}
+
+# ── Database helper ─────────────────────────────────────────────────────────
+$envPath = Join-Path $ConfigDir 'app.env'
+if (-not (Test-Path $envPath)) { Abort "Cannot read $envPath" "Run this on the machine where the stack is installed." }
+
+$envText = Get-Content $envPath -Raw
+function Get-EnvValue {
+    param([string]$Key)
+    $m = [regex]::Match($envText, "(?m)^$Key=(.*)$")
+    if ($m.Success) { return $m.Groups[1].Value.Trim() }
+    return ''
+}
+
+$dbDsn = Get-EnvValue 'DB_DSN'
+if (-not $dbDsn) { Abort "DB_DSN missing from app.env" }
+# postgres://user:pass@host:port/db?params
+$dsnMatch = [regex]::Match($dbDsn, 'postgres://([^:]+):([^@]+)@([^:]+):(\d+)/([^?]+)')
+if (-not $dsnMatch.Success) { Abort "Could not parse DB_DSN" }
+$dbUser = $dsnMatch.Groups[1].Value
+$dbPass = $dsnMatch.Groups[2].Value
+$dbHost = $dsnMatch.Groups[3].Value
+$dbPort = $dsnMatch.Groups[4].Value
+$dbName = $dsnMatch.Groups[5].Value
+
+function Invoke-Sql {
+    param([string]$Sql)
+    $env:PGPASSWORD = $dbPass
+    try {
+        $out = & $PgBin -h $dbHost -p $dbPort -U $dbUser -d $dbName -tAc $Sql 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "psql failed: $out" }
+        return ($out | Where-Object { $_ -ne '' })
+    } finally { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
+}
+
+Write-Host "`nMoney path verification" -ForegroundColor White
+Write-Host "  subscriber $SubscriberId, amount $Amount`n" -ForegroundColor DarkGray
+
+# ── Preconditions ───────────────────────────────────────────────────────────
+Section "Preconditions"
+
+$webhookSecret = Get-EnvValue 'RAZORPAY_WEBHOOK_SECRET'
+if (-not $webhookSecret) {
+    Abort "RAZORPAY_WEBHOOK_SECRET is not set in app.env, so the webhook answers 503 and refuses every payload." @"
+    (elevated PowerShell)
+    Add-Content "$envPath" "``nRAZORPAY_WEBHOOK_SECRET=dev-webhook-secret-change-before-production"
+    Restart-Service ISPBSSApi
+"@
+}
+Add-Result "RAZORPAY_WEBHOOK_SECRET configured" $true ""
+
+if (-not $SkipGL) {
+    $glAccounts = [int](Invoke-Sql "SELECT count(*) FROM chart_of_accounts WHERE code IN ('5200','2100');")
+    if ($glAccounts -lt 2) {
+        Abort "Migration 045 is not applied: chart-of-accounts codes 5200/2100 are missing, so GL Phase 2 cannot post." @"
+    (elevated PowerShell)
+    Stop-Service ISPBSSApi, ISPBSSAaaCore -Force
+    `$pw  = (Get-Content "$ConfigDir\postgres_superuser.txt" -Raw).Trim()
+    & "C:\Program Files\ISP BSS\bootstrap.exe" -superuser-dsn "postgres://postgres:`$pw@127.0.0.1:5432/$dbName?sslmode=disable" -config-dir "$ConfigDir"
+    Start-Service ISPBSSApi, ISPBSSAaaCore
+
+    Or re-run with -SkipGL to verify only the wallet and notification halves.
+"@
+    }
+    Add-Result "Migration 045 applied (GL accounts present)" $true ""
+}
+
+$gstRates = [int](Invoke-Sql "SELECT count(*) FROM gst_rates;")
+Add-Result "GST rate configured" ($gstRates -gt 0) "$gstRates rate row(s) — invoices cannot be raised with none"
+
+$subExists = [int](Invoke-Sql "SELECT count(*) FROM subscribers WHERE id = $SubscriberId;")
+if ($subExists -ne 1) { Abort "Subscriber $SubscriberId does not exist." "Pass -SubscriberId for one that does." }
+
+# ── Mock gateway ────────────────────────────────────────────────────────────
+$gatewayProc = $null
+$gatewayUrl  = "http://127.0.0.1:$GatewayPort"
+
+if (-not $SkipNotifications) {
+    Section "Mock gateway"
+
+    # The services read MOCK_GATEWAY_URL at startup, so setting it here would
+    # not reach an already-running process. Checked rather than assumed:
+    # otherwise the notification assertion below fails for a reason that has
+    # nothing to do with the code under test.
+    $mockConfigured = Get-EnvValue 'MOCK_GATEWAY_URL'
+    if (-not $mockConfigured) {
+        Write-Host "  MOCK_GATEWAY_URL is not in app.env." -ForegroundColor Yellow
+        Write-Host "  Notification delivery cannot be observed; skipping that half." -ForegroundColor Yellow
+        Write-Host "  To enable it (elevated), then restart ISPBSSAaaCore:" -ForegroundColor DarkGray
+        Write-Host "    Add-Content `"$envPath`" `"``nMOCK_GATEWAY_URL=$gatewayUrl`"" -ForegroundColor DarkGray
+        $SkipNotifications = $true
+    } else {
+        $gatewayProc = Start-Process -FilePath 'go' `
+            -ArgumentList @('run', './cmd/mockgateway', '-addr', "127.0.0.1:$GatewayPort") `
+            -WorkingDirectory $RepoRoot -PassThru -WindowStyle Hidden
+        Start-Sleep -Seconds 4
+        try {
+            $null = Invoke-RestMethod -Uri "$gatewayUrl/_deliveries" -TimeoutSec 5
+            Add-Result "Mock gateway listening on $GatewayPort" $true ""
+        } catch {
+            Add-Result "Mock gateway listening on $GatewayPort" $false $_.Exception.Message
+            $SkipNotifications = $true
+        }
+    }
+}
+
+try {
+    # ── Baseline ────────────────────────────────────────────────────────────
+    Section "Baseline"
+    $balanceBefore = [decimal](Invoke-Sql "SELECT wallet_balance FROM subscribers WHERE id = $SubscriberId;")
+    $ledgerBefore  = [int](Invoke-Sql "SELECT count(*) FROM wallet_ledgers WHERE subscriber_id = $SubscriberId;")
+    $glBefore      = if ($SkipGL) { 0 } else { [int](Invoke-Sql "SELECT count(*) FROM gl_journal_entries;") }
+    $notifBefore   = if ($SkipNotifications) { 0 } else { (Invoke-RestMethod -Uri "$gatewayUrl/_deliveries").Count }
+    Write-Host "  wallet=$balanceBefore  ledger_rows=$ledgerBefore  gl_entries=$glBefore" -ForegroundColor DarkGray
+
+    # ── 1. An invalid signature must be rejected ────────────────────────────
+    Section "1. Invalid signature"
+
+    # This runs FIRST on purpose. If a forged payload is accepted, anyone on
+    # the network can credit any wallet, and every later assertion is moot.
+    $bad = & go run ./scripts/mockpay -subscriber $SubscriberId -amount $Amount `
+              -secret $webhookSecret -bad-signature -url $WebhookUrl 2>&1
+    $badText = $bad -join "`n"
+    $rejected = $badText -match '400|401|invalid signature'
+    Add-Result "Forged signature rejected" $rejected ($badText -split "`n" | Where-Object { $_ -match '^\d{3} ' } | Select-Object -First 1)
+
+    $balanceAfterBad = [decimal](Invoke-Sql "SELECT wallet_balance FROM subscribers WHERE id = $SubscriberId;")
+    Add-Result "Forged payload moved no money" ($balanceAfterBad -eq $balanceBefore) "before=$balanceBefore after=$balanceAfterBad"
+
+    # ── 2. A valid signature must be accepted ───────────────────────────────
+    Section "2. Valid payment"
+    $paymentId = "pay_verify$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+    $good = & go run ./scripts/mockpay -subscriber $SubscriberId -amount $Amount `
+               -secret $webhookSecret -payment-id $paymentId -url $WebhookUrl 2>&1
+    $goodText = $good -join "`n"
+    $accepted = $goodText -match '200 OK'
+    Add-Result "Signed payload accepted" $accepted ($goodText -split "`n" | Where-Object { $_ -match '^\d{3} ' } | Select-Object -First 1)
+
+    Start-Sleep -Seconds 2  # commission settlement and the receipt enqueue are post-commit
+
+    # ── 3. Wallet ───────────────────────────────────────────────────────────
+    Section "3. Wallet"
+    $balanceAfter = [decimal](Invoke-Sql "SELECT wallet_balance FROM subscribers WHERE id = $SubscriberId;")
+    $expected     = $balanceBefore + [decimal]$Amount
+    Add-Result "Balance credited by $Amount" ($balanceAfter -eq $expected) "before=$balanceBefore after=$balanceAfter expected=$expected"
+
+    # Double entry: one recharge writes two rows, and they must offset.
+    $ledgerAfter = [int](Invoke-Sql "SELECT count(*) FROM wallet_ledgers WHERE subscriber_id = $SubscriberId;")
+    Add-Result "Two ledger legs written" (($ledgerAfter - $ledgerBefore) -eq 2) "added $($ledgerAfter - $ledgerBefore) row(s)"
+
+    $legSum = Invoke-Sql @"
+SELECT COALESCE(SUM(CASE WHEN entry_type='credit' THEN amount ELSE -amount END),0)
+  FROM wallet_ledgers
+ WHERE subscriber_id = $SubscriberId AND transaction_token = '$paymentId';
+"@
+    # The token is on the credit leg only (idx_wallet_token is unique over
+    # non-null tokens), so this is the credit itself rather than a net of two.
+    Add-Result "Credit leg carries the payment id" ([decimal]$legSum -eq [decimal]$Amount) "token leg = $legSum"
+
+    # ── 4. Idempotency ──────────────────────────────────────────────────────
+    Section "4. Idempotency"
+
+    # Razorpay retries webhooks. A replay must not credit twice — this is the
+    # single most expensive bug this path can have.
+    $null = & go run ./scripts/mockpay -subscriber $SubscriberId -amount $Amount `
+               -secret $webhookSecret -payment-id $paymentId -url $WebhookUrl 2>&1
+    Start-Sleep -Seconds 1
+    $balanceReplay = [decimal](Invoke-Sql "SELECT wallet_balance FROM subscribers WHERE id = $SubscriberId;")
+    Add-Result "Replayed payment did not double-credit" ($balanceReplay -eq $balanceAfter) "after replay=$balanceReplay (want $balanceAfter)"
+
+    # ── 5. General ledger ───────────────────────────────────────────────────
+    if (-not $SkipGL) {
+        Section "5. General ledger"
+        $glAfter = [int](Invoke-Sql "SELECT count(*) FROM gl_journal_entries;")
+        Add-Result "A journal entry was posted" ($glAfter -gt $glBefore) "entries $glBefore -> $glAfter"
+
+        # The invariant that matters. trg_gl_journal_balanced enforces it at
+        # the database, so a failure here means the trigger is missing rather
+        # than that the posting is merely wrong.
+        $unbalanced = [int](Invoke-Sql @"
+SELECT count(*) FROM (
+  SELECT journal_entry_id FROM gl_journal_lines
+  GROUP BY journal_entry_id HAVING SUM(debit) <> SUM(credit)
+) t;
+"@)
+        Add-Result "Every journal entry balances" ($unbalanced -eq 0) "$unbalanced unbalanced entr(y/ies)"
+
+        $walletEntry = [int](Invoke-Sql "SELECT count(*) FROM gl_journal_entries WHERE source_type = 'wallet_ledger';")
+        Add-Result "Posted against the wallet source type" ($walletEntry -gt 0) "$walletEntry wallet_ledger entr(y/ies)"
+    }
+
+    # ── 6. Notifications ────────────────────────────────────────────────────
+    if (-not $SkipNotifications) {
+        Section "6. Notifications"
+
+        # The receipt is enqueued, then delivered by radiusd's worker pool —
+        # so this is genuinely asynchronous and needs a moment.
+        $deliveries = @()
+        for ($i = 0; $i -lt 15; $i++) {
+            Start-Sleep -Seconds 2
+            $deliveries = @(Invoke-RestMethod -Uri "$gatewayUrl/_deliveries")
+            if ($deliveries.Count -gt $notifBefore) { break }
+        }
+        $new = $deliveries.Count - $notifBefore
+        Add-Result "A receipt notification was dispatched" ($new -gt 0) "$new new delivery/ies at the gateway"
+
+        if ($new -gt 0) {
+            $providers = ($deliveries | Select-Object -Last $new | ForEach-Object { $_.provider } | Sort-Object -Unique) -join ', '
+            Write-Host "         providers: $providers" -ForegroundColor DarkGray
+        }
+    }
+
+} finally {
+    if ($gatewayProc) {
+        Section "Teardown"
+        # `go run` spawns the built binary as a child, so killing the wrapper
+        # alone leaves the listener holding the port.
+        Get-CimInstance Win32_Process -Filter "ParentProcessId = $($gatewayProc.Id)" -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Stop-Process -Id $gatewayProc.Id -Force -ErrorAction SilentlyContinue
+        Get-NetTCPConnection -LocalPort $GatewayPort -State Listen -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+        Write-Host "  mock gateway stopped" -ForegroundColor DarkGray
+    }
+}
+
+# ── Summary ─────────────────────────────────────────────────────────────────
+$passed = @($script:Checks | Where-Object Ok).Count
+$failed = @($script:Checks | Where-Object { -not $_.Ok }).Count
+
+Write-Host "`n────────────────────────────────────────────────" -ForegroundColor White
+if ($failed -eq 0) {
+    Write-Host " MONEY PATH VERIFIED — $passed checks passed" -ForegroundColor Green
+    Write-Host " Signed webhook -> wallet -> ledger" -NoNewline -ForegroundColor DarkGray
+    if (-not $SkipGL)            { Write-Host " -> GL" -NoNewline -ForegroundColor DarkGray }
+    if (-not $SkipNotifications) { Write-Host " -> notification" -NoNewline -ForegroundColor DarkGray }
+    Write-Host ""
+} else {
+    Write-Host " FAILED — $failed of $($passed + $failed) checks" -ForegroundColor Red
+    $script:Checks | Where-Object { -not $_.Ok } | ForEach-Object {
+        Write-Host "   - $($_.Check): $($_.Detail)" -ForegroundColor Red
+    }
+}
+Write-Host "────────────────────────────────────────────────`n" -ForegroundColor White
+
+exit ($(if ($failed -eq 0) { 0 } else { 1 }))
