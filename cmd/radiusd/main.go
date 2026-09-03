@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 
+	"github.com/maaransoft/isp-bss-oss/internal/alerting"
 	"github.com/maaransoft/isp-bss-oss/internal/archive"
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/cache"
@@ -559,14 +560,27 @@ func run(ctx context.Context) error {
 
 	// ── Dead-letter monitor ─────────────────────────────────────────────────
 
-	// Only the log sink exists: the PagerDuty Events v2 client is not
-	// implemented, so say so rather than let a configured routing key imply
-	// alerts are being delivered.
-	log.Warn().
-		Bool("pagerduty_key_set", cfg.PagerDutyRoutingKey != "").
-		Msg("radiusd: PagerDuty delivery is not implemented — alerts go to logs only")
+	// PagerDuty when a routing key is configured, the log sink otherwise.
+	//
+	// Both, not either: the log line is the record that survives PagerDuty
+	// being unreachable, and an alert that exists only in a third party's
+	// system is one you cannot audit after the fact.
+	var alerter fup.Alerter = logAlerter{}
+	if cfg.PagerDutyRoutingKey != "" {
+		hostname, err := os.Hostname()
+		if err != nil || hostname == "" {
+			hostname = "isp-bss"
+		}
+		alerter = teeAlerter{
+			primary:  alerting.NewPagerDuty(cfg.PagerDutyRoutingKey, hostname),
+			fallback: logAlerter{},
+		}
+		log.Info().Str("source", hostname).Msg("radiusd: PagerDuty alert delivery enabled")
+	} else {
+		log.Warn().Msg("radiusd: PAGERDUTY_ROUTING_KEY unset — alerts are logged only, nobody is paged")
+	}
 
-	monitor := fup.NewDeadLetterMonitor(jobqueue.NewInspector(database.Pool()), logAlerter{})
+	monitor := fup.NewDeadLetterMonitor(jobqueue.NewInspector(database.Pool()), alerter)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -680,6 +694,27 @@ var alertsEmitted = promauto.NewCounterVec(prometheus.CounterOpts{
 // alerts_emitted_total, so the signal is visible both to a human reading this
 // process's stdout and to a scraping pipeline that is not.
 type logAlerter struct{}
+
+// teeAlerter sends every alert to both sinks.
+//
+// The log sink is not a fallback for when the primary fails — it always
+// runs. An alert that exists only inside a third party's system cannot be
+// audited afterwards, and "was anyone actually told?" is a question that
+// comes up after every incident. Local logging answers it without depending
+// on the availability of the thing being asked about.
+type teeAlerter struct {
+	primary  fup.Alerter
+	fallback fup.Alerter
+}
+
+func (t teeAlerter) Trigger(event string, detail any) {
+	// Fallback first: it cannot fail, and ordering it ahead of the network
+	// call means a slow or hanging PagerDuty still leaves a local record.
+	t.fallback.Trigger(event, detail)
+	if t.primary != nil {
+		t.primary.Trigger(event, detail)
+	}
+}
 
 // voucherDisconnector ends an exhausted voucher's session by queueing a
 // Disconnect-Request.
