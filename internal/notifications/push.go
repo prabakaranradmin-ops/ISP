@@ -44,6 +44,11 @@ func NewOneSignalClient(appID, apiKey string) *OneSignalClient {
 	}
 }
 
+// SetBaseURL overrides the OneSignal endpoint. Same purpose as
+// WhatsAppClient.SetBaseURL — point it at cmd/mockgateway in development so
+// the real client code still runs. Production leaves the default.
+func (c *OneSignalClient) SetBaseURL(u string) { c.baseURL = u }
+
 // Configured reports whether this client can actually send.
 func (c *OneSignalClient) Configured() bool {
 	return c != nil && c.appID != "" && c.apiKey != ""

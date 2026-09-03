@@ -46,6 +46,13 @@ func NewRazorpayClient(keyID, keySecret string) *RazorpayClient {
 	}
 }
 
+// SetBaseURL overrides the Payment Links endpoint. Same purpose as
+// notifications.WhatsAppClient.SetBaseURL: point it at cmd/mockgateway
+// during development so the request this client builds, and its handling of
+// the response, are both still exercised. A stub that replaced the client
+// outright would test neither. Production leaves the default.
+func (c *RazorpayClient) SetBaseURL(u string) { c.baseURL = u }
+
 type razorpayPaymentLinkRequest struct {
 	Amount         int64             `json:"amount"`
 	Currency       string            `json:"currency"`

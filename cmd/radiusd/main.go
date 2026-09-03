@@ -639,17 +639,42 @@ func run(ctx context.Context) error {
 func newDispatcher(cfg *config.Config, database *db.DB) *notifications.Dispatcher {
 	store := database.Notifications()
 
+	// MOCK_GATEWAY_URL points every provider client at cmd/mockgateway
+	// instead of the real upstream, and supplies placeholder credentials so
+	// the clients are actually constructed — without them each channel below
+	// stays nil and the path under development never runs at all.
+	//
+	// The clients themselves are unchanged, so their request building,
+	// authentication headers, response parsing and error handling all still
+	// execute. Only the destination differs. config.Load refuses this
+	// variable when ENVIRONMENT=production.
+	mockGateway := cfg.MockGatewayURL
+	if mockGateway != "" {
+		log.Warn().Str("url", mockGateway).
+			Msg("radiusd: MOCK_GATEWAY_URL set — WhatsApp, SMS and push are being SIMULATED, " +
+				"no message reaches a real subscriber")
+	}
+
 	var whatsapp *notifications.WhatsAppClient
-	if cfg.WhatsAppPhoneNumberID != "" && cfg.WhatsAppAccessToken != "" {
+	switch {
+	case mockGateway != "":
+		whatsapp = notifications.NewWhatsAppClient("mock-phone-number-id", "mock-access-token", store)
+		whatsapp.SetBaseURL(mockGateway)
+	case cfg.WhatsAppPhoneNumberID != "" && cfg.WhatsAppAccessToken != "":
 		whatsapp = notifications.NewWhatsAppClient(cfg.WhatsAppPhoneNumberID, cfg.WhatsAppAccessToken, store)
-	} else {
+	default:
 		log.Warn().Msg("radiusd: WhatsApp credentials unset — WhatsApp notifications will fail")
 	}
 
 	var sms notifications.SMSSender
-	if cfg.SMSAPIKey != "" {
+	switch {
+	case mockGateway != "":
+		mockSMS := notifications.NewMSG91Client("mock-api-key", "MOCKSN")
+		mockSMS.SetBaseURL(mockGateway + "/api/sendhttp.php")
+		sms = mockSMS
+	case cfg.SMSAPIKey != "":
 		sms = notifications.NewMSG91Client(cfg.SMSAPIKey, cfg.SMSSenderID)
-	} else {
+	default:
 		log.Warn().Msg("radiusd: SMS credentials unset — SMS notifications will fail")
 	}
 
@@ -667,9 +692,14 @@ func newDispatcher(cfg *config.Config, database *db.DB) *notifications.Dispatche
 		log.Warn().Msg("radiusd: SMTP_HOST unset — email notifications will fail")
 	}
 
-	if cfg.OneSignalAppID != "" && cfg.OneSignalAPIKey != "" {
+	switch {
+	case mockGateway != "":
+		mockPush := notifications.NewOneSignalClient("mock-app-id", "mock-api-key")
+		mockPush.SetBaseURL(mockGateway + "/api/v1/notifications")
+		dispatcher.SetPushSender(mockPush)
+	case cfg.OneSignalAppID != "" && cfg.OneSignalAPIKey != "":
 		dispatcher.SetPushSender(notifications.NewOneSignalClient(cfg.OneSignalAppID, cfg.OneSignalAPIKey))
-	} else {
+	default:
 		log.Warn().Msg("radiusd: OneSignal credentials unset — push notifications will fail")
 	}
 

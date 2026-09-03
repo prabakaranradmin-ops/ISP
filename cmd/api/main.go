@@ -158,10 +158,22 @@ func run(ctx context.Context) error {
 	// Razorpay order creation is optional: /portal/renew reports 503 rather
 	// than the process refusing to start when credentials are not configured.
 	var razorpayClient portal.RazorpayOrderCreator
-	if cfg.RazorpayKeyID != "" && cfg.RazorpayKeySecret != "" {
+	switch {
+	case cfg.MockGatewayURL != "":
+		// See cmd/mockgateway. The client is real and its request/response
+		// handling still runs; only the endpoint is local. Payment itself
+		// still arrives through the signed webhook — scripts/mockpay sends
+		// one — so the HMAC verification, wallet credit, commission
+		// settlement and GL posting are all exercised for real.
+		mockRzp := billing.NewRazorpayClient("rzp_test_mock", "mock-secret")
+		mockRzp.SetBaseURL(cfg.MockGatewayURL + "/v1/payment_links")
+		razorpayClient = mockRzp
+		log.Warn().Str("url", cfg.MockGatewayURL).
+			Msg("api: MOCK_GATEWAY_URL set — Razorpay is being SIMULATED, no real payment link is created")
+	case cfg.RazorpayKeyID != "" && cfg.RazorpayKeySecret != "":
 		razorpayClient = billing.NewRazorpayClient(cfg.RazorpayKeyID, cfg.RazorpayKeySecret)
 		log.Info().Msg("api: Razorpay payment link client configured")
-	} else {
+	default:
 		log.Warn().Msg("api: RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET unset — /portal/renew will return 503")
 	}
 

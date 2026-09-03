@@ -26,6 +26,21 @@ const minSecretLength = 32
 type Config struct {
 	// Service
 	Environment string
+
+	// MockGatewayURL redirects every outbound third-party integration
+	// (Razorpay, WhatsApp, SMS, push) at a local stub — see cmd/mockgateway.
+	//
+	// It exists so the payment, notification and dunning paths can be built
+	// and tested before any merchant account or messaging contract exists,
+	// which would otherwise block that work entirely. The clients themselves
+	// are unchanged, so their request construction and response handling
+	// still run; only the destination differs.
+	//
+	// Refused outright when ENVIRONMENT=production (see Load). A simulator
+	// that could activate in production would be far worse than the gap it
+	// fills: every notification would report success and no subscriber would
+	// ever be told anything.
+	MockGatewayURL string
 	LogFormat   string
 	LogLevel    string
 	// LogFile redirects log output to a file instead of stdout. Empty
@@ -155,6 +170,7 @@ const (
 func Load(service string) (*Config, error) {
 	cfg := &Config{
 		Environment:    env("ENVIRONMENT", "development"),
+		MockGatewayURL: env("MOCK_GATEWAY_URL", ""),
 		LogFormat:      env("LOG_FORMAT", "console"),
 		LogLevel:       env("LOG_LEVEL", "info"),
 		LogFile:        env("LOG_FILE", ""),
@@ -215,6 +231,19 @@ func Load(service string) (*Config, error) {
 	// against subscriber endpoints, and vice versa.
 	if cfg.PortalJWTSecret == "" && cfg.JWTSecret != "" {
 		cfg.PortalJWTSecret = cfg.JWTSecret + "_portal"
+	}
+
+	// Refused rather than ignored in production. Silently dropping the
+	// override would leave an operator believing notifications are being
+	// simulated when they are in fact being attempted for real, or the
+	// reverse — and either way the mistake surfaces as customers not being
+	// told things, which is exactly the failure that is hardest to notice.
+	if cfg.MockGatewayURL != "" && strings.EqualFold(cfg.Environment, "production") {
+		return nil, fmt.Errorf(
+			"config: MOCK_GATEWAY_URL is set while ENVIRONMENT=production — " +
+				"this would send every payment link, SMS, WhatsApp message and push " +
+				"notification to a local stub instead of the real provider, and report " +
+				"success for all of them. Unset one of the two")
 	}
 
 	rules := map[string]struct {
@@ -285,6 +314,9 @@ func Load(service string) (*Config, error) {
 func (c *Config) Redact() map[string]string {
 	return map[string]string{
 		"environment":            c.Environment,
+		// Not redacted: it is a local address, and an operator debugging
+		// "why did nobody get the SMS" needs to see it at a glance.
+		"mock_gateway_url": c.MockGatewayURL,
 		"log_file":               logFileOrStdout(c.LogFile),
 		"api_addr":               c.APIAddr,
 		"metrics_addr":           c.MetricsAddr,
