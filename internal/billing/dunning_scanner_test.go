@@ -74,9 +74,14 @@ func TestFR_NOTIF_001_TemplateForDunningState(t *testing.T) {
 		{billing.DunningRemind3d, "TMPL-003", true},
 		{billing.DunningRemind1d, "TMPL-003", true},
 		{billing.DunningGracePeriod, "TMPL-003", true},
+		// Separate ids: soft suspension is still recoverable by paying, hard
+		// suspension has already cut the line. Both sent TMPL-004 until the
+		// spec realignment, so a subscriber actually cut off received the
+		// softer of the two warnings.
 		{billing.DunningSoftSuspended, "TMPL-004", true},
-		{billing.DunningHardSuspended, "TMPL-004", true},
-		// Restoration is acknowledged on the payment path, not here.
+		{billing.DunningHardSuspended, "TMPL-005", true},
+		// Restoration is announced by the renewal scanner, which is where it
+		// happens, not from this ladder.
 		{billing.DunningActive, "", false},
 	}
 	for _, tc := range cases {

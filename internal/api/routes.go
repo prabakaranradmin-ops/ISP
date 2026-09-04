@@ -947,17 +947,18 @@ func (h *Handler) enqueuePaymentReceipt(ctx context.Context, subscriberID int, a
 		return
 	}
 
-	// Only call it a restoration if service was actually restricted. Telling a
-	// subscriber who was never cut off that they have been reconnected is worse
-	// than saying nothing.
-	restored := sub.Status == "grace_period" || sub.Status == "soft_suspended" || sub.Status == "hard_suspended"
+	// Records the state at the moment the money arrived, for the log. It no
+	// longer changes what the subscriber is told: this handler credits a
+	// wallet and says so, and the renewal scanner announces restoration when
+	// it actually restores them.
+	wasSuspended := sub.Status == "grace_period" || sub.Status == "soft_suspended" || sub.Status == "hard_suspended"
 
 	payload, err := json.Marshal(billing.PaymentReceiptPayload{
 		SubscriberID: subscriberID,
 		Username:     sub.Username,
 		Amount:       amount,
 		NewBalance:   newBalance,
-		Restored:     restored,
+		WasSuspended: wasSuspended,
 	})
 	if err != nil {
 		log.Warn().Err(err).Msg("api: payment receipt payload marshal failed")

@@ -16,17 +16,26 @@ import (
 // name is silently rejected by Meta at send time rather than caught here.
 
 func TestFR_NOTIF_010_TemplateNameFor_ResolvesRegisteredTemplates(t *testing.T) {
-	// The ids seeded into notification_templates, and the Meta names each must
-	// resolve to. Written out rather than derived from the map under test —
-	// comparing the map to itself would pass whatever it contained.
+	// The assignments in 00_IDX_Master_Traceability_Index.md, which is the
+	// authority for what each id means.
+	//
+	// This list was previously 004 service_suspended, 005 payment_received,
+	// 006 plan_expiring, 007 promotional_offer — none of which are the index's
+	// assignments from 005 on. Not deriving it from the map under test was the
+	// right instinct, but it was transcribed from the map's *neighbouring
+	// source file* rather than from the spec, so it restated the drift instead
+	// of catching it and made the mismatch look deliberate for as long as it
+	// stood. Against Meta templates registered to the spec, a payment receipt
+	// would have gone out under the hard-suspension template.
 	want := map[string]string{
-		"TMPL-001": "fup_warning_80pct",
-		"TMPL-002": "fup_throttled",
-		"TMPL-003": "payment_reminder",
-		"TMPL-004": "service_suspended",
-		"TMPL-005": "payment_received",
-		"TMPL-006": "plan_expiring",
-		"TMPL-007": "promotional_offer",
+		"TMPL-001": "fup_warning_80pct",      // FUP 80% warning
+		"TMPL-002": "fup_throttled",          // FUP throttle applied
+		"TMPL-003": "payment_reminder",       // Renewal reminder (T-7d/3d/1d)
+		"TMPL-004": "service_suspended_soft", // Soft suspension
+		"TMPL-005": "service_suspended_hard", // Hard suspension
+		"TMPL-006": "service_restored",       // Service restored
+		"TMPL-007": "payment_received",       // Payment received
+		"TMPL-008": "ticket_update",          // Ticket update
 	}
 	for id, name := range want {
 		if got := notifications.TemplateNameFor(id); got != name {

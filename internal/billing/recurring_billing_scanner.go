@@ -2,10 +2,12 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -104,6 +106,37 @@ type RecurringBillingScanner struct {
 	wallet *WalletService
 	now    func() time.Time // injectable for tests
 	events EventEmitter
+	tasks  TaskEnqueuer
+}
+
+// TaskEnqueuer is the queue surface the scanner needs to send a restoration
+// notice. Satisfied by *jobqueue.Client; nil in a deployment with no queue,
+// which suppresses the message rather than failing the renewal.
+type TaskEnqueuer interface {
+	EnqueueContext(ctx context.Context, task *jobqueue.Task, opts ...jobqueue.Option) (*jobqueue.TaskInfo, error)
+}
+
+// SetTaskEnqueuer attaches the notification queue, enabling FR-NOTIF-006's
+// service-restored message.
+//
+// Optional for the same reason SetEventEmitter is: billing must keep renewing
+// subscribers whether or not notifications are configured. A renewal that
+// succeeded and went unannounced is a missing message; a renewal refused
+// because a queue was absent is a subscriber left offline.
+func (s *RecurringBillingScanner) SetTaskEnqueuer(t TaskEnqueuer) { s.tasks = t }
+
+// TaskTypeServiceRestored carries FR-NOTIF-006's service-restored message.
+const TaskTypeServiceRestored = "notif:service_restored"
+
+// ServiceRestoredPayload is the task payload for a restoration notice.
+type ServiceRestoredPayload struct {
+	SubscriberID int    `json:"subscriber_id"`
+	Username     string `json:"username"`
+	PlanName     string `json:"plan_name"`
+	// ValidUntil is the new plan expiry, formatted, so the message can tell
+	// the subscriber what they have actually bought rather than only that
+	// something happened.
+	ValidUntil string `json:"valid_until"`
 }
 
 // EventEmitter publishes a lifecycle event to subscribed partners.
@@ -256,11 +289,71 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 	if c.DunningState != DunningActive {
 		if err := TransitionDunning(ctx, s.db, c.SubscriberID, DunningActive); err != nil {
 			log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Msg("billing: auto-renewal dunning restore failed")
+		} else if wasCutOff(c.DunningState) {
+			// FR-NOTIF-006, sent from here because here is where service is
+			// actually restored.
+			//
+			// It used to be the payment webhook's job, which meant a
+			// suspended subscriber was told they were back the moment their
+			// money landed — while still cut off, with up to fifteen minutes
+			// to wait for this scanner — and then told nothing at all when
+			// service genuinely returned. The webhook now acknowledges the
+			// payment and claims nothing about service.
+			//
+			// Only for a subscriber who was actually cut off: someone renewed
+			// out of a reminder stage never lost service, and "your service
+			// has been restored" would be the first they heard of a problem
+			// that did not exist.
+			s.enqueueRestorationNotice(ctx, c, newExpiry)
 		}
 	}
 
 	autorenewalTotal.WithLabelValues("renewed").Inc()
 	return nil
+}
+
+// wasCutOff reports whether a dunning stage means service had actually been
+// withdrawn, as opposed to the subscriber merely being chased for payment.
+//
+// grace_period is not included: it maps to a subscriber status RADIUS still
+// authorises (radius.AuthorisesService), so nothing was ever restored.
+func wasCutOff(state DunningState) bool {
+	return state == DunningSoftSuspended || state == DunningHardSuspended
+}
+
+// enqueueRestorationNotice tells a subscriber their service is back.
+//
+// Failures are logged and swallowed: the renewal has committed and the
+// subscriber is online, and failing the renewal over an undelivered message
+// would undo a restoration that has already happened.
+func (s *RecurringBillingScanner) enqueueRestorationNotice(ctx context.Context, c RenewalCandidate, newExpiry time.Time) {
+	if s.tasks == nil {
+		return
+	}
+	payload, err := json.Marshal(ServiceRestoredPayload{
+		SubscriberID: c.SubscriberID,
+		Username:     c.Username,
+		PlanName:     c.PlanName,
+		ValidUntil:   newExpiry.Format("2006-01-02"),
+	})
+	if err != nil {
+		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Msg("billing: restoration notice payload marshal failed")
+		return
+	}
+	// Keyed per subscriber per cycle, like the dunning notices: a scanner
+	// restart or an overlapping run must not tell the same subscriber twice
+	// that they are back online.
+	task := jobqueue.NewTask(TaskTypeServiceRestored, payload,
+		jobqueue.Queue(QueueNotifications),
+		jobqueue.TaskID(fmt.Sprintf("restored-%d-%d", c.SubscriberID, newExpiry.Unix())),
+		jobqueue.MaxRetry(3),
+		jobqueue.Retention(24*time.Hour))
+	if _, err := s.tasks.EnqueueContext(ctx, task); err != nil {
+		if errors.Is(err, jobqueue.ErrTaskIDConflict) {
+			return
+		}
+		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Msg("billing: restoration notice enqueue failed")
+	}
 }
 
 // invoice generates and persists the GST invoice for one auto-renewed cycle.

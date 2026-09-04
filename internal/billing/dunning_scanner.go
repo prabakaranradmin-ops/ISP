@@ -33,13 +33,22 @@ const (
 	// TemplateDunningReminder is sent while the subscriber can still pay
 	// without losing service (FR-NOTIF-001).
 	TemplateDunningReminder = "TMPL-003" //nolint:gosec // template id, not a credential
-	// TemplateServiceSuspended is sent once service has actually been
-	// restricted (FR-NOTIF-005).
-	TemplateServiceSuspended = "TMPL-004" //nolint:gosec // template id, not a credential
-	// TemplatePaymentReceived acknowledges a payment and, where it restores a
-	// suspended account, tells the subscriber they are back on
-	// (FR-NOTIF-004, FR-NOTIF-006).
-	TemplatePaymentReceived = "TMPL-005" //nolint:gosec // template id, not a credential
+	// TemplateSoftSuspended and TemplateHardSuspended are sent once service
+	// has been restricted (FR-NOTIF-005). The traceability index gives them
+	// separate ids because they are different messages: soft suspension is
+	// still recoverable by paying, hard suspension has already cut the line.
+	// Both stages previously sent TMPL-004, so a subscriber whose service had
+	// actually been cut received the softer of the two warnings.
+	TemplateSoftSuspended = "TMPL-004" //nolint:gosec // template id, not a credential
+	TemplateHardSuspended = "TMPL-005" //nolint:gosec // template id, not a credential
+	// TemplateServiceRestored tells a subscriber their service is back
+	// (FR-NOTIF-006). Sent by the renewal scanner at the moment it actually
+	// restores them, not by the payment webhook — see PaymentReceiptHandler.
+	TemplateServiceRestored = "TMPL-006" //nolint:gosec // template id, not a credential
+	// TemplatePaymentReceived acknowledges money arriving (FR-NOTIF-004). It
+	// says nothing about service, because when it is sent nothing about
+	// service has changed yet.
+	TemplatePaymentReceived = "TMPL-007" //nolint:gosec // template id, not a credential
 
 	// dunningScanInterval is hourly because every edge in this machine is
 	// measured in days. Scanning faster would add load without ever finding a
@@ -143,8 +152,10 @@ func TemplateForDunningState(s DunningState) (string, bool) {
 	switch s {
 	case DunningRemind7d, DunningRemind3d, DunningRemind1d, DunningGracePeriod:
 		return TemplateDunningReminder, true
-	case DunningSoftSuspended, DunningHardSuspended:
-		return TemplateServiceSuspended, true
+	case DunningSoftSuspended:
+		return TemplateSoftSuspended, true
+	case DunningHardSuspended:
+		return TemplateHardSuspended, true
 	default:
 		return "", false
 	}

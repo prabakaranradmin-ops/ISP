@@ -69,9 +69,19 @@ type PaymentReceiptPayload struct {
 	Username     string `json:"username"`
 	Amount       string `json:"amount"`
 	NewBalance   string `json:"new_balance"`
-	// Restored is true when this payment brought a suspended account back,
-	// which changes the message from "we received this" to "you are back on".
-	Restored bool `json:"restored"`
+	// WasSuspended records that the subscriber was cut off when the money
+	// arrived. It does not change the message — the receipt says only that
+	// the payment landed — and exists so the notification log distinguishes
+	// a routine top-up from one that is about to trigger a restoration.
+	//
+	// It was previously named Restored and set the trigger event to
+	// "service_restored", which claimed something that had not happened:
+	// the webhook only credits a wallet, and it is the renewal scanner,
+	// minutes later, that actually puts the subscriber back on. A suspended
+	// subscriber was being told they were restored while still cut off, and
+	// then told nothing when service genuinely returned. The restoration
+	// message is now sent from where restoration occurs.
+	WasSuspended bool `json:"was_suspended"`
 }
 
 // ProcessTask implements jobqueue.Handler for TaskTypePaymentReceipt.
@@ -84,9 +94,12 @@ func (h *PaymentReceiptHandler) ProcessTask(ctx context.Context, t *jobqueue.Tas
 		return fmt.Errorf("payment receipt: notifier not configured")
 	}
 
+	// One trigger event, because there is one thing to report: money arrived.
+	// Whether it also restores service is decided later by the renewal
+	// scanner, which sends its own message when it does.
 	triggerEvent := "payment_received"
-	if p.Restored {
-		triggerEvent = "service_restored"
+	if p.WasSuspended {
+		triggerEvent = "payment_received_while_suspended"
 	}
 	vars := []string{p.Username, p.Amount, p.NewBalance}
 
@@ -98,3 +111,36 @@ func (h *PaymentReceiptHandler) ProcessTask(ctx context.Context, t *jobqueue.Tas
 
 // TaskTypePaymentReceipt carries a payment acknowledgement.
 const TaskTypePaymentReceipt = "notif:payment_receipt"
+
+// ServiceRestoredHandler tells a subscriber their service is back on
+// (FR-NOTIF-006).
+//
+// Separate from PaymentReceiptHandler because the two answer different
+// questions at different moments. The receipt fires when money arrives; this
+// fires when the renewal scanner has actually charged the cycle and put the
+// subscriber back on the network, which can be a quarter of an hour later and
+// may not happen at all if the payment did not cover the cycle.
+type ServiceRestoredHandler struct {
+	notifier DunningNotifier
+}
+
+// NewServiceRestoredHandler constructs a ServiceRestoredHandler.
+func NewServiceRestoredHandler(n DunningNotifier) *ServiceRestoredHandler {
+	return &ServiceRestoredHandler{notifier: n}
+}
+
+// ProcessTask implements jobqueue.Handler for TaskTypeServiceRestored.
+func (h *ServiceRestoredHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
+	var p ServiceRestoredPayload
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return fmt.Errorf("service restored notice: unmarshal payload: %w: %w", err, jobqueue.SkipRetry)
+	}
+	if h.notifier == nil {
+		return fmt.Errorf("service restored notice: notifier not configured")
+	}
+	vars := []string{p.Username, p.PlanName, p.ValidUntil}
+	if err := h.notifier.Notify(ctx, p.SubscriberID, TemplateServiceRestored, "service_restored", vars); err != nil {
+		return fmt.Errorf("service restored notice: dispatch to sub %d: %w", p.SubscriberID, err)
+	}
+	return nil
+}

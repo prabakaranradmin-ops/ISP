@@ -754,7 +754,7 @@ func TestFR_NOTIF_004_Recharge_EnqueuesPaymentReceipt(t *testing.T) {
 		t.Errorf("receipt does not describe the payment made: %+v", receipts[0])
 	}
 	// An account that was never cut off must not be told it has been restored.
-	if receipts[0].Restored {
+	if receipts[0].WasSuspended {
 		t.Error("an active subscriber's receipt must not claim service was restored")
 	}
 }
@@ -769,7 +769,7 @@ func TestFR_NOTIF_006_Recharge_FlagsRestorationForSuspended(t *testing.T) {
 			if len(receipts) != 1 {
 				t.Fatalf("want 1 receipt, got %d", len(receipts))
 			}
-			if !receipts[0].Restored {
+			if !receipts[0].WasSuspended {
 				t.Errorf("a payment from %s must be flagged as a restoration", status)
 			}
 		})

@@ -30,17 +30,35 @@ func (s *NotificationStore) GetSubscriber(ctx context.Context, subscriberID int)
 
 // CreateNotificationLog records a dispatch attempt, including a DND suppression.
 //
-// template_id is nullable and carries an FK to notification_templates: an
-// unregistered template is stored as NULL rather than failing the insert, since
-// losing the audit row would be worse than losing the template attribution.
+// template_id is nullable and carries an FK to notification_templates. An
+// empty id — a system event with no template behind it — still logs NULL. An
+// id that is set but unknown now fails the insert.
+//
+// It previously resolved through (SELECT id FROM notification_templates
+// WHERE id = $3), which turns "no such template" into NULL and inserts
+// happily. notification_templates was empty, so that silently applied to
+// every notification this system had ever sent: the audit log could not say
+// which template any of them used, and the column's own comment ("NULLABLE:
+// system events may have none") made the result look deliberate.
+//
+// That subquery was also the only thing standing between the ids the code
+// sends and the templates the spec defines, and it dissolved every
+// disagreement. The code had drifted to sending TMPL-005 for a payment
+// receipt, which the spec assigns to hard suspension — a mismatch this
+// insert would now reject on the first attempt.
+//
+// The old reasoning was that losing the audit row is worse than losing the
+// attribution. It reads well and is wrong in this direction: an audit row
+// that cannot say what was sent is not much of an audit row, and the
+// failure it was protecting against is a bug in the caller, which is exactly
+// what should be surfaced rather than absorbed.
 func (s *NotificationStore) CreateNotificationLog(ctx context.Context, entry notifications.NotificationLog) error {
 	const q = `
 		INSERT INTO notification_log (
 			subscriber_id, channel, template_id, triggered_by_event,
 			sent_at, delivery_status, provider_message_id, failure_reason
 		) VALUES (
-			$1, $2,
-			(SELECT id FROM notification_templates WHERE id = $3),
+			$1, $2, NULLIF($3,''),
 			$4, COALESCE($5, NOW()), $6, NULLIF($7,''), NULLIF($8,'')
 		)`
 

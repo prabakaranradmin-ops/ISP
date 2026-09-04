@@ -352,6 +352,8 @@ func run(ctx context.Context) error {
 	// Publishes invoice.generated to subscribed partners (FR-API-002). Renewal
 	// itself never depends on this succeeding.
 	autoRenewalScanner.SetEventEmitter(partner.NewEmitter(database.Partner(), taskClient))
+	// FR-NOTIF-006: the scanner announces a restoration where it performs one.
+	autoRenewalScanner.SetTaskEnqueuer(taskClient)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -484,6 +486,7 @@ func run(ctx context.Context) error {
 	throttledHandler := fup.NewThrottledHandler(dispatcher)
 	dunningNoticeHandler := billing.NewDunningNoticeHandler(dispatcher)
 	paymentReceiptHandler := billing.NewPaymentReceiptHandler(dispatcher)
+	serviceRestoredHandler := billing.NewServiceRestoredHandler(dispatcher)
 	ticketUpdateHandler := tickets.NewUpdateHandler(dispatcher)
 	announcementHandler := notifications.NewAnnouncementHandler(dispatcher)
 
@@ -526,6 +529,7 @@ func run(ctx context.Context) error {
 	workerMux.Handle(fup.TaskTypeFUPThrottled, throttledHandler)
 	workerMux.Handle(billing.TaskTypeDunningNotice, dunningNoticeHandler)
 	workerMux.Handle(billing.TaskTypePaymentReceipt, paymentReceiptHandler)
+	workerMux.Handle(billing.TaskTypeServiceRestored, serviceRestoredHandler)
 	workerMux.Handle(tickets.TaskTypeTicketUpdate, ticketUpdateHandler)
 	workerMux.Handle(notifications.TaskTypeAnnouncement, announcementHandler)
 	// Scheduled report exports (FR-RPT-002). Registered only with somewhere to

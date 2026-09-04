@@ -88,14 +88,25 @@ type NotifQuerier interface {
 
 // templateNames maps internal template IDs to the template names registered
 // with Meta. Meta's API addresses templates by name, not by our internal ID.
+// These must match migration 050's seed of notification_templates row for
+// row. That table is the FK target for notification_log.template_id, so a
+// name here without a row there logs nothing and an id here that is not
+// there fails the insert.
+//
+// 005, 006 and 007 were previously bound to payment_received, plan_expiring
+// and promotional_offer, none of which are what the traceability index
+// assigns them. The consequence was not cosmetic: a payment receipt sent
+// TMPL-005, which the spec reserves for hard suspension, so against real
+// Meta templates a paying customer would have been told their service was
+// cut off. TMPL-006 (Service restored) was never sent at all.
 var templateNames = map[string]string{
 	"TMPL-001": "fup_warning_80pct",
 	"TMPL-002": "fup_throttled",
 	"TMPL-003": "payment_reminder",
-	"TMPL-004": "service_suspended",
-	"TMPL-005": "payment_received",
-	"TMPL-006": "plan_expiring",
-	"TMPL-007": "promotional_offer",
+	"TMPL-004": "service_suspended_soft",
+	"TMPL-005": "service_suspended_hard",
+	"TMPL-006": "service_restored",
+	"TMPL-007": "payment_received",
 	"TMPL-008": "ticket_update",
 }
 
