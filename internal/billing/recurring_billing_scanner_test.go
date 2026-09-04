@@ -269,6 +269,23 @@ func TestRecurringBillingScanner_ChargesTheTaxInclusiveTotal(t *testing.T) {
 			"that was never collected, and the difference is remitted on GSTR-1 out of pocket",
 			got, inv.TotalAmount.StringFixed(2))
 	}
+
+	// The posting also has to carry the tax component, or the GL books the
+	// whole 590.00 as Subscription Revenue and the 90.00 owed to the
+	// government never reaches 2200 GST Payable (migration 047). The invoice
+	// would then be right and the ledger wrong, and nothing compares them.
+	if got := fakeWallet.lastPosting.TaxAmount.StringFixed(2); got != "90.00" {
+		t.Errorf("posting tax component: got %s, want 90.00 — without it the GL "+
+			"books collected GST as income", got)
+	}
+	// And it must be the invoice's own figures, not a re-derivation: a second
+	// rounding of the same rate is how the ledger and the filed return drift
+	// apart by a paisa that never reconciles.
+	wantTax := inv.CgstAmount.Add(inv.SgstAmount).Add(inv.IgstAmount)
+	if !fakeWallet.lastPosting.TaxAmount.Equal(wantTax) {
+		t.Errorf("posting tax %s does not match the invoice's own CGST+SGST+IGST %s",
+			fakeWallet.lastPosting.TaxAmount, wantTax)
+	}
 }
 
 // TestRecurringBillingScanner_MissingGstRateChargesNothing — with no GST rate

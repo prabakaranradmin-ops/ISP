@@ -43,6 +43,14 @@ func GLAccountCode(account string) string {
 	}
 }
 
+// GLAccountGSTPayable is the output-tax liability a plan charge creates
+// (migration 047). It has no wallet-ledger counterpart and so is absent from
+// GLAccountCode above: the wallet subledger records movement of the
+// subscriber's money, and the tax split is a general-ledger concern — see
+// splitTaxLeg in internal/db/billing.go for why the split lives there and
+// not in wallet_ledgers.
+const GLAccountGSTPayable = "2200"
+
 // ErrInsufficientBalance is returned by Post when a debit would take the
 // wallet below zero. The application-level check that returns this is the
 // normal path (a clean 4xx for the caller); a DB-level CHECK constraint on
@@ -93,6 +101,11 @@ type RechargePosting struct {
 	Debit        WalletEntry
 	Credit       WalletEntry
 	NewBalance   decimal.Decimal
+	// TaxAmount is the output GST contained within the counter leg's amount,
+	// zero for a posting that carries no tax. It splits the counter leg's GL
+	// line in two (revenue and 2200 GST Payable) without changing either
+	// wallet_ledgers leg — see postWalletGLEntry.
+	TaxAmount decimal.Decimal
 }
 
 // RechargeRequest carries the inputs for a subscriber wallet top-up.
@@ -189,6 +202,15 @@ type PostRequest struct {
 	TransactionToken string          // optional idempotency key
 	AdjustedBy       string          // staff username; empty for non-staff-initiated postings
 	Description      string
+	// TaxAmount is how much of Amount is output GST, for a posting that
+	// charges a taxed service. Zero (the default) means the whole amount is
+	// revenue, which is correct for adjustments, refunds and top-ups.
+	//
+	// Passing it here rather than deriving it inside Post is deliberate: the
+	// caller has already computed the invoice, and re-deriving the tax from
+	// a rate would let the ledger and the invoice round differently — the
+	// GL must agree with the document the operator files, to the paisa.
+	TaxAmount decimal.Decimal
 }
 
 // Post performs an arbitrary-direction double-entry wallet posting: a
@@ -205,6 +227,15 @@ func (s *WalletService) Post(ctx context.Context, req PostRequest) (*Transaction
 	}
 	if req.Direction != "credit" && req.Direction != "debit" {
 		return nil, fmt.Errorf("billing: post direction must be \"credit\" or \"debit\", got %q", req.Direction)
+	}
+	// Rejected rather than clamped: a tax component that does not fit inside
+	// the amount means the caller's invoice and its charge have diverged, and
+	// silently posting either interpretation would put a wrong number in the
+	// ledger. Failing the renewal leaves the subscriber's money untouched and
+	// dunning to pick them up, which is recoverable; a mis-split GL entry is
+	// not noticed until a reconciliation months later.
+	if req.TaxAmount.IsNegative() || req.TaxAmount.GreaterThanOrEqual(req.Amount) {
+		return nil, fmt.Errorf("billing: post tax amount %s must be within [0, %s)", req.TaxAmount, req.Amount)
 	}
 
 	if req.TransactionToken != "" {
@@ -251,6 +282,7 @@ func (s *WalletService) Post(ctx context.Context, req PostRequest) (*Transaction
 	posting := RechargePosting{
 		SubscriberID: req.SubscriberID,
 		NewBalance:   newBalance,
+		TaxAmount:    req.TaxAmount,
 		Credit: WalletEntry{
 			SubscriberID:     req.SubscriberID,
 			FranchiseID:      req.FranchiseID,

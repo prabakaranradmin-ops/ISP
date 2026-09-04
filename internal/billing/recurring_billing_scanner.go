@@ -181,10 +181,14 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 		return fmt.Errorf("price renewal for subscriber %d: %w", c.SubscriberID, err)
 	}
 
+	// The tax is handed over rather than re-derived, so the GL's 2200 GST
+	// Payable line and the invoice's CGST/SGST/IGST columns are the same
+	// numbers — the ledger has to agree with the document that gets filed.
 	_, err = s.wallet.Post(ctx, PostRequest{
 		SubscriberID:   c.SubscriberID,
 		FranchiseID:    c.FranchiseID,
 		Amount:         inv.TotalAmount,
+		TaxAmount:      inv.CgstAmount.Add(inv.SgstAmount).Add(inv.IgstAmount),
 		Direction:      "debit",
 		CounterAccount: AccountRevenueClearing,
 		Description:    fmt.Sprintf("auto-renewal: %s", c.PlanName),

@@ -176,14 +176,20 @@ func postWalletGLEntry(ctx context.Context, dbTx pgx.Tx, p billing.RechargePosti
 
 	// Each leg posts to whichever of debit/credit its own EntryType names —
 	// a leg is never both, chk_gl_line_not_both would reject the ambiguity.
-	for _, leg := range []struct {
+	legs := []struct {
 		code      string
 		entryType string
 		amount    decimal.Decimal
 	}{
 		{debitCode, p.Debit.EntryType, p.Debit.Amount},
 		{creditCode, p.Credit.EntryType, p.Credit.Amount},
-	} {
+	}
+	legs, err := splitTaxLeg(legs, debitCode, p.TaxAmount)
+	if err != nil {
+		return err
+	}
+
+	for _, leg := range legs {
 		accountID, err := glAccountID(ctx, dbTx, leg.code)
 		if err != nil {
 			return err
@@ -204,6 +210,65 @@ func postWalletGLEntry(ctx context.Context, dbTx pgx.Tx, p billing.RechargePosti
 	}
 	return nil
 }
+
+// glLeg is one line of a GL journal entry, before it is resolved to an
+// account id and inserted.
+type glLeg = struct {
+	code      string
+	entryType string
+	amount    decimal.Decimal
+}
+
+// splitTaxLeg divides the revenue leg of a taxed posting into the revenue it
+// actually earned and the GST it merely collected on the government's behalf
+// (migration 047).
+//
+// The split happens here, in the general ledger, and deliberately not in
+// wallet_ledgers. The wallet subledger answers "what happened to this
+// subscriber's money", and from the subscriber's side one charge left their
+// wallet — splitting it there would make every wallet leg pair into a
+// triple, break the balance_after invariant each row carries, and change
+// what the nightly reconciliation (FR-REV-002) compares. The tax split is an
+// accounting classification of the same movement, which is exactly what a
+// general ledger is for.
+//
+// A refund of a taxed charge reverses through the identical path: the
+// counter leg's EntryType flips to "debit", so the tax line debits 2200 and
+// reduces the liability, which is the correct treatment for tax on money
+// given back.
+func splitTaxLeg(legs []glLeg, counterCode string, tax decimal.Decimal) ([]glLeg, error) {
+	if tax.IsZero() {
+		return legs, nil
+	}
+	// Tax on anything but a revenue charge would mean a caller has mapped a
+	// tax component onto an adjustment, a refund clearing account or a
+	// gateway settlement, none of which create an output-tax liability.
+	// Refusing is right: the alternative is a plausible-looking 2200 balance
+	// that no return can be filed from.
+	if counterCode != glRevenueAccount {
+		return nil, fmt.Errorf("db: tax amount %s posted against non-revenue account %s", tax, counterCode)
+	}
+	out := make([]glLeg, 0, len(legs)+1)
+	for _, leg := range legs {
+		if leg.code != counterCode {
+			out = append(out, leg)
+			continue
+		}
+		net := leg.amount.Sub(tax)
+		if net.LessThanOrEqual(decimal.Zero) {
+			return nil, fmt.Errorf("db: tax amount %s is not within revenue leg amount %s", tax, leg.amount)
+		}
+		out = append(out,
+			glLeg{code: leg.code, entryType: leg.entryType, amount: net},
+			glLeg{code: billing.GLAccountGSTPayable, entryType: leg.entryType, amount: tax},
+		)
+	}
+	return out, nil
+}
+
+// glRevenueAccount is the only account a tax split may be taken out of; it
+// mirrors billing.GLAccountCode's mapping for AccountRevenueClearing.
+const glRevenueAccount = "4000"
 
 // glAccountID resolves a chart-of-accounts code to its id.
 //
