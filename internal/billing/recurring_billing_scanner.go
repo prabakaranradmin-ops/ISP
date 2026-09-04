@@ -63,9 +63,22 @@ type RenewalCandidate struct {
 	PlanPrice        decimal.Decimal
 	PlanValidityDays int
 	PlanVolumeGB     int
-	PlanExpiry       time.Time
-	DunningState     DunningState
+	// PlanExpiry is the zero time for a subscriber who has never had a cycle
+	// (status StatusPendingPayment); renew() starts them from now.
+	PlanExpiry   time.Time
+	DunningState DunningState
+	// Status distinguishes a renewal from a first activation, which has to
+	// clear the pending status as well as stamp the expiry.
+	Status string
 }
+
+// StatusPendingPayment is where signup leaves a subscriber: on the books,
+// billable, and granted nothing until their first cycle is actually paid for
+// (migration 048). radius.AuthorisesService refuses it.
+const StatusPendingPayment = "pending_payment"
+
+// StatusActive is a subscriber whose current cycle is paid for.
+const StatusActive = "active"
 
 // RenewalScanQuerier is the database surface the auto-renewal scanner needs.
 type RenewalScanQuerier interface {
@@ -75,6 +88,10 @@ type RenewalScanQuerier interface {
 	ListRenewalCandidates(ctx context.Context) ([]RenewalCandidate, error)
 	// SetPlanExpiry extends plan_expiry after a successful renewal.
 	SetPlanExpiry(ctx context.Context, subscriberID int, expiry time.Time) error
+	// ActivateSubscriber ends a pending_payment subscriber's first cycle
+	// purchase: it stamps plan_expiry and clears the status to active in one
+	// statement, so the two can never disagree.
+	ActivateSubscriber(ctx context.Context, subscriberID int, expiry time.Time) error
 	CreateInvoice(ctx context.Context, inv Invoice) (int, error)
 	GetActiveGstRate(ctx context.Context) (GstRate, error)
 }
@@ -216,7 +233,15 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 		base = c.PlanExpiry
 	}
 	newExpiry := base.AddDate(0, 0, c.PlanValidityDays)
-	if err := s.db.SetPlanExpiry(ctx, c.SubscriberID, newExpiry); err != nil {
+	if c.Status == StatusPendingPayment {
+		// First cycle: the expiry and the status have to move together. Two
+		// statements would leave a window where the subscriber is charged and
+		// dated but still unauthorised, or authorised with no expiry — which
+		// is the exact state migration 048 exists to eliminate.
+		if err := s.db.ActivateSubscriber(ctx, c.SubscriberID, newExpiry); err != nil {
+			return fmt.Errorf("activate subscriber %d: %w", c.SubscriberID, err)
+		}
+	} else if err := s.db.SetPlanExpiry(ctx, c.SubscriberID, newExpiry); err != nil {
 		return fmt.Errorf("extend plan_expiry for subscriber %d: %w", c.SubscriberID, err)
 	}
 

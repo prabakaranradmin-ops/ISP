@@ -177,7 +177,7 @@ func (d *RadiusDaemon) handleMAB(ctx context.Context, w radius.ResponseWriter, r
 
 	// Gate 3: the same status check PAP and EAP apply. Without it, suspension
 	// would be bypassable by connecting over the hotspot instead of PPPoE.
-	if sub.Status == "hard_suspended" || sub.Status == "terminated" {
+	if !AuthorisesService(sub.Status) {
 		mabAttemptsTotal.WithLabelValues("suspended").Inc()
 		w.Write(r.Response(radius.CodeAccessReject)) //nolint:errcheck,gosec
 		d.authRejected(r)

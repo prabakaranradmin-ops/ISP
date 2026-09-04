@@ -151,7 +151,7 @@ type Subscriber struct {
 	ID           int
 	Username     string
 	PasswordHash string
-	Status       string // active | grace_period | soft_suspended | hard_suspended | terminated
+	Status       string // see AuthorisesService for the statuses that grant access
 	RateLimitStr string // MikroTik format: "100M/100M"
 	FUPActive    bool
 	FUPThrottle  string

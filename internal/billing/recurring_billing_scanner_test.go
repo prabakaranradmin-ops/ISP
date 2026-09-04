@@ -26,6 +26,9 @@ type fakeRenewalScanQuerier struct {
 	setExpiryCalls          map[int]time.Time
 	failExpiryForSubscriber int // 0 = never fail
 
+	activateCalls             map[int]time.Time
+	failActivateForSubscriber int // 0 = never fail
+
 	invoiceCalls     []billing.Invoice
 	createInvoiceErr error
 
@@ -80,6 +83,21 @@ func (f *fakeRenewalScanQuerier) SetPlanExpiry(_ context.Context, subscriberID i
 		return errors.New("db down")
 	}
 	f.setExpiryCalls[subscriberID] = expiry
+	return nil
+}
+
+// ActivateSubscriber records first-cycle activations separately from expiry
+// extensions, so a test can tell "renewed an existing subscriber" from "put a
+// new one on the network for the first time" — the distinction migration 048
+// turns on.
+func (f *fakeRenewalScanQuerier) ActivateSubscriber(_ context.Context, subscriberID int, expiry time.Time) error {
+	if f.failActivateForSubscriber != 0 && subscriberID == f.failActivateForSubscriber {
+		return errors.New("db down")
+	}
+	if f.activateCalls == nil {
+		f.activateCalls = map[int]time.Time{}
+	}
+	f.activateCalls[subscriberID] = expiry
 	return nil
 }
 
@@ -357,5 +375,127 @@ func TestRecurringBillingScanner_OneFailureDoesNotStopTheRun(t *testing.T) {
 	// throughout.
 	if fakeWallet.postingCalls != 2 {
 		t.Errorf("want both subscribers debited (2 postings), got %d", fakeWallet.postingCalls)
+	}
+}
+
+// TestRecurringBillingScanner_ActivatesAFundedPendingSubscriber covers the
+// other half of migration 048. Signup leaves a subscriber pending_payment
+// with no plan_expiry, granted nothing; this scanner is what ends that state
+// once their wallet covers the first cycle.
+//
+// Before this, no creation path set plan_expiry at all and both scanners
+// filtered on it being non-NULL, so a new subscriber was never charged,
+// never dunned, and — because RADIUS authorised on status alone and status
+// was "active" from creation — online for free with nothing that could ever
+// come to collect.
+func TestRecurringBillingScanner_ActivatesAFundedPendingSubscriber(t *testing.T) {
+	db := newFakeRenewalScanQuerier()
+	db.states = map[int]billing.DunningState{1: billing.DunningActive}
+	db.candidates = []billing.RenewalCandidate{{
+		SubscriberID: 1, Username: "newjoiner@isp", RegisteredState: "TN",
+		PlanName: "Basic", PlanPrice: decFromString(t, "500.00"), PlanValidityDays: 30,
+		PlanVolumeGB: 100,
+		// Never had a cycle: no expiry, and not yet authorised.
+		PlanExpiry:   time.Time{},
+		Status:       billing.StatusPendingPayment,
+		DunningState: billing.DunningActive,
+	}}
+	fakeWallet := newFakeWalletQuerier("1000.00")
+	wallet := billing.NewWalletService(fakeWallet)
+	scanner := billing.NewRecurringBillingScanner(db, wallet)
+	billing.SetRecurringBillingScannerClock(scanner, func() time.Time { return renewalNow })
+
+	if err := scanner.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	// Activation, not a bare expiry write: the status has to clear too, or the
+	// subscriber is charged and dated but still cannot get online.
+	got, ok := db.activateCalls[1]
+	if !ok {
+		t.Fatal("a funded pending_payment subscriber was not activated")
+	}
+	if _, wrong := db.setExpiryCalls[1]; wrong {
+		t.Error("first activation went through SetPlanExpiry, which leaves status pending_payment")
+	}
+
+	// A first cycle runs from now, not from a zero plan_expiry — dating it
+	// from year zero would put them instantly and permanently overdue.
+	want := renewalNow.AddDate(0, 0, 30)
+	if !got.Equal(want) {
+		t.Errorf("first plan_expiry: want %v, got %v", want, got)
+	}
+
+	// And they must actually be charged for it. Activating without taking the
+	// money is the same free service, one state further along.
+	if fakeWallet.postingCalls != 1 {
+		t.Errorf("want the first cycle charged (1 posting), got %d", fakeWallet.postingCalls)
+	}
+	if got := fakeWallet.lastPosting.Credit.Amount.StringFixed(2); got != "590.00" {
+		t.Errorf("first cycle charge: got %s, want 590.00 (500 + 18%% GST)", got)
+	}
+	if len(db.invoiceCalls) != 1 {
+		t.Errorf("want an invoice for the first cycle, got %d", len(db.invoiceCalls))
+	}
+}
+
+// An unfunded pending subscriber must stay pending. This is the case that
+// makes "payment precedes authorisation" true rather than aspirational: the
+// scanner sees them every tick and must do nothing until the money is there.
+func TestRecurringBillingScanner_LeavesAnUnfundedPendingSubscriberPending(t *testing.T) {
+	db := newFakeRenewalScanQuerier()
+	db.states = map[int]billing.DunningState{1: billing.DunningActive}
+	db.candidates = []billing.RenewalCandidate{{
+		SubscriberID: 1, Username: "broke@isp", RegisteredState: "TN",
+		PlanPrice: decFromString(t, "500.00"), PlanValidityDays: 30,
+		PlanExpiry: time.Time{}, Status: billing.StatusPendingPayment,
+		DunningState: billing.DunningActive,
+	}}
+	// Enough for the bare price but not the taxed total, which is exactly the
+	// gap the candidate query's coarse pre-filter lets through.
+	fakeWallet := newFakeWalletQuerier("500.00")
+	wallet := billing.NewWalletService(fakeWallet)
+	scanner := billing.NewRecurringBillingScanner(db, wallet)
+	billing.SetRecurringBillingScannerClock(scanner, func() time.Time { return renewalNow })
+
+	if err := scanner.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan must treat an unaffordable first cycle as a no-op, not an error: %v", err)
+	}
+	if len(db.activateCalls) != 0 {
+		t.Error("a subscriber who could not pay for their first cycle was activated anyway")
+	}
+	if len(db.invoiceCalls) != 0 {
+		t.Error("an invoice was raised for a cycle that was never paid for")
+	}
+}
+
+// A failed activation must not be reported as success, and must not stop the
+// rest of the batch — the same rule every other per-subscriber failure in
+// this scanner follows.
+func TestRecurringBillingScanner_ActivationFailureDoesNotStopTheBatch(t *testing.T) {
+	db := newFakeRenewalScanQuerier()
+	db.states = map[int]billing.DunningState{1: billing.DunningActive, 2: billing.DunningActive}
+	db.failActivateForSubscriber = 1
+	for _, id := range []int{1, 2} {
+		db.candidates = append(db.candidates, billing.RenewalCandidate{
+			SubscriberID: id, Username: "joiner@isp", RegisteredState: "TN",
+			PlanPrice: decFromString(t, "500.00"), PlanValidityDays: 30,
+			PlanExpiry: time.Time{}, Status: billing.StatusPendingPayment,
+			DunningState: billing.DunningActive,
+		})
+	}
+	fakeWallet := newFakeWalletQuerier("5000.00")
+	wallet := billing.NewWalletService(fakeWallet)
+	scanner := billing.NewRecurringBillingScanner(db, wallet)
+	billing.SetRecurringBillingScannerClock(scanner, func() time.Time { return renewalNow })
+
+	if err := scanner.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan must not fail the whole run: %v", err)
+	}
+	if _, ok := db.activateCalls[1]; ok {
+		t.Error("subscriber 1's activation was made to fail — it must not appear as activated")
+	}
+	if _, ok := db.activateCalls[2]; !ok {
+		t.Error("subscriber 2 must still have been activated despite subscriber 1's failure")
 	}
 }

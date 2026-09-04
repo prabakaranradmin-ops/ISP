@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
@@ -105,9 +106,19 @@ type demoPlan struct {
 type demoSubscriber struct {
 	username, caf, mobile string
 	planName              string
-	setStatus             string // "" = leave active
+	setStatus             string // "" = activate with a live cycle
 	withTicket            bool
 	withInvoice           bool
+	// expiryDays dates the subscriber's cycle relative to now, and must agree
+	// with setStatus: positive for someone paid up, negative by enough days to
+	// justify the suspension they are shown in.
+	//
+	// Seeded demo subscribers used to be created and then switched to a
+	// suspended status with no plan_expiry at all, which left the console
+	// showing "soft suspended" for accounts the dunning machine had never
+	// touched and could never touch — a demo of a state the real system
+	// cannot produce. Migration 048 now rejects that combination outright.
+	expiryDays int
 }
 
 var demoPlans = []demoPlan{
@@ -115,12 +126,17 @@ var demoPlans = []demoPlan{
 	{name: "Demo_Home_100M", rateLimit: "100M/100M", volumeGB: 2000, price: 999},
 }
 
+// The expiry offsets are the ones billing.NextDunningState would actually
+// derive each status from (GracePeriodDays 3, SoftSuspendDays 3), so a demo
+// account is in a state the live dunning ladder could have put it in — and
+// stays there when the scanner next runs, instead of being corrected in front
+// of whoever is being shown the console.
 var demoSubscribers = []demoSubscriber{
-	{username: "demo_priya", caf: "DEMO-CAF-0001", mobile: "+919800000001", planName: "Demo_Home_50M"},
-	{username: "demo_arjun", caf: "DEMO-CAF-0002", mobile: "+919800000002", planName: "Demo_Home_100M", withInvoice: true},
-	{username: "demo_lakshmi", caf: "DEMO-CAF-0003", mobile: "+919800000003", planName: "Demo_Home_50M", setStatus: "soft_suspended"},
-	{username: "demo_ravi", caf: "DEMO-CAF-0004", mobile: "+919800000004", planName: "Demo_Home_100M", setStatus: "hard_suspended"},
-	{username: "demo_meena", caf: "DEMO-CAF-0005", mobile: "+919800000005", planName: "Demo_Home_50M", withTicket: true},
+	{username: "demo_priya", caf: "DEMO-CAF-0001", mobile: "+919800000001", planName: "Demo_Home_50M", expiryDays: 21},
+	{username: "demo_arjun", caf: "DEMO-CAF-0002", mobile: "+919800000002", planName: "Demo_Home_100M", withInvoice: true, expiryDays: 12},
+	{username: "demo_lakshmi", caf: "DEMO-CAF-0003", mobile: "+919800000003", planName: "Demo_Home_50M", setStatus: "soft_suspended", expiryDays: -4},
+	{username: "demo_ravi", caf: "DEMO-CAF-0004", mobile: "+919800000004", planName: "Demo_Home_100M", setStatus: "hard_suspended", expiryDays: -9},
+	{username: "demo_meena", caf: "DEMO-CAF-0005", mobile: "+919800000005", planName: "Demo_Home_50M", withTicket: true, expiryDays: 5},
 }
 
 // demoNASIP is in the RFC 5737 documentation range (TEST-NET-3) so it is
@@ -204,11 +220,22 @@ func (h *Handler) LoadDemoData(w http.ResponseWriter, r *http.Request) {
 			log.Error().Err(err).Int("subscriber_id", created.ID).Msg("staffui: mark demo subscriber failed")
 		}
 
-		if ds.setStatus != "" {
-			status := ds.setStatus
-			if _, err := h.subscribers.UpdateSubscriber(ctx, created.ID, nil, &status, nil); err != nil {
-				log.Error().Err(err).Str("username", ds.username).Msg("staffui: demo subscriber status change failed")
-			}
+		// Status and expiry are set together, in one call, because migration
+		// 048 forbids the halfway state: a subscriber in an authorising status
+		// with no plan_expiry is one nothing can ever bill, which is what
+		// signup used to produce. Seeding is a manual onboarding path and has
+		// to hold the same invariant as every other one.
+		//
+		// ProvisionSubscriber leaves them pending_payment, so this call is
+		// what puts the paid-up demo accounts on the network too, not only the
+		// suspended ones.
+		status := ds.setStatus
+		if status == "" {
+			status = "active"
+		}
+		expiry := time.Now().AddDate(0, 0, ds.expiryDays)
+		if _, err := h.subscribers.UpdateSubscriber(ctx, created.ID, nil, &status, &expiry); err != nil {
+			log.Error().Err(err).Str("username", ds.username).Msg("staffui: demo subscriber activation failed")
 		}
 
 		if ds.withTicket && h.ticketCreator != nil {

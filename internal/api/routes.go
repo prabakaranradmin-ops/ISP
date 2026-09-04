@@ -749,10 +749,25 @@ func subscriberRecordFrom(req CreateSubscriberRequest) SubscriberRecord {
 		Email:           req.Email,
 		PlanID:          req.PlanID,
 		RegisteredState: state,
-		Status:          "active",
-		DunningState:    "active",
-		KYCStatus:       "pending",
-		WalletBalance:   "0.00",
+		// Payment precedes authorisation. Created 'active', a subscriber was
+		// on the network from the moment the form was submitted — and because
+		// no creation path set plan_expiry, both billing scanners skipped them
+		// forever, so nothing ever came to collect. Free service with no
+		// mechanism that could ever end it.
+		//
+		// pending_payment grants nothing (radius.AuthorisesService), and the
+		// auto-renewal scanner activates them the moment their wallet covers
+		// the first cycle, stamping plan_expiry as it charges. Dunning takes
+		// over from there.
+		Status:       "pending_payment",
+		DunningState: "active",
+		// dunning_state is 'active' rather than tracking the pending status:
+		// the dunning ladder describes how far behind a paying subscriber has
+		// fallen, and someone who has not started yet is not behind. They are
+		// invisible to the dunning scanner regardless, which requires a
+		// plan_expiry they do not have until activation.
+		KYCStatus:     "pending",
+		WalletBalance: "0.00",
 	}
 }
 
@@ -830,6 +845,19 @@ func (h *Handler) UpdateSubscriber(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := h.db.UpdateSubscriber(r.Context(), id, body.PlanID, body.Status, body.PlanExpiry)
 	if err != nil {
+		// Migration 048's invariant: an authorising status requires a
+		// plan_expiry, or the subscriber is online with nothing that can bill
+		// them. Reached by switching someone back to active without also
+		// dating their cycle, which is a bad request and not a server fault —
+		// and the message has to say what to do instead, because the operator
+		// is usually mid-incident and reaching for the obvious lever.
+		if isBillabilityViolation(err) {
+			writeError(w, http.StatusBadRequest, "ERR_NOT_BILLABLE",
+				"cannot set this status without a plan_expiry: the subscriber would be online "+
+					"with no billing cycle. Send plan_expiry in the same request, or credit their "+
+					"wallet and let auto-renewal activate them.")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "update failed")
 		return
 	}
@@ -960,6 +988,17 @@ func writeError(w http.ResponseWriter, code int, errCode, msg string) {
 
 func pathInt(r *http.Request, key string) (int, error) {
 	return strconv.Atoi(r.PathValue(key))
+}
+
+// isBillabilityViolation reports whether err is migration 048's
+// chk_authorised_subscriber_is_billable rejecting an authorising status with
+// no plan_expiry.
+//
+// Matched on the constraint name rather than the SQLSTATE, because 23514 is
+// every CHECK on the table and only this one is a bad request; the others
+// (a negative wallet balance, say) really are faults worth a 500.
+func isBillabilityViolation(err error) bool {
+	return err != nil && contains(err.Error(), "chk_authorised_subscriber_is_billable")
 }
 
 func isUniqueViolation(err error) bool {

@@ -396,13 +396,21 @@ func (s *BillingStore) SetSubscriberDunningState(ctx context.Context, subscriber
 func (s *BillingStore) ListRenewalCandidates(ctx context.Context) ([]billing.RenewalCandidate, error) {
 	const q = `
 		SELECT s.id, s.username, s.franchise_id, s.registered_state, s.dunning_state,
-		       p.name, p.price::text, p.validity_days, p.volume_gb, s.plan_expiry
+		       s.status, p.name, p.price::text, p.validity_days, p.volume_gb, s.plan_expiry
 		  FROM subscribers s
 		  JOIN plans p ON p.id = s.plan_id
 		 WHERE s.status <> 'terminated'
-		   AND s.plan_expiry IS NOT NULL
-		   AND s.plan_expiry <= NOW()
-		   AND s.wallet_balance >= p.price`
+		   AND s.wallet_balance >= p.price
+		   AND (
+		         -- A cycle that has run out and can be paid for again.
+		         (s.plan_expiry IS NOT NULL AND s.plan_expiry <= NOW())
+		         -- Or a subscriber who has never had a cycle at all and has
+		         -- now funded their first one. This is the other half of
+		         -- migration 048: signup leaves them 'pending_payment' with no
+		         -- expiry, and this is what ends that state. Without this arm
+		         -- they would wait for money that had already arrived.
+		      OR (s.plan_expiry IS NULL AND s.status = 'pending_payment')
+		       )`
 	// The balance test is a coarse pre-filter, not the affordability rule.
 	//
 	// plans.price is GST-exclusive, so a renewal actually costs price + GST
@@ -429,12 +437,20 @@ func (s *BillingStore) ListRenewalCandidates(ctx context.Context) ([]billing.Ren
 			c     billing.RenewalCandidate
 			state string
 			price string
+			// Nullable now that first activation is a candidate: a subscriber
+			// who has never had a cycle has no expiry to read. Left as the
+			// zero time, which is what renew()'s max(now, expiry) already
+			// treats as "start from now".
+			expiry *time.Time
 		)
 		if err := rows.Scan(
 			&c.SubscriberID, &c.Username, &c.FranchiseID, &c.RegisteredState, &state,
-			&c.PlanName, &price, &c.PlanValidityDays, &c.PlanVolumeGB, &c.PlanExpiry,
+			&c.Status, &c.PlanName, &price, &c.PlanValidityDays, &c.PlanVolumeGB, &expiry,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan renewal candidate: %w", err)
+		}
+		if expiry != nil {
+			c.PlanExpiry = *expiry
 		}
 		c.DunningState = billing.DunningState(state)
 		if c.PlanPrice, err = parseDecimal(price); err != nil {
@@ -457,6 +473,46 @@ func (s *BillingStore) SetPlanExpiry(ctx context.Context, subscriberID int, expi
 	const q = `UPDATE subscribers SET plan_expiry = $2 WHERE id = $1`
 	if _, err := s.pool.Exec(ctx, q, subscriberID, expiry); err != nil {
 		return fmt.Errorf("db: set plan expiry for subscriber %d: %w", subscriberID, err)
+	}
+	return nil
+}
+
+// ActivateSubscriber completes a first-cycle purchase: it stamps plan_expiry
+// and clears pending_payment in the same statement.
+//
+// One statement rather than two, because either intermediate state is a bug
+// that outlives the request. Expiry first would leave a subscriber charged
+// and dated but still unauthorised; status first would put them online with
+// no expiry, which is precisely the state migration 048 exists to eliminate
+// — invisible to both billing scanners and served for free.
+//
+// Guarded on the current status so a concurrent change (an operator
+// terminating the account between the candidate query and here) is not
+// overwritten: the row simply does not match and the caller is told, rather
+// than a terminated subscriber being silently reactivated by a scanner.
+//
+// The ctx CTE attributes the change for migration 031's capture trigger, the
+// same as SetSubscriberDunningState — without it the activation is recorded
+// as "unknown", indistinguishable from an operator switching someone on by
+// hand.
+func (s *BillingStore) ActivateSubscriber(ctx context.Context, subscriberID int, expiry time.Time) error {
+	const q = `
+		WITH ctx AS (
+			SELECT set_config('app.actor', $3, true)                 AS actor,
+			       set_config('app.change_reason', 'activation', true) AS reason
+		)
+		UPDATE subscribers SET status = 'active', plan_expiry = $2
+		FROM ctx
+		WHERE subscribers.id = $1
+		  AND subscribers.status = 'pending_payment'
+		  AND ctx.actor IS NOT NULL`
+
+	tag, err := s.pool.Exec(ctx, q, subscriberID, expiry, actorFromContext(ctx))
+	if err != nil {
+		return fmt.Errorf("db: activate subscriber %d: %w", subscriberID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("db: subscriber %d was no longer pending_payment: %w", subscriberID, ErrNotFound)
 	}
 	return nil
 }

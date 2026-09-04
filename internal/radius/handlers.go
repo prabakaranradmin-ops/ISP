@@ -79,8 +79,8 @@ func (d *RadiusDaemon) handleAuth(ctx context.Context, w radius.ResponseWriter, 
 		return
 	}
 
-	// Reject immediately for hard-suspended / terminated subscribers
-	if sub.Status == "hard_suspended" || sub.Status == "terminated" {
+	// Allowlist, not a denylist: an unrecognised status grants nothing.
+	if !AuthorisesService(sub.Status) {
 		w.Write(r.Response(radius.CodeAccessReject)) //nolint:errcheck,gosec
 		d.authRejected(r)
 		return

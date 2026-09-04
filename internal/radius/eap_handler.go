@@ -171,7 +171,7 @@ func (d *RadiusDaemon) eapVerifyResponse(ctx context.Context, w radius.ResponseW
 		d.eapFail(ctx, w, r, pkt.Identifier, state, "unknown_subscriber")
 		return
 	}
-	if sub.Status == "hard_suspended" || sub.Status == "terminated" {
+	if !AuthorisesService(sub.Status) {
 		d.eapFail(ctx, w, r, pkt.Identifier, state, "suspended")
 		return
 	}
