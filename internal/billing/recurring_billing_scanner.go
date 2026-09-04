@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
@@ -129,6 +130,14 @@ func (s *RecurringBillingScanner) Run(ctx context.Context) {
 // Scan performs one pass. Exported so a test can drive a single pass without
 // waiting on the ticker.
 func (s *RecurringBillingScanner) Scan(ctx context.Context) error {
+	// Name the scanner as the actor for migration 031's status-capture
+	// trigger, exactly as DunningScanner.Scan does. Without this, the
+	// restoration an auto-renewal performs is recorded as "unknown" while the
+	// suspension that preceded it is correctly attributed to
+	// system:dunning-scanner — so the history of one subscriber's cycle names
+	// who cut them off but not who turned them back on.
+	ctx = middleware.WithSubject(ctx, "system:auto-renewal-scanner")
+
 	candidates, err := s.db.ListRenewalCandidates(ctx)
 	if err != nil {
 		return fmt.Errorf("auto-renewal scan: list candidates: %w", err)
