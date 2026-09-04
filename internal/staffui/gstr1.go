@@ -18,9 +18,10 @@ import (
 // the output is a month of invoices for an accountant to open in a
 // spreadsheet, not something to read in a browser.
 
-// GSTR1Store supplies the invoices a return is built from.
+// GSTR1Store supplies the invoices and credit notes a return is built from.
 type GSTR1Store interface {
 	ListInvoicesForGSTR1(ctx context.Context, year int, month time.Month) ([]billing.InvoiceRow, error)
+	ListCreditNotesForGSTR1(ctx context.Context, year int, month time.Month) ([]billing.CreditNoteRow, error)
 }
 
 // GSTR1Export handles GET /staff/billing/gstr1?period=YYYY-MM.
@@ -50,8 +51,20 @@ func (h *Handler) GSTR1Export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A credit note only ever reduces the liability, so failing to load them
+	// is not a degraded export worth serving with a warning — it would file
+	// more tax than is owed. Refuse instead.
+	notes, err := h.gstr1.ListCreditNotesForGSTR1(r.Context(), year, month)
+	if err != nil {
+		log.Error().Err(err).Int("year", year).Str("month", month.String()).
+			Msg("staffui: GSTR-1 credit note load failed")
+		h.renderError(w, r, s, http.StatusInternalServerError,
+			"Could not read credit notes for that period.")
+		return
+	}
+
 	ret := billing.BuildReturn(
-		billing.Period{Year: year, Month: month}, h.gstSupplier, rows)
+		billing.Period{Year: year, Month: month}, h.gstSupplier, rows, notes)
 
 	// Headers before the body: once WriteAccountantCSV starts writing, the
 	// status is already 200 and an error can no longer be reported as one.

@@ -100,8 +100,46 @@ func WriteAccountantCSV(w io.Writer, ret Return) error {
 		return err
 	}
 
+	// ── Credit notes ────────────────────────────────────────────────────
+	//
+	// One table covering both CDNR and CDNUR, with a column saying which,
+	// rather than two nearly identical blocks: the accountant is reading a
+	// worksheet, and every note carries the same fields. The portal's own
+	// import splits them, which is a concern for that renderer, not this one.
+	if err := write("Credit notes (Table 9B) - reduce the supplies above"); err != nil {
+		return err
+	}
+	if err := write("Note number", "Note date", "Original invoice", "Original date",
+		"Recipient type", "Recipient GSTIN", "Recipient name", "Place of supply", "State",
+		"Rate %", "Taxable value", "CGST", "SGST", "IGST", "Note total"); err != nil {
+		return err
+	}
+	if len(ret.CreditNotes) == 0 {
+		if err := write("(none)"); err != nil {
+			return err
+		}
+	}
+	for _, l := range ret.CreditNotes {
+		kind := "CDNUR (unregistered)"
+		if l.Registered {
+			kind = "CDNR (registered)"
+		}
+		if err := write(
+			l.NoteNumber, l.NoteDate.Format("02-01-2006"),
+			l.OriginalInvoice, l.OriginalDate.Format("02-01-2006"),
+			kind, l.RecipientGSTIN, l.RecipientName,
+			l.PlaceOfSupply, l.PlaceOfSupplyName, money(l.Rate),
+			money(l.TaxableValue), money(l.CGST), money(l.SGST), money(l.IGST), money(l.Total),
+		); err != nil {
+			return err
+		}
+	}
+	if err := blank(); err != nil {
+		return err
+	}
+
 	// ── HSN ─────────────────────────────────────────────────────────────
-	if err := write("HSN summary (Table 12)"); err != nil {
+	if err := write("HSN summary (Table 12), net of credit notes"); err != nil {
 		return err
 	}
 	if err := write("HSN/SAC", "Description", "UQC", "Quantity",
@@ -128,17 +166,23 @@ func WriteAccountantCSV(w io.Writer, ret Return) error {
 	// ── Totals ──────────────────────────────────────────────────────────
 	//
 	// Present so the accountant can tie the return to the books in one
-	// glance. B2B plus B2C must equal these, and the HSN summary must
-	// equal them too - three routes to the same figure, which is the
-	// point of reproducing it.
-	if err := write("Totals"); err != nil {
+	// glance. B2B plus B2C less the credit notes must equal these, and the
+	// HSN summary must equal them too - three routes to the same figure,
+	// which is the point of reproducing it.
+	//
+	// Net of credit notes, and the header says so: a total that silently
+	// included or excluded them would be checked against the ledger, appear
+	// to disagree, and send someone hunting for a discrepancy that is only a
+	// difference in what the column means.
+	if err := write("Totals (net of credit notes)"); err != nil {
 		return err
 	}
-	if err := write("Invoices", "Taxable value", "CGST", "SGST", "IGST", "Total"); err != nil {
+	if err := write("Invoices", "Credit notes", "Taxable value", "CGST", "SGST", "IGST", "Total"); err != nil {
 		return err
 	}
 	if err := write(
-		fmt.Sprintf("%d", ret.Totals.Invoices), money(ret.Totals.TaxableValue),
+		fmt.Sprintf("%d", ret.Totals.Invoices), fmt.Sprintf("%d", ret.Totals.CreditNotes),
+		money(ret.Totals.TaxableValue),
 		money(ret.Totals.CGST), money(ret.Totals.SGST), money(ret.Totals.IGST), money(ret.Totals.Total),
 	); err != nil {
 		return err

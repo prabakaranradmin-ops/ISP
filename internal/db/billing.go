@@ -772,3 +772,47 @@ func (s *BillingStore) ListInvoicesForGSTR1(ctx context.Context, year int, month
 	}
 	return out, rows.Err()
 }
+
+// ListCreditNotesForGSTR1 returns every credit note issued in a calendar
+// month, for the return's Table 9B.
+//
+// Selected by the note's own date, not the date of the invoice it adjusts: a
+// note belongs to the period it was issued in, which is frequently a later
+// month than the supply. Filtering on the invoice date instead would drop
+// every note that crosses a month boundary — silently, and in the direction
+// that overstates the liability.
+//
+// The original invoice's date comes along because Table 9B requires it
+// alongside the number, and it is not derivable from the note.
+func (s *BillingStore) ListCreditNotesForGSTR1(ctx context.Context, year int, month time.Month) ([]billing.CreditNoteRow, error) {
+	from := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
+	to := from.AddDate(0, 1, 0)
+
+	const q = `
+		SELECT c.id, c.invoice_id, i.created_at, c.created_at, c.subscriber_id,
+		       s.username, COALESCE(s.gstin, ''), s.registered_state,
+		       c.base_amount, c.cgst_amount, c.sgst_amount, c.igst_amount, c.total_amount
+		  FROM credit_notes c
+		  JOIN invoices    i ON i.id = c.invoice_id
+		  JOIN subscribers s ON s.id = c.subscriber_id
+		 WHERE c.created_at >= $1 AND c.created_at < $2
+		 ORDER BY c.id`
+
+	rows, err := s.pool.Query(ctx, q, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("db: list credit notes for GSTR-1: %w", err)
+	}
+	defer rows.Close()
+
+	var out []billing.CreditNoteRow
+	for rows.Next() {
+		var r billing.CreditNoteRow
+		if err := rows.Scan(&r.CreditNoteID, &r.OriginalInvoiceID, &r.OriginalInvoiceDate,
+			&r.NoteDate, &r.SubscriberID, &r.SubscriberName, &r.RecipientGSTIN,
+			&r.RecipientState, &r.TaxableValue, &r.CGST, &r.SGST, &r.IGST, &r.Total); err != nil {
+			return nil, fmt.Errorf("db: scan GSTR-1 credit note row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
