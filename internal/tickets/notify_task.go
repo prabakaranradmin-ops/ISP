@@ -45,7 +45,7 @@ type UpdatePayload struct {
 // same reason internal/billing and internal/fup don't: this package is a
 // dependency of the notification wiring, not the other way round.
 type Notifier interface {
-	Notify(ctx context.Context, subscriberID int, templateID, triggerEvent string, vars []string) error
+	Notify(ctx context.Context, subscriberID int, templateID, triggerEvent string, vars []string, channels ...string) error
 }
 
 // UpdateHandler dispatches the ticket status-change notification.

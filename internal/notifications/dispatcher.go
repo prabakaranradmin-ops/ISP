@@ -184,18 +184,73 @@ func firstVariable(task NotificationTask) string {
 	return task.Variables[0]
 }
 
-// Notify sends a transactional WhatsApp template to a subscriber, resolving the
-// destination number from the subscriber record.
+// ChannelWhatsApp, ChannelSMS and ChannelEmail name the delivery channels
+// Dispatch understands. Named rather than spelled as literals at each call
+// site because a typo in a channel string does not fail to compile — it falls
+// through Dispatch's switch and silently sends nothing.
+const (
+	ChannelWhatsApp = "whatsapp"
+	ChannelSMS      = "sms"
+	ChannelEmail    = "email"
+)
+
+// Notify sends a transactional template to a subscriber over each of the
+// given channels, resolving the destination from the subscriber record.
 //
-// It is the entry point used by task handlers, which know a subscriber ID
-// and a template but not a phone number.
-func (d *Dispatcher) Notify(ctx context.Context, subscriberID int, templateID, triggerEvent string, vars []string) error {
-	return d.Dispatch(ctx, NotificationTask{
-		SubscriberID: subscriberID,
-		Channel:      "whatsapp",
-		TemplateID:   templateID,
-		TriggerEvent: triggerEvent,
-		Class:        "transactional",
-		Variables:    vars,
-	})
+// It is the entry point used by task handlers, which know a subscriber ID and
+// a template but not a phone number or address.
+//
+// With no channels named it sends WhatsApp only, which is what every caller
+// did when this took no channels at all. That default is deliberate rather
+// than a convenience: a handler that has not been considered keeps its
+// existing behaviour instead of quietly acquiring a per-message SMS bill.
+//
+// Several requirements (FR-NOTIF-001 through 006) call for WhatsApp *and*
+// SMS, and this signature is what makes that expressible — the previous one
+// hardcoded a single channel, so every one of those was delivered on one.
+//
+// Failure semantics: every channel is attempted, and an error is returned
+// only when none of them succeeded. Returning one as soon as any channel
+// fails would look tidier and be wrong — the caller is a queued task that
+// retries, so a transient SMS failure would redeliver the WhatsApp message
+// that had already arrived. A subscriber reached on one channel has been
+// notified; the failure of a second is logged for the operator, not replayed
+// at the subscriber.
+func (d *Dispatcher) Notify(ctx context.Context, subscriberID int, templateID, triggerEvent string, vars []string, channels ...string) error {
+	if len(channels) == 0 {
+		channels = []string{ChannelWhatsApp}
+	}
+
+	var (
+		delivered int
+		lastErr   error
+	)
+	for _, ch := range channels {
+		err := d.Dispatch(ctx, NotificationTask{
+			SubscriberID: subscriberID,
+			Channel:      ch,
+			TemplateID:   templateID,
+			TriggerEvent: triggerEvent,
+			Class:        "transactional",
+			Variables:    vars,
+		})
+		if err != nil {
+			lastErr = fmt.Errorf("notifications: %s: %w", ch, err)
+			log.Warn().Err(err).
+				Int("subscriber_id", subscriberID).
+				Str("channel", ch).
+				Str("template_id", templateID).
+				Msg("notification channel failed; other channels continue")
+			continue
+		}
+		delivered++
+	}
+
+	// Dispatch already treats an unreachable channel (no mobile number, no
+	// email address) as a logged non-error, so this counts real delivery
+	// failures only.
+	if delivered == 0 && lastErr != nil {
+		return lastErr
+	}
+	return nil
 }

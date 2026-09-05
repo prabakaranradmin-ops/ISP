@@ -13,7 +13,7 @@ import (
 // is a dependency of the notification wiring, not the other way round, and an
 // interface keeps that direction intact.
 type DunningNotifier interface {
-	Notify(ctx context.Context, subscriberID int, templateID, triggerEvent string, vars []string) error
+	Notify(ctx context.Context, subscriberID int, templateID, triggerEvent string, vars []string, channels ...string) error
 }
 
 // DunningNoticeHandler sends the message for a dunning stage.

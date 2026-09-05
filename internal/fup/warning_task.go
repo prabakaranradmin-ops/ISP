@@ -22,7 +22,7 @@ type WarningPayload struct {
 // WarningNotifier is the notification surface the warning handler depends on.
 // It is satisfied by notifications.Dispatcher.
 type WarningNotifier interface {
-	Notify(ctx context.Context, subscriberID int, templateID, triggerEvent string, vars []string) error
+	Notify(ctx context.Context, subscriberID int, templateID, triggerEvent string, vars []string, channels ...string) error
 }
 
 // ContactLookup resolves the phone number a warning should be delivered to.

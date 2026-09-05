@@ -18,7 +18,7 @@ type stubNotifier struct {
 	calls        int
 }
 
-func (s *stubNotifier) Notify(_ context.Context, subscriberID int, templateID, triggerEvent string, vars []string) error {
+func (s *stubNotifier) Notify(_ context.Context, subscriberID int, templateID, triggerEvent string, vars []string, channels ...string) error {
 	s.calls++
 	s.subscriberID = subscriberID
 	s.templateID = templateID

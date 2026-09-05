@@ -359,3 +359,105 @@ func TestEmailSubjectCannotInjectHeaders(t *testing.T) {
 		t.Errorf("the injected text should survive as inert subject text, got %q", subjectLine)
 	}
 }
+
+// ── Multi-channel Notify ────────────────────────────────────────────────
+//
+// Notify used to hardcode the WhatsApp channel, so every requirement that
+// asks for "WhatsApp + SMS" (FR-NOTIF-001 through 006) delivered one of the
+// two. It now takes channel targets, and what needs pinning is the failure
+// rule, which is the part that is easy to get subtly wrong.
+
+// recordingSMS records where a message went and can be made to fail. The
+// existing stubSMS counts calls only, which cannot distinguish "attempted
+// and failed" from "never attempted" — the distinction these tests turn on.
+type recordingSMS struct {
+	calls  int
+	lastTo string
+	err    error
+}
+
+func (s *recordingSMS) SendSMS(_ context.Context, to, _ string) error {
+	s.calls++
+	s.lastTo = to
+	return s.err
+}
+
+// The default has to stay WhatsApp-only. Every existing caller relies on it,
+// and a default that fanned out would hand an operator a per-message SMS bill
+// for handlers nobody had reconsidered.
+func TestNotify_DefaultsToWhatsAppOnly(t *testing.T) {
+	db := &stubNotifDB{subscriber: &notifications.Subscriber{
+		ID: 1, MobileNumber: "+919876500111",
+	}}
+	sms := &recordingSMS{}
+	d := notifications.NewDispatcher(db, nil, sms)
+
+	// No WhatsApp client configured, so this errors — the point is only that
+	// SMS was never attempted.
+	_ = d.Notify(context.Background(), 1, "TMPL-005", "dunning_hard_suspended", []string{"x"})
+	if sms.calls != 0 {
+		t.Errorf("SMS sent %d times with no channels named; the default must stay WhatsApp-only", sms.calls)
+	}
+}
+
+func TestNotify_SendsOnEveryNamedChannel(t *testing.T) {
+	db := &stubNotifDB{subscriber: &notifications.Subscriber{
+		ID: 1, MobileNumber: "+919876500111",
+	}}
+	sms := &recordingSMS{}
+	d := notifications.NewDispatcher(db, nil, sms)
+
+	if err := d.Notify(context.Background(), 1, "TMPL-006", "service_restored",
+		[]string{"restored"}, notifications.ChannelSMS); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+	if sms.calls != 1 {
+		t.Errorf("SMS calls: want 1, got %d", sms.calls)
+	}
+	if sms.lastTo != "+919876500111" {
+		t.Errorf("SMS destination: got %q", sms.lastTo)
+	}
+}
+
+// The rule that matters. A queued task retries on error, so returning one
+// because a secondary channel failed would redeliver the channel that had
+// already arrived — the subscriber gets the same WhatsApp message twice
+// because their SMS gateway hiccuped.
+func TestNotify_OneChannelFailingDoesNotFailTheWhole(t *testing.T) {
+	db := &stubNotifDB{subscriber: &notifications.Subscriber{
+		ID: 1, MobileNumber: "+919876500111", Email: "ravi@example.com",
+	}}
+	sms := &recordingSMS{err: errors.New("gateway 502")}
+	email := &stubEmail{}
+	d := notifications.NewDispatcher(db, nil, sms)
+	d.SetEmailSender(email)
+
+	err := d.Notify(context.Background(), 1, "TMPL-003", "dunning_remind_7d",
+		[]string{"reminder"}, notifications.ChannelSMS, notifications.ChannelEmail)
+	if err != nil {
+		t.Errorf("one channel failing must not fail the notification, got: %v", err)
+	}
+	if email.calls != 1 {
+		t.Errorf("the surviving channel must still be attempted: email calls = %d", email.calls)
+	}
+	if sms.calls != 1 {
+		t.Errorf("the failing channel should have been attempted once, got %d", sms.calls)
+	}
+}
+
+// If nothing got through, the caller has to know: that is a real delivery
+// failure and the queue should retry it.
+func TestNotify_AllChannelsFailingIsAnError(t *testing.T) {
+	db := &stubNotifDB{subscriber: &notifications.Subscriber{
+		ID: 1, MobileNumber: "+919876500111",
+	}}
+	sms := &recordingSMS{err: errors.New("gateway 502")}
+	d := notifications.NewDispatcher(db, nil, sms)
+
+	if err := d.Notify(context.Background(), 1, "TMPL-005", "dunning_hard_suspended",
+		[]string{"x"}, notifications.ChannelSMS); err == nil {
+		t.Error("want an error when no channel succeeded, got nil — the task would be marked done undelivered")
+	} else if !strings.Contains(err.Error(), "sms") {
+		t.Errorf("the error should name the channel that failed, got: %v", err)
+	}
+}

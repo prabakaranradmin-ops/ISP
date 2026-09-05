@@ -144,7 +144,7 @@ type itNotifyCall struct {
 	Vars         []string
 }
 
-func (n *itNotifier) Notify(_ context.Context, subscriberID int, templateID, triggerEvent string, vars []string) error {
+func (n *itNotifier) Notify(_ context.Context, subscriberID int, templateID, triggerEvent string, vars []string, channels ...string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.err != nil {
