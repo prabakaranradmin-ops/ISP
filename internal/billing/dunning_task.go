@@ -21,11 +21,32 @@ type DunningNotifier interface {
 // FR: FR-NOTIF-001 (reminders at T-7d/T-3d/T-1d), FR-NOTIF-005 (suspension)
 type DunningNoticeHandler struct {
 	notifier DunningNotifier
+	channels func(DunningState) []string
 }
 
 // NewDunningNoticeHandler constructs a DunningNoticeHandler.
 func NewDunningNoticeHandler(n DunningNotifier) *DunningNoticeHandler {
 	return &DunningNoticeHandler{notifier: n}
+}
+
+// SetChannelPolicy decides which channels each dunning stage is sent on.
+//
+// Injected rather than decided here, and the reason is not layering
+// pedantry: which stages are worth an SMS is an operating cost, billed per
+// message across every subscriber, and it belongs where an operator can see
+// and change it — the wiring in cmd/radiusd — not buried in a task handler.
+// It also keeps this package free of the notifications package, which is
+// what DunningNotifier exists to do.
+//
+// Unset means every stage goes WhatsApp-only, which is what this handler did
+// before channels were selectable.
+func (h *DunningNoticeHandler) SetChannelPolicy(p func(DunningState) []string) { h.channels = p }
+
+func (h *DunningNoticeHandler) channelsFor(state DunningState) []string {
+	if h.channels == nil {
+		return nil
+	}
+	return h.channels(state)
 }
 
 // ProcessTask implements jobqueue.Handler for TaskTypeDunningNotice.
@@ -44,7 +65,7 @@ func (h *DunningNoticeHandler) ProcessTask(ctx context.Context, t *jobqueue.Task
 	triggerEvent := "dunning_" + string(p.State)
 	vars := []string{p.Username, fmt.Sprintf("%d", p.DaysOverdue)}
 
-	if err := h.notifier.Notify(ctx, p.SubscriberID, p.TemplateID, triggerEvent, vars); err != nil {
+	if err := h.notifier.Notify(ctx, p.SubscriberID, p.TemplateID, triggerEvent, vars, h.channelsFor(p.State)...); err != nil {
 		return fmt.Errorf("dunning notice: dispatch to sub %d: %w", p.SubscriberID, err)
 	}
 	return nil
@@ -56,12 +77,18 @@ func (h *DunningNoticeHandler) ProcessTask(ctx context.Context, t *jobqueue.Task
 // FR: FR-NOTIF-004 (receipt), FR-NOTIF-006 (restoration)
 type PaymentReceiptHandler struct {
 	notifier DunningNotifier
+	channels []string
 }
 
 // NewPaymentReceiptHandler constructs a PaymentReceiptHandler.
 func NewPaymentReceiptHandler(n DunningNotifier) *PaymentReceiptHandler {
 	return &PaymentReceiptHandler{notifier: n}
 }
+
+// SetChannels selects the channels a receipt is sent on. Empty means
+// WhatsApp only; see DunningNoticeHandler.SetChannelPolicy for why this is
+// injected rather than decided here.
+func (h *PaymentReceiptHandler) SetChannels(c ...string) { h.channels = c }
 
 // PaymentReceiptPayload is the task payload for a payment acknowledgement.
 type PaymentReceiptPayload struct {
@@ -103,7 +130,7 @@ func (h *PaymentReceiptHandler) ProcessTask(ctx context.Context, t *jobqueue.Tas
 	}
 	vars := []string{p.Username, p.Amount, p.NewBalance}
 
-	if err := h.notifier.Notify(ctx, p.SubscriberID, TemplatePaymentReceived, triggerEvent, vars); err != nil {
+	if err := h.notifier.Notify(ctx, p.SubscriberID, TemplatePaymentReceived, triggerEvent, vars, h.channels...); err != nil {
 		return fmt.Errorf("payment receipt: dispatch to sub %d: %w", p.SubscriberID, err)
 	}
 	return nil
@@ -122,12 +149,18 @@ const TaskTypePaymentReceipt = "notif:payment_receipt"
 // may not happen at all if the payment did not cover the cycle.
 type ServiceRestoredHandler struct {
 	notifier DunningNotifier
+	channels []string
 }
 
 // NewServiceRestoredHandler constructs a ServiceRestoredHandler.
 func NewServiceRestoredHandler(n DunningNotifier) *ServiceRestoredHandler {
 	return &ServiceRestoredHandler{notifier: n}
 }
+
+// SetChannels selects the channels a restoration notice is sent on. This is
+// the message most likely to reach someone whose internet is off, so it is
+// the strongest candidate for SMS.
+func (h *ServiceRestoredHandler) SetChannels(c ...string) { h.channels = c }
 
 // ProcessTask implements jobqueue.Handler for TaskTypeServiceRestored.
 func (h *ServiceRestoredHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
@@ -139,7 +172,7 @@ func (h *ServiceRestoredHandler) ProcessTask(ctx context.Context, t *jobqueue.Ta
 		return fmt.Errorf("service restored notice: notifier not configured")
 	}
 	vars := []string{p.Username, p.PlanName, p.ValidUntil}
-	if err := h.notifier.Notify(ctx, p.SubscriberID, TemplateServiceRestored, "service_restored", vars); err != nil {
+	if err := h.notifier.Notify(ctx, p.SubscriberID, TemplateServiceRestored, "service_restored", vars, h.channels...); err != nil {
 		return fmt.Errorf("service restored notice: dispatch to sub %d: %w", p.SubscriberID, err)
 	}
 	return nil

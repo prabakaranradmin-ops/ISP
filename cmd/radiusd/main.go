@@ -487,6 +487,48 @@ func run(ctx context.Context) error {
 	dunningNoticeHandler := billing.NewDunningNoticeHandler(dispatcher)
 	paymentReceiptHandler := billing.NewPaymentReceiptHandler(dispatcher)
 	serviceRestoredHandler := billing.NewServiceRestoredHandler(dispatcher)
+
+	// ── Notification channel policy ──────────────────────────────────────
+	//
+	// Which messages are worth an SMS, decided here because it is an
+	// operating cost — every SMS is billed per message, across every
+	// subscriber — and not a property of any one handler.
+	//
+	// The reason SMS matters at all is that WhatsApp needs the internet, and
+	// the subscribers who most need to hear from us are the ones whose
+	// internet we have just switched off. A suspension notice delivered only
+	// over WhatsApp reaches nobody who is actually suspended.
+	//
+	// The spec (FR-NOTIF-001..006) asks for WhatsApp + SMS on all six. This
+	// is deliberately narrower: SMS goes where the subscriber may be offline
+	// or the message is a financial record, and routine FUP warnings stay on
+	// WhatsApp, where the subscriber is by definition still connected.
+	dunningNoticeHandler.SetChannelPolicy(func(state billing.DunningState) []string {
+		switch state {
+		case billing.DunningGracePeriod:
+			// The last message before the line is restricted, and the last
+			// moment the subscriber is reliably still online to receive it.
+			return []string{
+				notifications.ChannelWhatsApp,
+				notifications.ChannelEmail,
+				notifications.ChannelSMS,
+			}
+		case billing.DunningSoftSuspended, billing.DunningHardSuspended:
+			// FR-NOTIF-005. Service is already restricted, so WhatsApp may
+			// not arrive at all; SMS is the channel that still works.
+			return []string{notifications.ChannelWhatsApp, notifications.ChannelSMS}
+		default:
+			// FR-NOTIF-001's T-7d and T-3d reminders. Still online, still
+			// plenty of time; email is free and carries the detail.
+			return []string{notifications.ChannelWhatsApp, notifications.ChannelEmail}
+		}
+	})
+	// FR-NOTIF-004: a receipt is the subscriber's record that money left
+	// their account, and worth having outside an app they may have deleted.
+	paymentReceiptHandler.SetChannels(notifications.ChannelWhatsApp, notifications.ChannelSMS)
+	// FR-NOTIF-006: sent to someone who was cut off moments ago, so it is the
+	// single message least likely to arrive over WhatsApp.
+	serviceRestoredHandler.SetChannels(notifications.ChannelWhatsApp, notifications.ChannelSMS)
 	ticketUpdateHandler := tickets.NewUpdateHandler(dispatcher)
 	announcementHandler := notifications.NewAnnouncementHandler(dispatcher)
 
