@@ -10,6 +10,7 @@
 package middleware_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -84,8 +85,8 @@ func TestFR_SEC_005_RequireRole_NoToken(t *testing.T) {
 			if *reached {
 				t.Error("protected handler must not run without a valid token")
 			}
-			if body := rec.Body.String(); len(body) > 0 && jsonLooksLikeData(body) {
-				t.Errorf("no data may be returned on 401, got %q", body)
+			if body := rec.Body.String(); len(body) > 0 && !isOnlyAnErrorEnvelope(body) {
+				t.Errorf("401 must carry nothing but the error envelope, got %q", body)
 			}
 		})
 	}
@@ -245,18 +246,29 @@ func TestFR_FRN_001_Claims_FranchiseIDPropagates(t *testing.T) {
 	}
 }
 
-// jsonLooksLikeData reports whether a body carries a JSON object or array,
-// as opposed to a plain error string.
-func jsonLooksLikeData(body string) bool {
-	for i := 0; i < len(body); i++ {
-		switch body[i] {
-		case ' ', '\t', '\r', '\n':
-			continue
-		case '{', '[':
-			return true
-		default:
-			return false
-		}
+// isOnlyAnErrorEnvelope reports whether a body is the {code, message} error
+// envelope and nothing else.
+//
+// This replaces jsonLooksLikeData, which asked whether the body was a JSON
+// object at all. That was a sound proxy for "did we leak the resource" while
+// auth errors were text/plain, and stopped being one the moment
+// middleware.writeAuthError started returning the same JSON envelope every
+// other handler uses (FR-MOB-002: an expired token was the one error a mobile
+// client could not parse). From then on it fired on every 401, and nobody saw
+// it, because the integration suite it lives in had never been run.
+//
+// The real requirement is that a rejected request returns no data. So this
+// checks the shape: exactly the two envelope keys, nothing more. A response
+// carrying so much as an extra field fails, which is the leak worth catching.
+func isOnlyAnErrorEnvelope(body string) bool {
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
+		return false
 	}
-	return false
+	if len(envelope) != 2 {
+		return false
+	}
+	_, hasCode := envelope["code"]
+	_, hasMessage := envelope["message"]
+	return hasCode && hasMessage
 }

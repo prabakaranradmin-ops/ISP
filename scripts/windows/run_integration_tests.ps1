@@ -82,11 +82,22 @@ try {
         -db-host $dbHost -db-port $dbPort
     if ($LASTEXITCODE -ne 0) { throw "bootstrap failed (exit $LASTEXITCODE)" }
 
-    $testDsn = [regex]::Match((Get-Content (Join-Path $tmpConfig 'app.env') -Raw),
-                              '(?m)^DB_DSN=(.*)$').Groups[1].Value.Trim()
-    if (-not $testDsn) { throw 'bootstrap wrote no DB_DSN for the test database' }
-    if ($testDsn -match [regex]::Escape("/$liveDb")) {
-        throw 'bootstrap produced a DSN pointing at the live database; refusing to continue'
+    # TEST_DB_DSN must be a SUPERUSER connection, not the bss_app one bootstrap
+    # writes into app.env.
+    #
+    # The harness truncates lea_audit_log, live_sessions and jobqueue_tasks,
+    # and migration 019 deliberately denies bss_app exactly those rights —
+    # least privilege on the audit log is a security control, not an oversight,
+    # and internal/db/lea_audit_rls_integration_test.go exists to prove it
+    # holds. That test also runs ALTER ROLE and seeds rows "as the superuser"
+    # before deriving its own restricted connection, which only works from a
+    # superuser DSN.
+    #
+    # Pointed at the app user instead, the suite fails ~200 tests with
+    # SQLSTATE 42501 and every one of them looks like a product defect.
+    $testDsn = "postgres://postgres:$suPw@${dbHost}:${dbPort}/${TestDbName}?sslmode=disable"
+    if ($TestDbName -eq $liveDb) {
+        throw 'refusing to continue: the test DSN resolves to the live database'
     }
 
     # ---- Run the suite -------------------------------------------------------
