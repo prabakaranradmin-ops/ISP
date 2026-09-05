@@ -86,7 +86,7 @@ try {
     # writes into app.env.
     #
     # The harness truncates lea_audit_log, live_sessions and jobqueue_tasks,
-    # and migration 019 deliberately denies bss_app exactly those rights —
+    # and migration 019 deliberately denies bss_app exactly those rights -
     # least privilege on the audit log is a security control, not an oversight,
     # and internal/db/lea_audit_rls_integration_test.go exists to prove it
     # holds. That test also runs ALTER ROLE and seeds rows "as the superuser"
@@ -126,6 +126,38 @@ try {
 
     exit $testExit
 } finally {
+    # Put the live application's database login back, always.
+    #
+    # PostgreSQL roles are cluster-wide, not per-database, so a test that runs
+    # ALTER ROLE reaches out of the test database and changes how the
+    # production services authenticate. One did exactly that, and the damage is
+    # invisible for a while: pgxpool keeps the connections it already opened,
+    # so /readyz keeps answering 200 while the stack is quietly unable to make
+    # a new one.
+    #
+    # The test no longer does this, but the guard stays. It costs one statement,
+    # it protects anyone running an older checkout, and the failure it prevents
+    # is a production outage that surfaces hours later with no obvious cause.
+    if ($suPw -and $dbHost -and $dbPort -and $liveDb) {
+        try {
+            $liveUser = $m.Groups[1].Value
+            $livePw   = $m.Groups[2].Value
+            $env:PGPASSWORD = $suPw
+            $sql = "ALTER ROLE $liveUser WITH PASSWORD '$($livePw -replace "'","''")'"
+            & (Join-Path $InstallDir 'pgsql\bin\psql.exe') `
+                -h $dbHost -p $dbPort -U postgres -d postgres -v ON_ERROR_STOP=1 -c $sql | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "restored $liveUser's password to match app.env" -ForegroundColor DarkGray
+            } else {
+                Write-Host "WARNING: could not restore $liveUser's password. The live services may be unable to reconnect." -ForegroundColor Red
+            }
+        } catch {
+            Write-Host "WARNING: could not restore the application role's password: $_" -ForegroundColor Red
+        } finally {
+            Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+        }
+    }
+
     Remove-Item Env:TEST_DB_DSN -ErrorAction SilentlyContinue
     Remove-Item Env:JWT_SECRET  -ErrorAction SilentlyContinue
     if (-not $KeepDatabase -and $tmpConfig -and (Test-Path $tmpConfig)) {

@@ -24,16 +24,47 @@ func TestLEAAuditLog_AppRoleBlockedFromUpdateDelete(t *testing.T) {
 	_, pool := newTestDB(t)
 	ctx := context.Background()
 
-	const appPassword = "integration-test-app-role-password"
-	// Not parameterized: ALTER ROLE ... PASSWORD expects a string literal in
-	// PostgreSQL's grammar, not a bind parameter — appPassword is a fixed
-	// constant this test controls, not external input, so direct
-	// interpolation here is safe.
-	if _, err := pool.Exec(ctx, fmt.Sprintf("ALTER ROLE bss_app WITH PASSWORD '%s'", appPassword)); err != nil {
-		t.Fatalf("set bss_app password: %v", err)
-	}
+	const probeRole = "bss_app_rls_probe"
+	const probePassword = "integration-test-app-role-password"
 
-	appDSN, err := dsnAsRole(os.Getenv("TEST_DB_DSN"), "bss_app", appPassword)
+	// A dedicated member of bss_app, rather than bss_app itself.
+	//
+	// This used to run ALTER ROLE bss_app WITH PASSWORD. PostgreSQL roles are
+	// cluster-wide, not per-database, so that changed the password of the role
+	// the live application logs in with — on any machine where the test
+	// database shares a cluster with a real one, which is every native install.
+	// The damage is invisible until the running services next open a
+	// connection: pgxpool keeps the ones it already authenticated, so health
+	// checks go on passing while the stack is quietly unable to reconnect.
+	// scripts/run_db_tests.sh gave a throwaway container, which is why this was
+	// safe when it was written and stopped being safe when the suite grew a
+	// second way to run.
+	//
+	// A member role inherits bss_app's table grants, and RLS policies naming
+	// bss_app match it too (policy roles match by membership, not identity), so
+	// the privilege surface under test is the same one. NOINHERIT is not set
+	// and must not be: inheritance is exactly what makes this equivalent.
+	// NOBYPASSRLS is explicit because a role that could bypass RLS would make
+	// this test silently vacuous.
+	//
+	// Not parameterized: CREATE ROLE ... PASSWORD expects a string literal in
+	// PostgreSQL's grammar, not a bind parameter — both constants are fixed
+	// here, not external input.
+	if _, err := pool.Exec(ctx, fmt.Sprintf("DROP ROLE IF EXISTS %s", probeRole)); err != nil {
+		t.Fatalf("drop stale probe role: %v", err)
+	}
+	if _, err := pool.Exec(ctx, fmt.Sprintf(
+		"CREATE ROLE %s LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '%s' IN ROLE bss_app",
+		probeRole, probePassword)); err != nil {
+		t.Fatalf("create probe role: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(), fmt.Sprintf("DROP ROLE IF EXISTS %s", probeRole)); err != nil {
+			t.Logf("could not drop probe role %s: %v", probeRole, err)
+		}
+	})
+
+	appDSN, err := dsnAsRole(os.Getenv("TEST_DB_DSN"), probeRole, probePassword)
 	if err != nil {
 		t.Fatalf("build bss_app DSN: %v", err)
 	}
