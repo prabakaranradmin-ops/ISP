@@ -145,8 +145,18 @@ func (s *stubWalletFunded) RecordRecharge(_ context.Context, p billing.RechargeP
 
 // ── Plan change (FR-LC-001) ─────────────────────────────────────────────────
 
+// The fixture leaves 11 days rather than 10 deliberately. At exactly 10 the
+// bonus works out to precisely 5 days, the total lands precisely on this
+// test's own lower bound, and which side it falls is decided by the
+// microseconds between the fixture being built and the handler reading the
+// clock — so it failed roughly whenever it was run. 11 days gives 5 bonus
+// days with room on either side.
+//
+// The boundary itself is worth knowing about and is pinned deterministically
+// in TestComputePlanChangeExpiry_BonusDaysAreFloored, which can inject a
+// clock; this test goes through the router and cannot.
 func TestChangeSubscriberPlan_ProratesAndPersists(t *testing.T) {
-	expiry := time.Now().Add(10 * 24 * time.Hour)
+	expiry := time.Now().Add(11 * 24 * time.Hour)
 	lc := &stubLifecycle{info: &api.PlanChangeInfo{
 		Username: "prorate_sub", CurrentExpiry: &expiry,
 		OldPrice: decimal.NewFromInt(300), OldValidityDays: 30,
@@ -172,8 +182,8 @@ func TestChangeSubscriberPlan_ProratesAndPersists(t *testing.T) {
 	if lc.lastNewPlanID != 5 {
 		t.Errorf("new_plan_id passed to store = %d, want 5", lc.lastNewPlanID)
 	}
-	// 10 days remaining at 10/day old value = 100 credit; new plan is 20/day,
-	// so 5 bonus days on top of the new plan's own 30 = 35 total.
+	// 11 days remaining at 10/day old value = 110 credit; new plan is 20/day,
+	// so floor(5.5) = 5 bonus days on top of the new plan's own 30 = 35 total.
 	wantMin := time.Now().Add(34 * 24 * time.Hour)
 	wantMax := time.Now().Add(36 * 24 * time.Hour)
 	if lc.lastNewExpiry.Before(wantMin) || lc.lastNewExpiry.After(wantMax) {
