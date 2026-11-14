@@ -119,7 +119,11 @@ Re-running all three steps is safe and is what the MSI does:
 - `setup_postgres.ps1` leaves an existing cluster and database alone, and
   starts the server only if it is not already running.
 - `bootstrap.exe` applies only migrations that are new (goose's own version
-  table) and **never** rotates a secret once `app.env` exists.
+  table) and **never** rotates a secret once `app.env` exists. It does set
+  the `bss_app` role's password back to the one already in `app.env`, so a
+  password changed inside PostgreSQL (an integration test run, a manual
+  `ALTER ROLE`) is repaired by re-running the installer instead of failing
+  the API service's start and rolling the whole install back.
 - `register_services.ps1` stops each service before reconfiguring it (its
   binary path may have moved) and leaves the Event Log source and recovery
   action alone if already present.

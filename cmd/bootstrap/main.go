@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -326,7 +327,7 @@ func provisionSecrets(ctx context.Context, db *sql.DB, paths secretPaths, target
 	}
 
 	if credExists && keyExists {
-		return false, nil
+		return false, resyncAppRolePassword(ctx, db, credPath, target.user)
 	}
 	// One present without the other means a half-finished previous run, or
 	// a file removed by hand. Refusing is the safe answer: generating the
@@ -374,6 +375,48 @@ func provisionSecrets(ctx context.Context, db *sql.DB, paths secretPaths, target
 		return false, err
 	}
 	return true, nil
+}
+
+// resyncAppRolePassword sets the application role's password back to the one
+// app.env already holds, on every run where app.env exists.
+//
+// PostgreSQL roles are cluster-wide, so anything with superuser rights on the
+// same cluster - an integration test run, a manual ALTER ROLE - can change
+// this password without touching app.env. The services keep their already
+// authenticated pooled connections and look healthy until the next restart,
+// then fail with "password authentication failed for user bss_app". Under the
+// installer that restart is the final step, so the whole install rolls back.
+//
+// app.env is the side the services read, so it is the one to keep. This sets
+// the role to the value app.env already has; it never generates a new one.
+func resyncAppRolePassword(ctx context.Context, db *sql.DB, credPath, appUser string) error {
+	raw, err := os.ReadFile(credPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", credPath, err)
+	}
+	var dsn string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "DB_DSN="); ok {
+			dsn = strings.TrimSpace(v)
+		}
+	}
+	u, err := url.Parse(dsn)
+	if dsn == "" || err != nil || u.User == nil {
+		fmt.Printf("bootstrap: DB_DSN in %s is not a postgres:// URL, application role credential left unchecked\n", credPath)
+		return nil
+	}
+	password, hasPassword := u.User.Password()
+	if u.User.Username() != appUser || !hasPassword {
+		fmt.Printf("bootstrap: DB_DSN in %s does not carry a credential for %s, left unchecked\n", credPath, appUser)
+		return nil
+	}
+	if _, err := db.ExecContext(ctx,
+		fmt.Sprintf("ALTER ROLE %s WITH PASSWORD %s", quoteIdent(appUser), quoteLiteral(password)),
+	); err != nil {
+		return fmt.Errorf("re-sync %s password from %s: %w", appUser, credPath, err)
+	}
+	fmt.Printf("bootstrap: %s credential re-synced to the one in %s\n", appUser, credPath)
+	return nil
 }
 
 func fileExists(path string) (bool, error) {
