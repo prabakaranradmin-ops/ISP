@@ -50,7 +50,9 @@ if "%ARG:~0,1%"=="-" (
 ) else (
     set "MSI_PATH=%~1"
 )
-shift
+rem /1, not a bare shift: a bare shift also shifts %0, after which %~f0
+rem and %~dp0 below name the last argument instead of this script.
+shift /1
 goto parseargs
 :argsdone
 
