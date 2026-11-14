@@ -24,7 +24,7 @@ func (d *RadiusDaemon) handleRequest(parent context.Context, w radius.ResponseWr
 
 	switch r.Code {
 	case radius.CodeAccessRequest:
-		d.handleAuth(ctx, w, r)
+		d.handleAuth(ctx, signingWriter{w}, r)
 	case radius.CodeAccountingRequest:
 		d.handleAccounting(ctx, w, r)
 	default:

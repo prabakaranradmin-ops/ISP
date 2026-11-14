@@ -328,10 +328,10 @@ func (d *RadiusDaemon) writeEAPReject(w radius.ResponseWriter, r *radius.Request
 // before sending.
 //
 // RFC 3579 §3.2 requires it on every RADIUS packet carrying EAP-Message, and
-// NAS devices routinely discard EAP packets that lack it. The attribute must
-// be present and zeroed while the HMAC is computed over the packet, which is
-// what layeh's Write does when the attribute already exists — so it is added
-// here rather than left to chance.
+// NAS devices routinely discard EAP packets that lack it. The zeroed
+// placeholder set here is replaced with the real HMAC by signingWriter
+// (message_authenticator.go), which handleRequest wraps every Access
+// response in; layeh's own Write does not compute it.
 func (d *RadiusDaemon) writeWithMessageAuthenticator(w radius.ResponseWriter, resp *radius.Packet) {
 	if err := rfc2869.MessageAuthenticator_Set(resp, make([]byte, 16)); err != nil {
 		// Send anyway: many NAS devices accept the packet without it, and a
