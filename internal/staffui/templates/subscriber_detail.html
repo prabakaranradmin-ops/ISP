@@ -10,6 +10,8 @@
     {{if $d.ShowBilling}}<button type="button" class="tab-btn" data-tab="billing">Billing</button>{{end}}
     {{if $d.ShowTickets}}<button type="button" class="tab-btn" data-tab="tickets">Tickets</button>{{end}}
     {{if and $d.ShowSpeedOverride $d.Subscriber}}<button type="button" class="tab-btn" data-tab="speed">Speed override</button>{{end}}
+    {{if and $d.ShowCredentials $d.Subscriber}}<button type="button" class="tab-btn" data-tab="credentials">Credentials</button>{{end}}
+    {{if and $d.ShowChangePlan $d.Subscriber}}<button type="button" class="tab-btn" data-tab="plan">Change plan</button>{{end}}
   </div>
 
   <section data-tab-panel="overview">
@@ -112,6 +114,59 @@
           </label>
         </div>
         <button class="primary" type="submit">Apply override</button>
+      </form>
+    </div>
+  </section>
+  {{end}}
+
+  {{if and $d.ShowCredentials $d.Subscriber}}
+  <section data-tab-panel="credentials">
+    <div class="card"><h3>Credentials</h3>
+      <dl>
+        <dt>Username</dt><dd class="num">{{$d.Subscriber.Username}}</dd>
+      </dl>
+      {{if $d.PasswordRevealed}}
+        {{if $d.PasswordCaptured}}
+          <p>Password: <strong class="num">{{$d.RevealedPassword}}</strong></p>
+        {{else}}
+          <p class="muted">No stored password to show &mdash; this subscriber was created before password capture, or the password has not been re-saved since. Reset it below to set one you can view.</p>
+        {{end}}
+      {{end}}
+      <form method="post" action="/staff/subscribers/{{$d.Subscriber.ID}}/password/reveal">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <button type="submit">Reveal password</button>
+      </form>
+      {{if $d.ShowResetPassword}}
+      <form method="post" action="/staff/subscribers/{{$d.Subscriber.ID}}/password">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <div class="formgrid">
+          <label>New password
+            <input name="new_password" required autocomplete="off" placeholder="at least 6 characters">
+          </label>
+        </div>
+        <button class="primary" type="submit">Reset password</button>
+      </form>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+
+  {{if and $d.ShowChangePlan $d.Subscriber}}
+  <section data-tab-panel="plan">
+    <div class="card"><h3>Change plan</h3>
+      <p class="muted">Moves the subscriber to another tariff &mdash; billing is prorated from today.</p>
+      <form method="post" action="/staff/subscribers/{{$d.Subscriber.ID}}/plan-change">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <div class="formgrid">
+          <label>Plan
+            <select name="plan_id" required>
+              {{range $d.Plans}}
+                <option value="{{.ID}}"{{if eq .ID $d.Subscriber.PlanID}} selected{{end}}>{{.Name}} &mdash; {{.RateLimitString}} &mdash; &#8377;{{.Price}} / {{.ValidityDays}}d</option>
+              {{end}}
+            </select>
+          </label>
+        </div>
+        <button class="primary" type="submit">Change plan</button>
       </form>
     </div>
   </section>

@@ -162,9 +162,17 @@ func (h *Handler) verifySubscriberPassword(ctx context.Context, username, passwo
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 }
 
-// CredentialQuerier reads a subscriber's stored password hash for
-// verification. Deliberately a separate, narrow interface: the hash must not
+// CredentialQuerier reads and writes a subscriber's stored credentials.
+// Deliberately a separate, narrow interface: the password material must not
 // become a field on SubscriberRecord, which is serialised to API clients.
+//
+// GetPasswordHash serves verification (bcrypt compare). The three that follow
+// back the console's reveal/reset feature: a recoverable, AES-encrypted copy of
+// the password kept beside the hash (migration 051) so an operator can show a
+// customer their PPPoE password — the bcrypt hash alone can never be read back.
 type CredentialQuerier interface {
 	GetPasswordHash(ctx context.Context, username string) (string, error)
+	GetSubscriberPasswordEnc(ctx context.Context, id int) (string, error)
+	SetSubscriberPasswordEnc(ctx context.Context, id int, passwordEnc string) error
+	SetSubscriberCredential(ctx context.Context, id int, passwordHash, passwordEnc string) error
 }

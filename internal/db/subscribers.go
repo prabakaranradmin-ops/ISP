@@ -321,6 +321,61 @@ func (s *APIStore) GetPasswordHash(ctx context.Context, username string) (string
 	return hash, nil
 }
 
+// GetSubscriberPasswordEnc returns the recoverable (AES-encrypted) copy of a
+// subscriber's password, or "" when none was captured (migration 051's NULL).
+//
+// By id, not username: the console reveals a password from a subscriber the
+// operator is already looking at by id, and an id cannot be mistaken for
+// someone else's account the way a re-typed username could.
+func (s *APIStore) GetSubscriberPasswordEnc(ctx context.Context, id int) (string, error) {
+	const q = `SELECT COALESCE(password_enc, '') FROM subscribers WHERE id = $1`
+
+	var enc string
+	err := s.pool.QueryRow(ctx, q, id).Scan(&enc)
+	if isNoRows(err) {
+		return "", fmt.Errorf("db: subscriber %d: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("db: get password_enc for subscriber %d: %w", id, err)
+	}
+	return enc, nil
+}
+
+// SetSubscriberPasswordEnc stores the recoverable password copy alone, leaving
+// the bcrypt hash untouched. Used right after CreateSubscriber, whose INSERT
+// has already set the hash — this captures the reveal copy without a second
+// bcrypt round or a change to that shared INSERT's column list.
+func (s *APIStore) SetSubscriberPasswordEnc(ctx context.Context, id int, passwordEnc string) error {
+	const q = `UPDATE subscribers SET password_enc = NULLIF($2, '') WHERE id = $1`
+
+	tag, err := s.pool.Exec(ctx, q, id, passwordEnc)
+	if err != nil {
+		return fmt.Errorf("db: set password_enc for subscriber %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("db: subscriber %d: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
+// SetSubscriberCredential replaces both stored forms of a subscriber's password
+// in one statement: the authoritative bcrypt hash RADIUS checks, and the
+// recoverable copy the console reveals. Written together so the two can never
+// drift — a reveal that showed a password the hash no longer accepted would be
+// worse than no reveal at all.
+func (s *APIStore) SetSubscriberCredential(ctx context.Context, id int, passwordHash, passwordEnc string) error {
+	const q = `UPDATE subscribers SET password_hash = $2, password_enc = NULLIF($3, '') WHERE id = $1`
+
+	tag, err := s.pool.Exec(ctx, q, id, passwordHash, passwordEnc)
+	if err != nil {
+		return fmt.Errorf("db: set credential for subscriber %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("db: subscriber %d: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // SetNTHash enrols (or un-enrols, with a nil hash) a subscriber for
 // EAP-MSCHAPv2.
 //

@@ -129,6 +129,17 @@ type subscriberDetailData struct {
 	ShowBilling       bool
 	ShowTickets       bool
 	ShowSpeedOverride bool
+
+	// Credentials card (view/reset password) and plan change.
+	ShowCredentials   bool // can see the card and reveal the password
+	ShowResetPassword bool // can set a new password
+	ShowChangePlan    bool // can move the subscriber to another plan
+	Plans             []Plan
+	// Set only on the render that follows a reveal action, never on a plain
+	// page load — the password is shown once, not baked into every view.
+	PasswordRevealed bool
+	PasswordCaptured bool
+	RevealedPassword string
 }
 
 // SubscriberDetail is the 360 view: who they are, whether they are online, and
@@ -154,10 +165,33 @@ func (h *Handler) SubscriberDetail(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request, s Session, id int, errMsg string) {
 	d := h.page(s, "Subscriber", "subscribers")
 	d.Error = errMsg
+	// Success messages from the reset/plan-change redirects land back here as a
+	// query parameter, so the action confirms on the page it returns to rather
+	// than a dead-end screen.
+	if msg := r.URL.Query().Get("msg"); msg != "" {
+		d.Message = msg
+	}
 	detail := subscriberDetailData{
 		ShowBilling:       canAccess("billing", s.Role, s.LeaAccess),
 		ShowTickets:       canAccess("tickets", s.Role, s.LeaAccess),
 		ShowSpeedOverride: s.Role == "isp_owner",
+		ShowCredentials:   canRevealPassword(s.Role),
+		ShowResetPassword: canManageCredentials(s.Role),
+		ShowChangePlan:    canManageCredentials(s.Role),
+	}
+	// The plan dropdown for the change-plan form.
+	if detail.ShowChangePlan && h.catalogue != nil {
+		if plans, err := h.catalogue.ListPlans(r.Context()); err == nil {
+			detail.Plans = plans
+		}
+	}
+	// A revealed password is passed in through the request context by
+	// RevealPassword, so it is shown on exactly the one render that follows the
+	// reveal action and never persists into an ordinary page load.
+	if rs, ok := r.Context().Value(revealedPasswordKey).(revealState); ok {
+		detail.PasswordRevealed = true
+		detail.PasswordCaptured = rs.Stored
+		detail.RevealedPassword = rs.Password
 	}
 
 	if h.subscribers != nil {

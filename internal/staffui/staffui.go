@@ -91,6 +91,16 @@ type SubscriberQuerier interface {
 	UpdateSubscriber(ctx context.Context, id int, planID *int, status *string, planExpiry *time.Time) (*api.SubscriberRecord, error)
 }
 
+// CredentialManager backs the subscriber "view / reset password" feature.
+// Satisfied by *api.Handler, the same instance as SubscriberCreator/BulkActions
+// — the console delegates to the API's credential logic rather than reaching
+// into the key store itself. Reveal returns (password, stored, err); stored is
+// false when no recoverable copy was captured.
+type CredentialManager interface {
+	RevealSubscriberPassword(ctx context.Context, id int) (string, bool, error)
+	ResetSubscriberPassword(ctx context.Context, id int, newPassword string) error
+}
+
 // SessionReader reports whether a subscriber is online right now. Live session
 // state lives in Redis, not the database, so the health record alone cannot
 // answer it — and "is this customer online" is the first thing a CSR or NOC
@@ -176,6 +186,8 @@ type HandlerDeps struct {
 	SpeedOverride SpeedOverrideController
 	// BulkActions backs the Subscribers screen's multi-select toolbar.
 	BulkActions BulkActionExecutor
+	// Credentials backs the subscriber detail page's view/reset password card.
+	Credentials CredentialManager
 	Tasks       TaskEnqueuer
 	JWTSecret   string
 	// Franchises backs the owner-only Franchises screen: onboarding partners
@@ -232,6 +244,7 @@ type Handler struct {
 	invoiceSeeder      InvoiceSeeder
 	speedOverride      SpeedOverrideController
 	bulkActions        BulkActionExecutor
+	credentials        CredentialManager
 	tasks              TaskEnqueuer
 	jwtSecret          string
 	franchises         FranchiseStore
@@ -268,6 +281,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		invoiceSeeder:      deps.InvoiceSeeder,
 		speedOverride:      deps.SpeedOverride,
 		bulkActions:        deps.BulkActions,
+		credentials:        deps.Credentials,
 		tasks:              deps.Tasks,
 		jwtSecret:          deps.JWTSecret,
 		franchises:         deps.Franchises,
@@ -429,6 +443,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/subscribers/{id}", h.authed(h.SubscriberDetail))
 	mux.Handle("POST /staff/subscribers/{id}/speed-override", h.authed(h.requireCSRF(h.ApplySpeedOverride)))
 	mux.Handle("POST /staff/subscribers/{id}/speed-override/clear", h.authed(h.requireCSRF(h.ClearSpeedOverride)))
+	mux.Handle("POST /staff/subscribers/{id}/password/reveal", h.authed(h.requireCSRF(h.RevealPassword)))
+	mux.Handle("POST /staff/subscribers/{id}/password", h.authed(h.requireCSRF(h.ResetPassword)))
+	mux.Handle("POST /staff/subscribers/{id}/plan-change", h.authed(h.requireCSRF(h.ChangeSubscriberPlan)))
 	mux.Handle("GET /staff/catalogue", h.authed(h.Catalogue))
 	mux.Handle("POST /staff/catalogue/plans", h.authed(h.requireCSRF(h.CreatePlan)))
 	mux.Handle("POST /staff/catalogue/gst", h.authed(h.requireCSRF(h.CreateGSTRate)))

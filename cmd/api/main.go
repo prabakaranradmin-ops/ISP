@@ -326,6 +326,10 @@ func run(ctx context.Context) error {
 		// bulk toolbar calls straight into its exported *ForMany methods,
 		// not a second copy of the plan-change/status/credit/notify logic.
 		BulkActions: apiHandler,
+		// Same *api.Handler: the view/reset-password card decrypts and reveals
+		// the recoverable password copy through the API's credential logic, not
+		// a second copy of it.
+		Credentials: apiHandler,
 		Tasks:       taskClient,
 		JWTSecret:   cfg.JWTSecret,
 		// Same *db.RevenueStore instance as Revenue above — it already

@@ -707,6 +707,17 @@ func (h *Handler) ProvisionSubscriber(ctx context.Context, req CreateSubscriberR
 
 	h.persistKYC(ctx, created.ID, req.Aadhaar, req.PAN)
 
+	// Capture the recoverable copy of the password so the console can reveal it
+	// later (migration 051). Best-effort: the subscriber can already authenticate
+	// on the bcrypt hash just written, so a capture failure is logged, not
+	// allowed to fail the creation — a reset recaptures it.
+	if h.secretEncryptor != nil && h.credentials != nil {
+		if err := h.StoreSubscriberPasswordEnc(ctx, created.ID, req.Password); err != nil {
+			log.Warn().Err(err).Int("subscriber_id", created.ID).
+				Msg("api: could not capture recoverable password copy; reveal will show 'not captured' until a reset")
+		}
+	}
+
 	middleware.Audit(ctx, "subscriber.create", strconv.Itoa(created.ID), nil)
 	h.emit(ctx, partner.EventSubscriberCreated, created.ID)
 	return created, nil
