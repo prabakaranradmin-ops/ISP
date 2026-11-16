@@ -62,6 +62,7 @@ IDX  ← You are here (master index)
 | ARPU + churn visibility | BO-005 | FR-REV-003..004 | MDS §4.8, API §7 | INT-REV-003..004 |
 | Scale to 20,000 subscribers | BO-006 | NFR-SCAL-001 | SAD §3.1, IDD §8.2 | TST §13.4 |
 | Full ISP operations-suite parity (CRM → field ops on one platform) | BO-007 | FR-NAS, FR-HSP, FR-API, FR-MOB, FR-SUP, FR-CRM, FR-INV, FR-WFL, FR-ANN, FR-FRN-004..006, FR-RPT, FR-DOC, FR-CPE, NFR-AVAIL-002, NFR-TEN-001 | CRD §1.11 | TBD — v3, requirements-stage |
+| Jaze ISP Manager parity (replace the product in use today) | BO-007 | FR-CON-001..010, FR-BIL-012..025, FR-CAT-001..005, FR-SUP-004, FR-INV-004, FR-OBS-006, FR-NET-004..008, FR-PAY-001, FR-RPT-004, FR-DOC-002..003, FR-GRP-001, FR-COL-001, FR-HSP-004 | CRD §1.13, SRS §2.1a | FR-CON-001..004: `internal/staffui`, `internal/db/console_integration_test.go`, `e2e/staff.spec.ts`; rest open |
 
 ---
 

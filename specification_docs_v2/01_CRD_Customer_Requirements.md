@@ -517,3 +517,59 @@ has a specific reason a bought-in HR system will not work for it.
 | CRD-EXP-008 (network map) | Yes, fully | Low — no schema change | **Done (2026-08-24)** |
 | CRD-EXP-011 (HR/payroll) | No | High, and arguably not this product's job | P4 — recommend integration over build |
 | CRD-EXP-009 (bandwidth wholesale) | No | High, and a different business model | Needs an owner decision before any estimate |
+
+---
+
+## 1.13 Jaze ISP Manager Parity *(new — gap analysis 2026-11-15)*
+
+### Why this section exists
+
+The business runs on Jaze ISP Manager today. A 68-screen capture of it was
+compared module by module against this platform's migrations, API routes and
+console screens. The headline finding: most of Jaze's capability already
+exists here as data and API, but the operations console did not expose it —
+staff could not reach it without calling the API by hand. The gaps fall into
+four tiers, each a CRD item; the SRS group §2.1a carries one FR per gap.
+
+The capture itself (`docs/jaze_*_report/`) contains live subscriber data from
+the Jaze account and is deliberately **not** committed to this repository.
+
+### CRD-EXP-012 — Operations console over existing data
+
+Grouped navigation, a home dashboard, a searchable subscriber directory,
+session monitoring with disconnect, a cross-subscriber ticket queue,
+invoice/payment lists, lead pipeline, TR-069 device actions, announcements,
+and message/webhook logs. No new data model; each screen delegates writes to
+the API's own logic. FR-CON-001..010.
+
+### CRD-EXP-013 — Billing and catalogue extensions
+
+Credit-note issuance, payment methods (cash/cheque/TDS) with cheque bounce,
+per-subscriber grace, configurable dunning, proforma invoices, billing
+diagnostics and run history, receipts, plan edit/duplicate/deactivate,
+bandwidth profiles with burst, ticket ratings, a vendor master, a persisted
+audit log, an authentication-attempt log, payment-gateway logs and a wider
+report catalogue. Each is a column, setting or endpoint on an existing
+module.
+
+### CRD-EXP-014 — New modules
+
+Products and add-on charges, scheduled plan changes, IP pools and static IPs,
+NAS traffic graphs, CAF PDF, document retrieval with checksum re-verification,
+subscriber groups, field payment collection, captive-portal branding,
+multi-tier FUP with top-ups, and per-plan RADIUS attributes.
+
+### CRD-EXP-015 — Blocked outside the codebase
+
+OTT/IPTV/voice provisioning (needs a provider contract), OLT monitoring
+(needs the deployed vendor/model list), postpaid billing (needs an owner
+decision — the platform is prepaid by design), GST e-invoice IRN (needs a
+GSP account), and off-machine S3 storage (needs a bucket). Billing-only
+add-ons for OTT/IPTV are covered by CRD-EXP-014's product catalogue.
+
+| Item | Backend exists? | Effort to close | Status |
+|---|---|---|---|
+| CRD-EXP-012 (console screens) | Yes | Low per screen | In progress — FR-CON-001..004 done 2026-11-16 |
+| CRD-EXP-013 (billing/catalogue extensions) | Partly | Low–medium each | Open |
+| CRD-EXP-014 (new modules) | No | Medium each | Open |
+| CRD-EXP-015 (blocked) | No | — | Deferred until each blocker is cleared |

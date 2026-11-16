@@ -224,6 +224,81 @@
 
 ---
 
+## 2.1a Jaze ISP Manager Parity *(new — v4, gap analysis 2026-11-15, CRD §1.13)*
+
+Derived from a 68-screen capture of Jaze ISP Manager compared module by
+module against this platform's migrations, API routes and console. Status
+legend: ✅ implemented and tested · ⏸ deferred, with the blocking reason ·
+unmarked = open. Every console requirement inherits the rule the console
+already follows (staffui.go): a screen's role list mirrors the API gate for
+the same data, and a hidden control is never the only protection.
+
+### Operations Console *(CRD-EXP-012 — screens over data the backend already holds)*
+
+| FR ID | Requirement | CRD Ref | Module |
+|---|---|---|---|
+| FR-CON-001 | ✅ Console navigation is grouped into menus (Subscribers, Finance, Service, Network, Admin) plus a Dashboard link; a menu holding one allowed section renders as that section's link. Grouping never grants or hides reach — `AllowedSections` alone decides it — and every section must belong to exactly one menu | CRD-EXP-012 | staffui `render.go` |
+| FR-CON-002 | ✅ A home dashboard is the landing screen for every ISP-wide role: online now, active, total with per-status breakdown, expiring in 7 days, expired-not-terminated, joined in 7 days, terminated in 30 days, and — only for roles that can open Support — open, past-SLA and unassigned tickets. Every figure links to the list it counts. "Online" uses the same 30-minute freshness rule as every other reader of `live_sessions` | CRD-EXP-012 | staffui `dashboard.go`, db `console.go` |
+| FR-CON-003 | ✅ The subscriber directory shows status, plan, expiry, phone and online state; filters by status and by dashboard drill-down; and searches one box across username and phone/email (substring), id and CAF number (exact), and a live session's assigned IP. An unknown filter is reported and dropped, never widened silently to "everyone"; a search value too large for an id is searched as text, never failing the query | CRD-EXP-012 | staffui `screens.go`, db `console.go` |
+| FR-CON-004 | ✅ A Sessions screen lists live sessions (IP, NAS, download/upload from the subscriber's side, speed, FUP flag, duration) and completed sessions over a date range capped at 31 days. Disconnect is limited to `noc_engineer`/`isp_owner`, requires confirmation, and runs the API's own PoD-enqueue and audit path (`api.Handler.RequestDisconnect`) | CRD-EXP-012 | staffui `sessions.go` |
+| FR-CON-005 | A ticket queue spans all subscribers, filterable by status, priority, past-SLA, unassigned and assigned-to-me, with assignment and status change in place; a helpdesk summary shows open, past target, unassigned, closed in 30 days and median time to close | CRD-EXP-012 | staffui (new) |
+| FR-CON-006 | Invoice and payment lists span all subscribers over a date range, searchable by subscriber, with invoice PDF download and CSV export | CRD-EXP-012 | staffui (new) |
+| FR-CON-007 | A lead screen shows the pipeline by stage with funnel counts and allows create, stage change and convert-to-subscriber through the existing CRM API logic | CRD-EXP-012 | staffui (new) |
+| FR-CON-008 | A CPE (TR-069) screen lists managed devices with last inform and lets NOC/technician queue reboot, firmware, parameter and reprovision RPCs, stating that delivery happens at the device's next session (FR-CPE-003) | CRD-EXP-012 | staffui (new) |
+| FR-CON-009 | An announcements screen composes, sends and lists announcements with per-channel delivery counts, through the existing announcement API logic (FR-ANN-001/002) | CRD-EXP-012 | staffui (new) |
+| FR-CON-010 | Message logs: SMS/WhatsApp/email/push deliveries from `notification_log` and partner webhook deliveries, filterable by channel, status and date | CRD-EXP-012 | staffui (new) |
+
+### Billing & Catalogue Extensions *(CRD-EXP-013 — small backend additions)*
+
+| FR ID | Requirement | CRD Ref | Module |
+|---|---|---|---|
+| FR-BIL-012 | Staff with billing reach can issue a credit note against an invoice from the API and console, bounded by the existing over-credit trigger (migration 049), audit-logged, and included in GSTR-1 Table 9B as today | CRD-EXP-013 | billing |
+| FR-BIL-013 | Every payment records its method (online, cash, cheque, bank transfer, UPI) as a queryable field; cheque payments also record cheque number, bank and date | CRD-EXP-013 | billing |
+| FR-BIL-014 | A bounced cheque can be marked bounced, which reverses its wallet credit through the double-entry ledger and is audit-logged | CRD-EXP-013 | billing |
+| FR-BIL-015 | TDS deducted by a business customer can be recorded against a payment with certificate number and amount, reported separately from cash collected | CRD-EXP-013 | billing |
+| FR-BIL-016 | Billing staff can extend or end a single subscriber's grace period, with reason, without changing the global dunning schedule | CRD-EXP-013 | billing |
+| FR-BIL-017 | Dunning timings (reminder offsets, grace length, suspend thresholds) are configurable settings rather than constants, read at each scanner run | CRD-EXP-013 | billing |
+| FR-BIL-018 | Proforma invoices (quotations without a GST invoice number) can be issued and later converted into a tax invoice | CRD-EXP-013 | billing |
+| FR-BIL-019 | Billing diagnostics list: active subscribers with no invoice in their current cycle, wallet/ledger balance mismatches, and subscribers on a plan rate different from the catalogue | CRD-EXP-013 | billing |
+| FR-BIL-020 | Each recurring-billing run is recorded (start, stop, invoices raised, failures) and visible to billing staff | CRD-EXP-013 | billing |
+| FR-BIL-021 | A payment receipt PDF is generated for every recorded payment | CRD-EXP-013 | billing |
+| FR-CAT-001 | Plans can be edited, duplicated, deactivated (hidden from new assignment, kept for existing subscribers) and exported as CSV | CRD-EXP-013 | catalogue |
+| FR-CAT-002 | Reusable bandwidth profiles carry max/min rate, burst rate, burst threshold, burst time and priority, and render to the vendor rate-limit attribute | CRD-EXP-013 | catalogue, nas |
+| FR-SUP-004 | A subscriber can rate a resolved ticket (1–5) from the portal; ratings appear in ticket lists and the helpdesk summary | CRD-EXP-013 | tickets, portal |
+| FR-INV-004 | Inventory and procurement share a vendor master (name, contact, GSTIN) instead of free-text vendor names | CRD-EXP-013 | inventory |
+| FR-OBS-006 | Staff actions already written as `audit_log` lines are also persisted to an append-only table and browsable by owner, filterable by actor, action and date | CRD-EXP-013 | observability |
+| FR-NET-004 | RADIUS authentication attempts are logged (time, username, NAS, MAC, result, reject reason) with a bounded retention; **the password is never stored**, unlike the reference product's log | CRD-EXP-013 | radius |
+| FR-PAY-001 | Every payment-gateway order and callback is logged (amount, status, merchant and gateway ids) whether or not it credits a wallet | CRD-EXP-013 | billing |
+| FR-RPT-004 | A report catalogue groups the reports by area with a filter box, and adds at least: expiring subscribers, payments by method, collection by staff, invoice register, tax charged, top data users, FUP-exceeded, ticket turnaround, and plan change history | CRD-EXP-013 | reporting |
+
+### New Modules *(CRD-EXP-014 — new data model and screens)*
+
+| FR ID | Requirement | CRD Ref | Module |
+|---|---|---|---|
+| FR-BIL-022 | A product catalogue (one-time and recurring charges: installation, router rental, static IP, add-ons) whose items can be attached to a subscriber and appear as GST-correct lines on their invoices | CRD-EXP-014 | billing (new) |
+| FR-BIL-023 | A plan change can be scheduled for a future date (typically next renewal) and is applied by the renewal path, not immediately | CRD-EXP-014 | billing |
+| FR-NET-005 | IP pools are managed per NAS (range, exclusions, purpose); a subscriber can hold a static address from a pool, returned as Framed-IP-Address, and billed through FR-BIL-022 | CRD-EXP-014 | radius, nas |
+| FR-NET-006 | NAS interface traffic is polled and graphed (per NAS, last 24 h / 7 d / 30 d) | CRD-EXP-014 | nas (new) |
+| FR-DOC-002 | A printable Customer Application Form (CAF) PDF is generated from subscriber and KYC data, using the invoice PDF pipeline | CRD-EXP-014 | documents |
+| FR-DOC-003 | Archived documents can be retrieved and their SHA-256 re-verified on read (closes the NFR-DUR-002 gap), and browsed per subscriber in the console | CRD-EXP-014 | archive |
+| FR-GRP-001 | Subscribers can be placed in named groups used as a filter in lists, reports and announcements | CRD-EXP-014 | subscribers |
+| FR-COL-001 | Field payment collection: subscribers due for doorstep collection are listed per collector, and a collector records cash/cheque taken through FR-BIL-013 | CRD-EXP-014 | billing, workflow |
+| FR-HSP-004 | The captive portal's logo, colours and text are configurable per deployment without editing templates | CRD-EXP-014 | hotspot |
+| FR-CAT-003 | FUP policies may have several tiers (each a threshold and throttle rate) and a purchasable data top-up that lifts the throttle for the rest of the cycle | CRD-EXP-014 | fup |
+| FR-CAT-004 | Additional RADIUS reply attributes can be defined per plan and vendor from the console, validated against the vendor dictionary | CRD-EXP-014 | nas |
+
+### Deferred — blocked outside this codebase *(CRD-EXP-015)*
+
+| FR ID | Requirement | CRD Ref | Module |
+|---|---|---|---|
+| FR-CAT-005 | ⏸ OTT, IPTV and voice packages. **Billing-only add-ons are covered by FR-BIL-022.** Provisioning needs an aggregator / IPTV-middleware / SIP-provider contract and its API; there is nothing to integrate against until one is chosen | CRD-EXP-015 | — |
+| FR-NET-007 | ⏸ OLT/ONU monitoring (optical power, uptime). Every OLT make has its own SNMP MIB or CLI; needs the vendor and model list actually deployed | CRD-EXP-015 | — |
+| FR-BIL-024 | ⏸ Postpaid ("pay later") billing with credit limits. The platform is prepaid by design (FR-BIL-009); needs an owner decision on whether postpaid customers exist | CRD-EXP-015 | — |
+| FR-BIL-025 | ⏸ GST e-invoice IRN generation. Needs a GSP/IRP account and applies only to B2B invoicing above the turnover threshold | CRD-EXP-015 | — |
+| FR-NET-008 | ⏸ Off-machine copy of NAT/flow logs and archived documents to S3-compatible storage. The `archive.Store` interface is the seam; needs a bucket and credentials | CRD-EXP-015 | archive |
+
+---
+
 ## 2.2 Non-Functional Requirements Matrix
 
 | NFR ID | Category | Requirement | Validation Method | CRD Ref | TST Ref |
@@ -287,7 +362,17 @@
 | General Reporting *(v3)* | 3 | MDS §4.8 (extend) | TBD — Module design pending |
 | Document Storage *(v3)* | 1 | new module | TBD — Module design pending |
 | CPE Auto-Provisioning *(v3)* | 3 | new module | TBD — Module design pending |
-| **Total** | **92** | | |
+| Jaze parity — Operations Console *(v4)* | 10 | staffui | `internal/staffui/*_test.go`, `internal/db/console_integration_test.go`, `e2e/staff.spec.ts` |
+| Jaze parity — Billing & Catalogue extensions *(v4)* | 18 | billing, catalogue, others | Per FR as implemented |
+| Jaze parity — New modules *(v4)* | 11 | new modules | Per FR as implemented |
+| Jaze parity — Deferred *(v4)* | 5 | — | None until unblocked |
+| **Total** | **143** | | |
+
+> Recounted 2026-11-15 from the table rows themselves (`^| FR-…-NNN |`):
+> 99 before the v4 group, 143 after. The previous "92" had drifted — several
+> groups above (Notifications, Franchise, Hotspot) grew without this table
+> being updated, so the per-group counts above it are indicative only; the
+> row count is the figure to trust.
 
 > The 40 FRs marked *(v3)* have no MDS/DDS/DBD/API design yet and no test
 > IDs — they are requirements-stage only. Each gets its own module design
