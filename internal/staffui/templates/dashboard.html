@@ -1,0 +1,107 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="pagehead">
+  <h1>Dashboard</h1>
+  {{with $d}}<p class="muted">Updated {{datetime .UpdatedAt}} &middot; <a href="/staff/dashboard">Refresh</a></p>{{end}}
+</div>
+
+{{with $d}}{{$c := .Counts}}
+<div class="hero-tiles">
+  <a class="tile tile-online" href="/staff/sessions">
+    <span class="tile-label"><span class="dot" aria-hidden="true"></span>Online now</span>
+    <span class="tile-num">{{$c.Online}}</span>
+    <span class="tile-link">View sessions &rarr;</span>
+  </a>
+  <a class="tile tile-active" href="/staff/subscribers?status=active">
+    <span class="tile-label">Active</span>
+    <span class="tile-num">{{index $c.ByStatus "active"}}</span>
+    <span class="tile-link">View subscribers &rarr;</span>
+  </a>
+  <div class="tile tile-total">
+    <span class="tile-label">All subscribers</span>
+    <span class="tile-num">{{$c.Total}}</span>
+    {{if .Segments}}
+    <div class="statusbar" role="img" aria-label="Subscribers by status">
+      {{range .Segments}}<span class="seg seg-{{.Status}}" style="width: {{pct .Pct}}%" title="{{humanize .Status}}: {{.Count}}"></span>{{end}}
+    </div>
+    <ul class="legend">
+      {{range .Segments}}<li><a href="/staff/subscribers?status={{.Status}}"><span class="sw seg-{{.Status}}" aria-hidden="true"></span>{{humanize .Status}} <b class="num">{{.Count}}</b></a></li>{{end}}
+    </ul>
+    {{else}}
+    <p class="muted">No subscribers yet.</p>
+    {{end}}
+  </div>
+</div>
+
+<div class="tile-rows">
+  <section>
+    <h3>Renewals</h3>
+    <div class="tiles">
+      <a class="tile" href="/staff/subscribers?view=expiring">
+        <span class="tile-label">Expiring in 7 days</span>
+        <span class="tile-num">{{$c.ExpiringWeek}}</span>
+      </a>
+      <a class="tile" href="/staff/subscribers?view=expired">
+        <span class="tile-label">Plan expired</span>
+        <span class="tile-num">{{$c.Expired}}</span>
+      </a>
+    </div>
+  </section>
+  <section>
+    <h3>Growth</h3>
+    <div class="tiles">
+      <a class="tile" href="/staff/subscribers?view=new">
+        <span class="tile-label">Joined in 7 days</span>
+        <span class="tile-num">{{$c.NewWeek}}</span>
+      </a>
+      <a class="tile" href="/staff/subscribers?view=churned">
+        <span class="tile-label">Terminated in 30 days</span>
+        <span class="tile-num">{{$c.Churned30d}}</span>
+      </a>
+    </div>
+  </section>
+</div>
+
+<section>
+  <h3>Account status</h3>
+  <div class="tiles tiles-4">
+    <a class="tile" href="/staff/subscribers?status=pending_payment">
+      <span class="tile-label">Awaiting first payment</span>
+      <span class="tile-num">{{index $c.ByStatus "pending_payment"}}</span>
+    </a>
+    <a class="tile" href="/staff/subscribers?status=grace_period">
+      <span class="tile-label">In grace period</span>
+      <span class="tile-num">{{index $c.ByStatus "grace_period"}}</span>
+    </a>
+    <a class="tile" href="/staff/subscribers?status=soft_suspended">
+      <span class="tile-label">Soft suspended</span>
+      <span class="tile-num">{{index $c.ByStatus "soft_suspended"}}</span>
+    </a>
+    <a class="tile" href="/staff/subscribers?status=hard_suspended">
+      <span class="tile-label">Hard suspended</span>
+      <span class="tile-num">{{index $c.ByStatus "hard_suspended"}}</span>
+    </a>
+  </div>
+</section>
+
+{{if .ShowTickets}}
+<section>
+  <h3>Support</h3>
+  <div class="tiles">
+    <a class="tile" href="/staff/tickets">
+      <span class="tile-label">Open tickets</span>
+      <span class="tile-num">{{$c.OpenTickets}}</span>
+    </a>
+    <a class="tile{{if $c.OverdueTickets}} tile-alert{{end}}" href="/staff/tickets">
+      <span class="tile-label">Past resolution target</span>
+      <span class="tile-num">{{$c.OverdueTickets}}</span>
+    </a>
+    <a class="tile" href="/staff/tickets">
+      <span class="tile-label">Unassigned</span>
+      <span class="tile-num">{{$c.UnassignedTickets}}</span>
+    </a>
+  </div>
+</section>
+{{end}}
+{{end}}
+{{end}}

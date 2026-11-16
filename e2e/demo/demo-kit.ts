@@ -100,7 +100,10 @@ export async function staffSignIn(page: Page, username: string) {
   await page.getByLabel('Username').fill(username);
   await page.getByLabel('Password').fill('staffpassword');
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await page.waitForURL(/\/staff\/subscribers/);
+  // Sign-in lands on the dashboard; the recorded walkthroughs start from the
+  // subscriber list, so go there to keep each demo's opening frame the same.
+  await page.waitForURL(/\/staff\/dashboard/);
+  await page.goto('/staff/subscribers');
 }
 
 export async function portalSignIn(page: Page, username: string) {

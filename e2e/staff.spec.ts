@@ -31,7 +31,9 @@ async function signIn(page: Page, username: string) {
   await page.getByLabel('Username').fill(username);
   await page.getByLabel('Password').fill(PASSWORD);
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/staff\/subscribers/);
+  // Every ISP-wide role lands on the dashboard: Home redirects to the first
+  // section a role may open, and the dashboard leads the section table.
+  await expect(page).toHaveURL(/\/staff\/dashboard/);
 }
 
 /** Sections every role should and should not reach, mirroring the API. */
@@ -69,7 +71,7 @@ test.describe('Console authentication', () => {
     await page.getByRole('button', { name: 'Sign in' }).click();
 
     await expect(page.getByText('Incorrect username or password')).toBeVisible();
-    await expect(page).not.toHaveURL(/\/staff\/subscribers/);
+    await expect(page).not.toHaveURL(/\/staff\/dashboard/);
 
     // Naming the wrong field would confirm the username exists, turning the
     // form into a way to enumerate staff accounts.
@@ -129,9 +131,13 @@ test.describe('Role-based access', () => {
         revenue: 'Revenue', lea: 'LEA Lookup',
       };
       for (const section of ALL_SECTIONS) {
-        const link = page.locator('.topbar nav').getByRole('link', { name: labels[section], exact: true });
+        // Counted rather than checked for visibility: most links sit inside
+        // a closed top-bar menu until it is opened, and a link in a closed
+        // <details> is still offered — it is one click away, not withheld.
+        // Not offering it means it is absent from the page altogether.
+        const link = page.locator('.topbar nav').getByRole('link', { name: labels[section], exact: true, includeHidden: true });
         if ((allow as readonly string[]).includes(section)) {
-          await expect(link, `${user} nav should offer ${section}`).toBeVisible();
+          await expect(link, `${user} nav should offer ${section}`).toHaveCount(1);
         } else {
           await expect(link, `${user} nav must not offer ${section}`).toHaveCount(0);
         }
@@ -141,19 +147,166 @@ test.describe('Role-based access', () => {
   }
 });
 
+test.describe('Dashboard and menus', () => {
+  test('the dashboard counts subscribers and each tile opens its list', async ({ page }) => {
+    await signIn(page, 'owner');
+    // Linked tiles only: the status names also appear in the legend inside
+    // the (unlinked) "All subscribers" tile.
+    const tile = (label: string) => page.locator('a.tile', { hasText: label });
+    // The seed has one active and one hard-suspended subscriber, and
+    // demo_up.sh gives test_user a live session.
+    await expect(page.locator('.tile-total .tile-num')).toHaveText('2');
+    await expect(tile('Online now').locator('.tile-num')).toHaveText('1');
+    await expect(tile('Active').locator('.tile-num')).toHaveText('1');
+    await expect(tile('Hard suspended').locator('.tile-num')).toHaveText('1');
+    await snap(page, 'dashboard-owner');
+
+    await tile('Hard suspended').click();
+    await expect(page).toHaveURL(/\/staff\/subscribers\?status=hard_suspended/);
+    await expect(page.locator('tbody').getByText('suspended_user', { exact: true })).toBeVisible();
+    await expect(page.locator('tbody').getByText('test_user', { exact: true })).toHaveCount(0);
+  });
+
+  test('ticket figures are shown only to roles that work tickets', async ({ page }) => {
+    await signIn(page, 'csr');
+    await expect(page.getByText('Open tickets')).toBeVisible();
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    await signIn(page, 'noc');
+    await expect(page.getByText('Open tickets')).toHaveCount(0);
+  });
+
+  test('a top-bar menu opens, navigates, and marks where you are', async ({ page }) => {
+    await signIn(page, 'owner');
+    const finance = page.locator('.topbar .navgroup', { hasText: 'Finance' });
+    await finance.locator('summary').click();
+    await expect(finance.getByRole('link', { name: 'General Ledger' })).toBeVisible();
+    await snap(page, 'nav-menu-open');
+    await finance.getByRole('link', { name: 'General Ledger' }).click();
+    await expect(page).toHaveURL(/\/staff\/ledger/);
+    await expect(page.locator('.topbar .navgroup.on summary')).toHaveText('Finance');
+  });
+
+  test('opening one menu closes the other', async ({ page }) => {
+    await signIn(page, 'owner');
+    const finance = page.locator('.topbar .navgroup', { hasText: 'Finance' });
+    const network = page.locator('.topbar .navgroup', { hasText: 'Network' });
+    await finance.locator('summary').click();
+    await network.locator('summary').click();
+    await expect(network).toHaveAttribute('open', '');
+    await expect(finance).not.toHaveAttribute('open', '');
+  });
+});
+
+test.describe('Sessions', () => {
+  test('a CSR sees who is online, with no way to disconnect them', async ({ page }) => {
+    await signIn(page, 'csr');
+    await page.goto('/staff/sessions');
+    const row = page.locator('tbody tr', { hasText: 'test_user' });
+    await expect(row).toContainText('100.64.0.7');
+    await expect(row).toContainText('10.10.0.1');
+    await expect(page.getByRole('button', { name: 'Disconnect' })).toHaveCount(0);
+    await snap(page, 'sessions-live-csr');
+  });
+
+  test('the dashboard Online tile opens the live list', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.locator('a.tile', { hasText: 'Online now' }).click();
+    await expect(page).toHaveURL(/\/staff\/sessions$/);
+    await expect(page.locator('tbody tr', { hasText: 'test_user' })).toBeVisible();
+  });
+
+  test('completed sessions list the seeded history for a date range', async ({ page }) => {
+    await signIn(page, 'csr');
+    await page.goto('/staff/sessions');
+    await page.getByRole('link', { name: 'Completed' }).click();
+    const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+    await page.locator('input[name="from"]').fill(weekAgo);
+    await page.getByRole('button', { name: 'Show' }).click();
+    await expect(page).toHaveURL(/tab=completed/);
+    // seed_local.sql writes four closed sessions for test_user this month.
+    await expect(page.locator('tbody tr', { hasText: 'User-Request' }).first()).toBeVisible();
+    await expect(page.locator('tbody tr', { hasText: 'demo-live-001' })).toHaveCount(0);
+    await snap(page, 'sessions-completed');
+  });
+
+  test('a disconnect without the CSRF token is refused', async ({ page }) => {
+    await signIn(page, 'noc');
+    const res = await page.request.post('/staff/sessions/demo-live-001/disconnect', {
+      form: { username: 'test_user' },
+    });
+    expect(res.status()).toBe(403);
+  });
+
+  test('a CSR posting a disconnect directly is refused', async ({ page }) => {
+    await signIn(page, 'csr');
+    // CSRs get no Disconnect form, so take a valid token from a page every
+    // role has. With a good token the request gets past CSRF, so the 403 is
+    // the role check itself, not the token check standing in for it.
+    await page.goto('/staff/change-password');
+    const csrf = await page.locator('input[name="csrf_token"]').first().inputValue();
+    expect(csrf).not.toBe('');
+    const res = await page.request.post('/staff/sessions/demo-live-001/disconnect', {
+      form: { username: 'test_user', csrf_token: csrf },
+    });
+    expect(res.status()).toBe(403);
+  });
+
+  // Last in this block: it queues a real PoD for the seeded session.
+  test('a NOC engineer disconnects a session after confirming', async ({ page }) => {
+    await signIn(page, 'noc');
+    await page.goto('/staff/sessions');
+    page.once('dialog', (d) => d.accept());
+    await page.locator('tbody tr', { hasText: 'test_user' }).getByRole('button', { name: 'Disconnect' }).click();
+    await expect(page.getByText(/Disconnect sent for test_user/)).toBeVisible();
+    await snap(page, 'sessions-disconnect-sent');
+  });
+
+  test('dismissing the confirmation sends nothing', async ({ page }) => {
+    await signIn(page, 'noc');
+    await page.goto('/staff/sessions');
+    page.once('dialog', (d) => d.dismiss());
+    await page.locator('tbody tr', { hasText: 'test_user' }).getByRole('button', { name: 'Disconnect' }).click();
+    await expect(page.getByText(/Disconnect sent/)).toHaveCount(0);
+    await expect(page).toHaveURL(/\/staff\/sessions$/);
+  });
+});
+
 test.describe('Subscribers', () => {
   test('the directory lists subscribers and search filters them', async ({ page }) => {
     await signIn(page, 'owner');
+    await page.goto('/staff/subscribers');
     await expect(page.locator('table tbody tr').first()).toBeVisible();
     await snap(page, 'subscribers-list');
 
-    await page.getByPlaceholder('Username or subscriber id').fill('test_user');
+    const search = page.getByPlaceholder('Username, ID, phone, email, CAF or IP');
+    await search.fill('test_user');
     await page.getByRole('button', { name: 'Search' }).click();
-    await expect(page.getByText('test_user')).toBeVisible();
+    await expect(page.locator('tbody').getByText('test_user', { exact: true })).toBeVisible();
 
-    await page.getByPlaceholder('Username or subscriber id').fill('nothing-matches-this');
+    // A caller reads out a phone number, not a username.
+    await search.fill('9876543211');
+    await page.getByRole('button', { name: 'Search' }).click();
+    await expect(page.locator('tbody').getByText('suspended_user', { exact: true })).toBeVisible();
+    await expect(page.locator('tbody').getByText('test_user', { exact: true })).toHaveCount(0);
+
+    // Or the IP a NOC engineer sees in a router log: the live session's.
+    await search.fill('100.64.0.7');
+    await page.getByRole('button', { name: 'Search' }).click();
+    await expect(page.locator('tbody').getByText('test_user', { exact: true })).toBeVisible();
+    await expect(page.locator('tbody').getByText('suspended_user', { exact: true })).toHaveCount(0);
+
+    await search.fill('nothing-matches-this');
     await page.getByRole('button', { name: 'Search' }).click();
     await expect(page.getByText('No subscribers match.')).toBeVisible();
+  });
+
+  test('a status chip narrows the list to that status', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/subscribers');
+    await page.getByRole('navigation', { name: 'Filter by status' }).getByRole('link', { name: 'Hard suspended' }).click();
+    await expect(page).toHaveURL(/status=hard_suspended/);
+    await expect(page.locator('tbody').getByText('suspended_user', { exact: true })).toBeVisible();
+    await expect(page.locator('tbody').getByText('test_user', { exact: true })).toHaveCount(0);
   });
 
   test('the 360 view shows account, connection and health', async ({ page }) => {
@@ -179,6 +332,8 @@ test.describe('Subscribers', () => {
     // A CSR is entitled to see money.
     await signIn(page, 'csr');
     await page.goto('/staff/subscribers/1');
+    // The 360 view is tabbed; the ledger lives on the Billing tab.
+    await page.getByRole('button', { name: 'Billing', exact: true }).click();
     await expect(page.getByText(/Recent ledger/)).toBeVisible();
     await snap(page, 'subscriber-detail-csr');
 
@@ -187,6 +342,7 @@ test.describe('Subscribers', () => {
     await page.getByRole('button', { name: 'Sign out' }).click();
     await signIn(page, 'tech');
     await page.goto('/staff/subscribers/1');
+    await expect(page.getByRole('button', { name: 'Billing', exact: true })).toHaveCount(0);
     await expect(page.getByText(/Recent ledger/)).toHaveCount(0);
     await expect(page.getByRole('heading', { name: /test_user/ })).toBeVisible();
     await snap(page, 'subscriber-detail-tech');
@@ -237,9 +393,11 @@ test.describe('Support tickets', () => {
     await row.getByRole('button', { name: 'Update' }).click();
 
     await expect(page.getByText('Ticket updated.')).toBeVisible();
-    // Scoped to the status pill: 'in_progress' also appears as an <option> in
+    // Scoped to the row's pills: 'in_progress' also appears as an <option> in
     // the row's own dropdown, and matching both is ambiguous rather than wrong.
-    await expect(page.locator('tr', { hasText: description }).locator('span.pill')).toHaveText('in_progress');
+    // The row carries two pills (priority, then status), so the status one is
+    // picked by its text rather than by being the only pill.
+    await expect(page.locator('tr', { hasText: description }).locator('span.pill', { hasText: 'in_progress' })).toBeVisible();
     await snap(page, 'tickets-updated');
   });
 

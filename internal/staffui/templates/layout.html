@@ -10,9 +10,20 @@
 {{if .Session.Username}}
 <header class="topbar">
   <div class="brand">Operations Console</div>
-  <nav>
-    {{range .Sections}}
-    <a href="{{.Path}}" data-section="{{.Key}}" data-shortcut="{{shortcutFor .Key}}" class="{{if eq .Key $.Active}}on{{end}}">{{.Label}}</a>
+  <nav aria-label="Console sections">
+    {{range .Nav}}
+    {{if eq (len .Items) 1}}{{with index .Items 0}}
+    <a href="{{.Path}}" data-section="{{.Key}}" data-shortcut="{{shortcutFor .Key}}" class="navlink{{if eq .Key $.Active}} on{{end}}">{{.Label}}</a>
+    {{end}}{{else}}
+    <details class="navgroup{{if .Active}} on{{end}}">
+      <summary>{{.Label}}</summary>
+      <div class="navmenu">
+        {{range .Items}}
+        <a href="{{.Path}}" data-section="{{.Key}}" data-shortcut="{{shortcutFor .Key}}" class="{{if eq .Key $.Active}}on{{end}}">{{.Label}}</a>
+        {{end}}
+      </div>
+    </details>
+    {{end}}
     {{end}}
   </nav>
   <div class="who">

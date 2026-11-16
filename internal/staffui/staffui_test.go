@@ -18,18 +18,21 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 		leaAccess bool
 		want      []string
 	}{
-		{"isp_owner", true, []string{"subscribers", "billing", "tickets", "revenue", "catalogue", "nas", "network", "lea", "demo", "accounts", "franchise", "procurement", "ledger", "inventory", "reports", "tasks"}},
-		{"noc_engineer", true, []string{"subscribers", "nas", "network", "lea", "inventory", "tasks"}},
-		{"billing_admin", false, []string{"subscribers", "billing", "catalogue", "procurement", "ledger", "inventory", "reports", "tasks"}},
+		// Dashboard leads every ISP-wide list because Home redirects to the
+		// first allowed section; that order is part of what is pinned here.
+		{"isp_owner", true, []string{"dashboard", "subscribers", "billing", "tickets", "revenue", "catalogue", "sessions", "nas", "network", "lea", "demo", "accounts", "franchise", "procurement", "ledger", "inventory", "reports", "tasks"}},
+		{"noc_engineer", true, []string{"dashboard", "subscribers", "sessions", "nas", "network", "lea", "inventory", "tasks"}},
+		{"billing_admin", false, []string{"dashboard", "subscribers", "billing", "catalogue", "sessions", "procurement", "ledger", "inventory", "reports", "tasks"}},
 		// Catalogue is deliberately absent for csr and technician: editing a
 		// tariff re-prices every subscriber on it and a GST change alters
 		// every invoice raised afterwards, which is not reach either role
 		// needs to answer a call or fix a line.
-		{"csr", false, []string{"subscribers", "billing", "tickets", "tasks"}},
-		{"technician", false, []string{"subscribers", "tickets", "inventory", "tasks"}},
+		{"csr", false, []string{"dashboard", "subscribers", "billing", "tickets", "sessions", "tasks"}},
+		{"technician", false, []string{"dashboard", "subscribers", "tickets", "sessions", "inventory", "tasks"}},
 		// Franchise-scoped roles get their own restricted pair, never the
-		// ISP-wide sections above (not even Subscribers or Tickets) — a
-		// franchise partner's reach is My Subscribers/My P&L only.
+		// ISP-wide sections above (not even the Dashboard, whose counts span
+		// every partner's subscribers) — a franchise partner's reach is My
+		// Subscribers/My P&L only.
 		{"lco", false, []string{"my-subscribers", "my-pnl"}},
 		{"franchise_admin", false, []string{"my-subscribers", "my-pnl"}},
 		{"franchise_staff", false, []string{"my-subscribers", "my-pnl"}},

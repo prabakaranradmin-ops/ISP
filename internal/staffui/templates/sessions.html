@@ -1,0 +1,95 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="pagehead">
+  <h1>Sessions</h1>
+  {{with $d}}<p class="muted">{{if eq .Tab "live"}}Online now, newest first{{else}}Ended {{.From}} to {{.To}}, most recent first{{end}}</p>{{end}}
+</div>
+
+{{with $d}}
+<nav class="tabbar" aria-label="Session lists">
+  <a class="tab-link{{if eq .Tab "live"}} on{{end}}" href="/staff/sessions">Online now</a>
+  <a class="tab-link{{if eq .Tab "completed"}} on{{end}}" href="/staff/sessions?tab=completed">Completed</a>
+</nav>
+
+<form class="searchbar" method="get" action="/staff/sessions">
+  {{if eq .Tab "completed"}}<input type="hidden" name="tab" value="completed">{{end}}
+  <input name="q" value="{{.Query}}" placeholder="Username, IP, router IP or session id" aria-label="Search sessions">
+  {{if eq .Tab "live"}}
+  <label class="check"><input type="checkbox" name="fup" value="1"{{if .FUPOnly}} checked{{end}}> Throttled by FUP only</label>
+  {{else}}
+  <label class="inline-field">From <input type="date" name="from" value="{{.From}}"></label>
+  <label class="inline-field">To <input type="date" name="to" value="{{.To}}"></label>
+  {{end}}
+  <button class="primary" type="submit">Show</button>
+</form>
+
+{{if eq .Tab "live"}}
+<p class="muted">{{len .Live}} online{{if eq (len .Live) .Limit}} &middot; showing the first {{.Limit}}; search to narrow{{end}}</p>
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Subscriber</th><th>IP address</th><th>Router</th>
+      <th class="right">Download</th><th class="right">Upload</th>
+      <th>Speed</th><th>Started</th><th class="right">Duration</th>
+      {{if .CanDisconnect}}<th></th>{{end}}
+    </tr></thead>
+    <tbody>
+    {{$can := .CanDisconnect}}{{$csrf := $.CSRF}}
+    {{range .Live}}
+      <tr>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td class="num">{{.AssignedIP}}</td>
+        <td class="num">{{.NasIP}}</td>
+        <td class="num right">{{bytes .BytesOut}}</td>
+        <td class="num right">{{bytes .BytesIn}}</td>
+        <td>{{if .SpeedProfile}}{{.SpeedProfile}}{{else}}<span class="muted">&mdash;</span>{{end}}{{if .FUPThrottled}} <span class="pill warn">FUP</span>{{end}}</td>
+        <td class="num">{{datetime .StartedAt}}</td>
+        <td class="num right">{{elapsed .StartedAt .UpdatedAt}}</td>
+        {{if $can}}
+        <td class="right">
+          <form method="post" action="/staff/sessions/{{.SessionID}}/disconnect" data-confirm="Disconnect {{.Username}}? Their router drops the connection and they will need to reconnect.">
+            <input type="hidden" name="csrf_token" value="{{$csrf}}">
+            <input type="hidden" name="username" value="{{.Username}}">
+            <button type="submit" class="btn-danger">Disconnect</button>
+          </form>
+        </td>
+        {{end}}
+      </tr>
+    {{else}}
+      <tr><td colspan="{{if $can}}9{{else}}8{{end}}" class="empty">{{if or $d.Query $d.FUPOnly}}No online session matches.{{else}}Nobody is online right now.{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+<p class="muted small">Download and upload are from the subscriber's side. Duration runs to the router's last accounting update.</p>
+{{else}}
+<p class="muted">{{len .Completed}} sessions{{if eq (len .Completed) .Limit}} &middot; showing the {{.Limit}} most recent; narrow the dates or search{{end}}</p>
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Subscriber</th><th>IP address</th><th>Router</th>
+      <th class="right">Download</th><th class="right">Upload</th>
+      <th>Started</th><th>Ended</th><th class="right">Duration</th><th>Ended because</th>
+    </tr></thead>
+    <tbody>
+    {{range .Completed}}
+      <tr>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td class="num">{{.AssignedIP}}</td>
+        <td class="num">{{.NasIP}}</td>
+        <td class="num right">{{bytes .OutputOctets}}</td>
+        <td class="num right">{{bytes .InputOctets}}</td>
+        <td class="num">{{datetime .StartTime}}</td>
+        <td class="num">{{datetime .StopTime}}</td>
+        <td class="num right">{{elapsed .StartTime .StopTime}}</td>
+        <td>{{if .TerminateCause}}{{.TerminateCause}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="9" class="empty">No sessions ended in this range{{if $d.Query}} for that search{{end}}.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}
+{{end}}

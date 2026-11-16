@@ -22,16 +22,44 @@ body {
 .topbar {
   display: flex; align-items: center; gap: 24px;
   background: var(--surface); border-bottom: 1px solid var(--rule);
-  padding: 0 20px; height: 52px; position: sticky; top: 0; z-index: 5;
+  padding: 8px 20px; min-height: 52px; position: sticky; top: 0; z-index: 5;
+  flex-wrap: wrap;
 }
 .brand { font-weight: 700; letter-spacing: -.01em; }
-.topbar nav { display: flex; gap: 4px; flex: 1; }
-.topbar nav a {
+.topbar nav { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; align-items: center; }
+/* Top-level entries: a plain link (.navlink) or a menu's <summary>. Both
+   share one look so a role's row reads as one set of controls whichever
+   mix of the two it gets. */
+.topbar nav .navlink, .navgroup > summary {
   color: var(--muted); text-decoration: none; padding: 6px 12px;
-  border-radius: 3px; font-weight: 500;
+  border-radius: 3px; font-weight: 500; cursor: pointer;
 }
-.topbar nav a:hover { background: var(--bg); color: var(--ink); }
-.topbar nav a.on { background: var(--accent); color: #fff; }
+.topbar nav .navlink:hover, .navgroup > summary:hover { background: var(--bg); color: var(--ink); }
+.topbar nav .navlink.on, .navgroup.on > summary { background: var(--accent); color: #fff; }
+
+/* Menus are native <details>: they open and close with no script at all.
+   console.js only adds "one open at a time" and close-on-outside-click. */
+.navgroup { position: relative; }
+.navgroup > summary { list-style: none; display: flex; align-items: center; gap: 6px; }
+.navgroup > summary::-webkit-details-marker { display: none; }
+.navgroup > summary::after {
+  content: ""; width: 6px; height: 6px; margin-top: -3px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+.navgroup[open] > summary { background: var(--bg); color: var(--ink); }
+.navgroup.on[open] > summary { background: var(--accent); color: #fff; }
+.navmenu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 10;
+  min-width: 200px; display: flex; flex-direction: column; padding: 6px;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(23, 33, 43, .14);
+}
+.navmenu a {
+  color: var(--ink); text-decoration: none; padding: 7px 10px; border-radius: 3px; white-space: nowrap;
+}
+.navmenu a:hover { background: var(--bg); }
+.navmenu a.on { background: var(--accent); color: #fff; }
 .who { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .who .role {
   font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
@@ -181,3 +209,88 @@ td details summary::-webkit-details-marker { display: none; }
 td details[open] { position: static; }
 td details form { background: var(--bg); border: 1px solid var(--rule); border-radius: 4px;
   padding: 14px; margin-top: 8px; text-align: left; min-width: 480px; }
+
+/* ── Dashboard ─────────────────────────────────────────────────────────────
+   Every tile is a link to the list behind its number; the hover state says
+   so. The three headline tiles get tinted grounds, everything else stays on
+   plain cards, so the eye lands on "online / active / total" first. */
+.pagehead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.pagehead h1 { margin-bottom: 12px; }
+.hero-tiles { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 16px; margin-bottom: 26px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+.tile-rows { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; margin-bottom: 22px; }
+section > h3 { margin-top: 4px; }
+section + section { margin-top: 22px; }
+.tile {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 4px;
+  padding: 16px 18px; color: var(--ink); text-decoration: none;
+}
+a.tile:hover { border-color: var(--accent); }
+.tile-label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+.tile-num { font-size: 28px; font-weight: 650; letter-spacing: -.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.hero-tiles .tile-num { font-size: 40px; }
+.tile-link { font-size: 13px; font-weight: 600; color: var(--accent); margin-top: auto; }
+.tile-online { background: var(--ok-bg); border-color: #b9e0c6; }
+.tile-online .tile-label, .tile-online .tile-link { color: var(--ok-fg); }
+.tile-active { background: #e6f0f7; border-color: #bed5e6; }
+.tile-alert { border-color: #e9b4b4; }
+.tile-alert .tile-num { color: var(--bad-fg); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok-fg); }
+
+.statusbar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--neutral-bg); margin-top: 6px; }
+.statusbar .seg { height: 100%; }
+.legend { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; }
+.legend a { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+.legend a:hover { color: var(--ink); }
+.legend b { color: var(--ink); font-weight: 600; }
+.sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+/* Status colours follow the lifecycle: paid and fine, then progressively
+   more at risk, then gone. Pending payment is blue rather than amber because
+   it is a new account waiting on its first top-up, not one going bad. */
+.seg-pending_payment { background: #6d9ec4; }
+.seg-active          { background: #2f9a5b; }
+.seg-grace_period    { background: #e0a526; }
+.seg-soft_suspended  { background: #d4762c; }
+.seg-hard_suspended  { background: #c23b3b; }
+.seg-terminated      { background: #9aa6b1; }
+
+@media (max-width: 820px) {
+  .hero-tiles { grid-template-columns: 1fr 1fr; }
+  .hero-tiles .tile-total { grid-column: 1 / -1; }
+}
+@media (max-width: 480px) {
+  .hero-tiles { grid-template-columns: 1fr; }
+}
+
+/* ── Subscriber directory filters ──────────────────────────────────────── */
+.filterbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.filterbar .chip {
+  display: inline-block; padding: 4px 11px; border: 1px solid var(--rule); border-radius: 14px;
+  background: var(--surface); color: var(--muted); text-decoration: none; font-size: 13px;
+}
+.filterbar .chip:hover { color: var(--ink); border-color: var(--muted); }
+.filterbar .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.online-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok-fg); margin-right: 6px; vertical-align: 1px; }
+
+.table-card { overflow-x: auto; }
+/* Side-by-side sections in .tile-rows share a top edge; the stacking gap
+   above applies only to sections that follow one another vertically. */
+.tile-rows > section { margin-top: 0; }
+
+/* Server-side tabs (links, not console.js buttons): each tab is its own URL,
+   so a filtered "Completed" view can be bookmarked or pasted into a ticket. */
+.tab-link {
+  padding: 8px 14px; font-weight: 600; color: var(--muted); text-decoration: none;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab-link:hover { color: var(--ink); }
+.tab-link.on { color: var(--accent); border-bottom-color: var(--accent); }
+.searchbar { flex-wrap: wrap; align-items: center; }
+.searchbar .check, .searchbar .inline-field { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.btn-danger {
+  padding: 5px 12px; border: 1px solid #e3b5b5; border-radius: 3px;
+  background: #fff; color: var(--bad-fg); font-weight: 600; cursor: pointer;
+}
+.btn-danger:hover { background: var(--bad-bg); }
+.small { font-size: 12px; }

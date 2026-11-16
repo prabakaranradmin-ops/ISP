@@ -221,6 +221,13 @@ type HandlerDeps struct {
 	VoucherCommissions VoucherCommissionStore
 	// NetworkHealth backs the Network Map screen (CRD-EXP-008).
 	NetworkHealth NetworkHealthStore
+	// Console backs the home dashboard and the subscriber directory's
+	// filters and multi-field search. Optional: without it the directory
+	// falls back to Revenue's plain username/id list.
+	Console ConsoleStore
+	// Disconnector backs the Sessions screen's Disconnect button. The API
+	// handler itself, same as SubscriberCreator/BulkActions.
+	Disconnector SessionDisconnector
 }
 
 // Handler serves the console.
@@ -257,6 +264,8 @@ type Handler struct {
 	generalLedger      GeneralLedgerStore
 	voucherCommissions VoucherCommissionStore
 	networkHealth      NetworkHealthStore
+	console            ConsoleStore
+	disconnector       SessionDisconnector
 }
 
 // NewHandler constructs the console handler.
@@ -294,6 +303,8 @@ func NewHandler(deps HandlerDeps) *Handler {
 		generalLedger:      deps.GeneralLedger,
 		voucherCommissions: deps.VoucherCommissions,
 		networkHealth:      deps.NetworkHealth,
+		console:            deps.Console,
+		disconnector:       deps.Disconnector,
 	}
 }
 
@@ -316,6 +327,12 @@ type Section struct {
 // mean a screen offering something the API refuses (a dead end for the
 // operator) or, worse, appearing to withhold something the API allows.
 var sections = []Section{
+	// First on purpose: Home redirects to the first allowed section, so
+	// every ISP-wide role lands here. Same reach as Subscribers, since every
+	// figure on it is a count of subscribers; the ticket figures are further
+	// gated inside the screen to the roles that can open Support.
+	{"dashboard", "Dashboard", "/staff/dashboard",
+		[]string{"isp_owner", "noc_engineer", "billing_admin", "csr", "technician"}, false},
 	{"subscribers", "Subscribers", "/staff/subscribers",
 		[]string{"isp_owner", "noc_engineer", "billing_admin", "csr", "technician"}, false},
 	{"billing", "Billing", "/staff/billing",
@@ -333,6 +350,12 @@ var sections = []Section{
 	// Router hardware is network-ops territory, same reach as LEA Lookup
 	// below: the owner and whoever configures the NAS estate, not billing
 	// or the front desk.
+	// Viewing is every ISP-wide role, matching the API's staffRead gate on
+	// GET /sessions/{id}/active: "is this customer online, on what IP" is the
+	// first question at the front desk as much as in the NOC. Disconnecting
+	// is narrower and gated inside the screen (canDisconnect).
+	{"sessions", "Sessions", "/staff/sessions",
+		[]string{"isp_owner", "noc_engineer", "billing_admin", "csr", "technician"}, false},
 	{"nas", "Routers", "/staff/nas",
 		[]string{"isp_owner", "noc_engineer"}, false},
 	// Same reach as Routers: a cross-device view of the same estate, not a
@@ -432,6 +455,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /staff/logout", h.Logout)
 
 	mux.Handle("GET /staff/", h.authed(h.Home))
+	mux.Handle("GET /staff/dashboard", h.authed(h.Dashboard))
 	mux.Handle("GET /staff/subscribers", h.authed(h.Subscribers))
 	// Registered before the {id} pattern's sibling so "new" is never read
 	// as a subscriber id. Go 1.22's mux scores a literal segment above a
@@ -449,6 +473,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/catalogue", h.authed(h.Catalogue))
 	mux.Handle("POST /staff/catalogue/plans", h.authed(h.requireCSRF(h.CreatePlan)))
 	mux.Handle("POST /staff/catalogue/gst", h.authed(h.requireCSRF(h.CreateGSTRate)))
+	mux.Handle("GET /staff/sessions", h.authed(h.Sessions))
+	mux.Handle("POST /staff/sessions/{session_id}/disconnect", h.authed(h.requireCSRF(h.DisconnectSessionForm)))
 	mux.Handle("GET /staff/nas", h.authed(h.NAS))
 	mux.Handle("GET /staff/network", h.authed(h.NetworkMap))
 	mux.Handle("POST /staff/nas/new", h.authed(h.requireCSRF(h.CreateNASDeviceForm)))

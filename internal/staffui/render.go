@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -31,7 +32,11 @@ var funcMap = template.FuncMap{
 	"datetime":    func(t time.Time) string { return t.Format("02 Jan 2006 15:04") },
 	"date":        func(t time.Time) string { return t.Format("02 Jan 2006") },
 	"badge":       badgeClass,
+	"humanize":    humanizeStatus,
+	"pct":         func(f float64) string { return fmt.Sprintf("%.2f", f) },
 	"gbytes":      gbytes,
+	"bytes":       humanBytes,
+	"elapsed":     elapsed,
 	"shortcutFor": shortcutFor,
 	// optHours/optPct format a nil-able *float64 straight to one decimal
 	// place, or an em dash — used by the reports screen, where nil means
@@ -106,6 +111,8 @@ func optFloat1(f *float64) string {
 // detail of the layout template, not part of the role/authorization model
 // Section otherwise carries.
 var sectionShortcuts = map[string]string{
+	"dashboard":   "h",
+	"sessions":    "o",
 	"subscribers": "s",
 	"catalogue":   "c",
 	"billing":     "b",
@@ -124,6 +131,84 @@ var sectionShortcuts = map[string]string{
 
 func shortcutFor(key string) string { return sectionShortcuts[key] }
 
+// navGroups arranges the sections into the top bar's menus. Like the
+// shortcuts above, this is presentation only: which sections a role may open
+// is still decided by AllowedSections alone, and grouping can neither grant
+// nor hide anything. An entry with an empty Label is a plain top-level link.
+//
+// Every Section key must appear exactly once; TestNavGroupsCoverEverySection
+// fails otherwise, so a new section cannot silently drop out of the menus.
+var navGroups = []struct {
+	Label string
+	Keys  []string
+}{
+	{"", []string{"dashboard"}},
+	{"Subscribers", []string{"subscribers", "my-subscribers", "catalogue"}},
+	{"Finance", []string{"billing", "revenue", "ledger", "reports", "procurement", "franchise", "my-pnl"}},
+	{"Service", []string{"tickets", "tasks", "inventory"}},
+	{"Network", []string{"sessions", "nas", "network", "lea"}},
+	{"Admin", []string{"accounts", "demo"}},
+}
+
+// NavEntry is one item in the top bar: a single link (len(Items) == 1) or a
+// menu of them.
+type NavEntry struct {
+	Label  string
+	Items  []Section
+	Active bool // the current page is one of Items
+}
+
+// buildNav groups the sections an operator may open. A menu left with one
+// item is shown as that item's own link, so a role with little reach (a
+// technician, a franchise partner) gets a short row of links rather than a
+// row of one-item menus. Any allowed section missing from navGroups is
+// appended as its own link rather than dropped.
+func buildNav(allowed []Section, active string) []NavEntry {
+	byKey := make(map[string]Section, len(allowed))
+	for _, s := range allowed {
+		byKey[s.Key] = s
+	}
+	placed := make(map[string]bool, len(allowed))
+	var out []NavEntry
+	add := func(label string, items []Section) {
+		if len(items) == 0 {
+			return
+		}
+		e := NavEntry{Label: label, Items: items}
+		for _, it := range items {
+			if it.Key == active {
+				e.Active = true
+			}
+		}
+		if len(items) == 1 {
+			e.Label = items[0].Label
+		}
+		out = append(out, e)
+	}
+	for _, g := range navGroups {
+		var items []Section
+		for _, k := range g.Keys {
+			if s, ok := byKey[k]; ok {
+				items = append(items, s)
+				placed[k] = true
+			}
+		}
+		if g.Label == "" {
+			for _, it := range items {
+				add("", []Section{it})
+			}
+			continue
+		}
+		add(g.Label, items)
+	}
+	for _, s := range allowed {
+		if !placed[s.Key] {
+			add("", []Section{s})
+		}
+	}
+	return out
+}
+
 // badgeClass maps a status to its pill colour, so state reads at a glance in a
 // list rather than having to be read word by word.
 func badgeClass(status string) string {
@@ -137,6 +222,48 @@ func badgeClass(status string) string {
 	default:
 		return "neutral"
 	}
+}
+
+// humanizeStatus turns a stored status ("soft_suspended") into the words an
+// operator would say ("Soft suspended").
+func humanizeStatus(s string) string {
+	if s == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, "_", " ")
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// humanBytes formats a byte count in the largest unit that keeps it >= 1,
+// the way an operator reads usage ("287.97 MB", "3.50 GB").
+func humanBytes(b int64) string {
+	if b < 1024 {
+		return fmt.Sprintf("%d B", b)
+	}
+	units := []string{"KB", "MB", "GB", "TB", "PB"}
+	v := float64(b) / 1024
+	i := 0
+	for v >= 1024 && i < len(units)-1 {
+		v /= 1024
+		i++
+	}
+	return fmt.Sprintf("%.2f %s", v, units[i])
+}
+
+// elapsed formats the time between two instants as h:mm:ss, or "Nd h:mm:ss"
+// past a day — PPPoE sessions routinely run for weeks.
+func elapsed(from, to time.Time) string {
+	d := to.Sub(from)
+	if d < 0 {
+		d = 0
+	}
+	secs := int64(d / time.Second)
+	days, secs := secs/86400, secs%86400
+	h, m, sec := secs/3600, (secs%3600)/60, secs%60
+	if days > 0 {
+		return fmt.Sprintf("%dd %d:%02d:%02d", days, h, m, sec)
+	}
+	return fmt.Sprintf("%d:%02d:%02d", h, m, sec)
 }
 
 func gbytes(b int64) string {
@@ -156,6 +283,7 @@ var pageNames = []string{
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
 	"inventory", "reports", "tasks", "my_subscribers", "procurement", "ledger", "network",
+	"dashboard", "sessions",
 }
 
 var pages = func() map[string]*template.Template {
@@ -175,6 +303,7 @@ type pageData struct {
 	Title    string
 	Session  Session
 	Sections []Section
+	Nav      []NavEntry
 	Active   string
 	CSRF     string
 	Message  string
@@ -209,10 +338,12 @@ func (h *Handler) render(w http.ResponseWriter, name string, d pageData) {
 
 // page builds the envelope for a signed-in operator.
 func (h *Handler) page(s Session, title, active string) pageData {
+	allowed := AllowedSections(s.Role, s.LeaAccess)
 	return pageData{
 		Title:    title,
 		Session:  s,
-		Sections: AllowedSections(s.Role, s.LeaAccess),
+		Sections: allowed,
+		Nav:      buildNav(allowed, active),
 		Active:   active,
 		CSRF:     h.csrfToken(s.Token),
 	}

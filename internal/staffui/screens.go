@@ -43,6 +43,18 @@ type subscribersData struct {
 	Query   string
 	Results []revenue.SubscriberRow
 	Total   int
+	// Directory is set when the console store is configured: the richer
+	// list with status, plan and expiry columns, filters, and search across
+	// phone, email, CAF and IP. Results/Total above are the fallback when it
+	// is not, and are left empty when it is.
+	Directory *DirectoryPage
+	// LoadFailed suppresses the table and counts when the directory query
+	// itself failed, leaving only the error banner and the search form.
+	LoadFailed bool
+	Filter     DirectoryFilter
+	ViewLabel  string
+	Statuses   []string
+	Views      []string
 	// ShowBulkActions gates the checkbox column and bulk-action card, same
 	// tier as the API's own "admin" middleware (billing_admin, isp_owner)
 	// that BulkChangeSubscriberPlan/BulkUpdateStatus/BulkWalletCredit sit
@@ -52,25 +64,38 @@ type subscribersData struct {
 	Plans           []Plan
 }
 
-// Subscribers lists subscribers with an optional search.
+// Subscribers lists subscribers with an optional search and filters.
 //
-// Searching by username or id covers what staff actually have in front of
-// them: a customer on the phone gives a username, a ticket carries an id.
+// The search box takes whatever the operator has in front of them: a
+// username or id from a ticket, or a phone number, email, CAF number or IP
+// address read out by a caller. The status and view filters are what the
+// dashboard's tiles link to.
 func (h *Handler) Subscribers(w http.ResponseWriter, r *http.Request) {
 	s, ok := h.requireSection(w, r, "subscribers")
 	if !ok {
 		return
 	}
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	h.renderSubscribers(w, r, s, query, "", "")
+	q := r.URL.Query()
+	h.renderSubscribers(w, r, s, DirectoryFilter{
+		Query:  strings.TrimSpace(q.Get("q")),
+		Status: q.Get("status"),
+		View:   q.Get("view"),
+	}, "", "")
 }
 
 // renderSubscribers is shared by Subscribers itself and by BulkAction, so a
 // bulk action's per-subscriber results come back on the same list rather
 // than a dead-end confirmation page.
-func (h *Handler) renderSubscribers(w http.ResponseWriter, r *http.Request, s Session, query, message, errMsg string) {
+func (h *Handler) renderSubscribers(w http.ResponseWriter, r *http.Request, s Session, f DirectoryFilter, message, errMsg string) {
 	d := h.page(s, "Subscribers", "subscribers")
 	d.Message, d.Error = message, errMsg
+	showBulk := s.Role == "isp_owner" || s.Role == "billing_admin"
+
+	if h.console != nil {
+		h.renderDirectory(w, r, d, f, showBulk)
+		return
+	}
+	query := f.Query
 
 	if h.revenue == nil {
 		d.Error = "The subscriber directory is not configured on this deployment."
@@ -104,15 +129,71 @@ func (h *Handler) renderSubscribers(w http.ResponseWriter, r *http.Request, s Se
 		Query:           query,
 		Results:         filtered,
 		Total:           len(rows),
-		ShowBulkActions: s.Role == "isp_owner" || s.Role == "billing_admin",
+		ShowBulkActions: showBulk,
 	}
-	if sd.ShowBulkActions && h.catalogue != nil {
-		if plans, err := h.catalogue.ListPlans(r.Context()); err == nil {
-			sd.Plans = plans
-		}
-	}
+	h.attachBulkPlans(r, &sd)
 	d.Data = sd
 	h.render(w, "subscribers", d)
+}
+
+// renderDirectory is the console-store path of renderSubscribers.
+//
+// An unknown status or view in the URL is reported, and the list is shown
+// unfiltered beneath the message, rather than silently treated as "any": a
+// tile whose link is wrong should look wrong.
+func (h *Handler) renderDirectory(w http.ResponseWriter, r *http.Request, d pageData, f DirectoryFilter, showBulk bool) {
+	if f.Status != "" && !inStrings(SubscriberStatuses, f.Status) {
+		d.Error = "Unknown status filter " + f.Status + "; showing everyone."
+		f.Status = ""
+	}
+	if f.View != "" && !inStrings(DirectoryViews, f.View) {
+		d.Error = "Unknown list " + f.View + "; showing everyone."
+		f.View = ""
+	}
+
+	sd := subscribersData{
+		Query:           f.Query,
+		Filter:          f,
+		ViewLabel:       directoryViewLabels[f.View],
+		Statuses:        SubscriberStatuses,
+		Views:           DirectoryViews,
+		ShowBulkActions: showBulk,
+	}
+	page, err := h.console.ListDirectory(r.Context(), f)
+	if err != nil {
+		log.Error().Err(err).Msg("staffui: list directory failed")
+		if d.Error == "" {
+			d.Error = "Could not load subscribers."
+		}
+		// No table and no "0 shown of 0" line: an empty list under an error
+		// reads as "nobody matched", which is a different claim.
+		sd.LoadFailed = true
+		d.Data = sd
+		h.render(w, "subscribers", d)
+		return
+	}
+	sd.Directory = page
+	h.attachBulkPlans(r, &sd)
+	d.Data = sd
+	h.render(w, "subscribers", d)
+}
+
+func (h *Handler) attachBulkPlans(r *http.Request, sd *subscribersData) {
+	if !sd.ShowBulkActions || h.catalogue == nil {
+		return
+	}
+	if plans, err := h.catalogue.ListPlans(r.Context()); err == nil {
+		sd.Plans = plans
+	}
+}
+
+func inStrings(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 type subscriberDetailData struct {

@@ -1,0 +1,295 @@
+package db
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/maaransoft/isp-bss-oss/internal/staffui"
+)
+
+// ConsoleStore serves the operations console's cross-subscriber screens: the
+// home dashboard and the filterable subscriber directory.
+//
+// These are reads over tables other stores already own (subscribers,
+// live_sessions, subscriber_status_history, tickets). They live here, rather
+// than on those stores, because each answers a console question ("how many
+// are expiring this week") that no API endpoint asks, and a store per
+// consumer is this package's rule (see db.go).
+type ConsoleStore struct{ pool dbPool }
+
+var _ staffui.ConsoleStore = (*ConsoleStore)(nil)
+
+// Console returns the store backing the console's dashboard and directory.
+func (d *DB) Console() *ConsoleStore { return &ConsoleStore{pool: d.pool} }
+
+// liveSessionTTLSeconds matches cache.SessionTTL (30 minutes). A live_sessions
+// row older than that is treated as offline by every other reader, and the
+// dashboard must agree with them or "online" would count subscribers the
+// subscriber page itself calls offline. Repeated rather than imported, since
+// internal/cache is a consumer of this layer's tables, not a dependency of it.
+const liveSessionTTLSeconds = 30 * 60
+
+// DashboardCounts gathers the dashboard in a single statement, so every tile
+// is read from one snapshot instead of drifting across several queries.
+func (s *ConsoleStore) DashboardCounts(ctx context.Context) (*staffui.DashboardCounts, error) {
+	const q = `
+		SELECT
+		  (SELECT count(*) FROM live_sessions
+		    WHERE updated_at > now() - ($1 * interval '1 second')),
+		  count(*),
+		  count(*) FILTER (WHERE status = 'pending_payment'),
+		  count(*) FILTER (WHERE status = 'active'),
+		  count(*) FILTER (WHERE status = 'grace_period'),
+		  count(*) FILTER (WHERE status = 'soft_suspended'),
+		  count(*) FILTER (WHERE status = 'hard_suspended'),
+		  count(*) FILTER (WHERE status = 'terminated'),
+		  count(*) FILTER (WHERE status = 'active'
+		                     AND plan_expiry >= now()
+		                     AND plan_expiry <  now() + interval '7 days'),
+		  count(*) FILTER (WHERE status <> 'terminated' AND plan_expiry < now()),
+		  count(*) FILTER (WHERE created_at >= now() - interval '7 days'),
+		  (SELECT count(DISTINCT subscriber_id) FROM subscriber_status_history
+		    WHERE new_status = 'terminated' AND NOT is_baseline
+		      AND occurred_at >= now() - interval '30 days'),
+		  (SELECT count(*) FROM tickets WHERE status IN ('open','in_progress')),
+		  (SELECT count(*) FROM tickets WHERE status IN ('open','in_progress')
+		      AND sla_resolution_due_at < now()),
+		  (SELECT count(*) FROM tickets WHERE status IN ('open','in_progress')
+		      AND assigned_to IS NULL)
+		FROM subscribers`
+
+	c := &staffui.DashboardCounts{ByStatus: make(map[string]int, len(staffui.SubscriberStatuses))}
+	var pending, active, grace, soft, hard, term int
+	err := s.pool.QueryRow(ctx, q, liveSessionTTLSeconds).Scan(
+		&c.Online, &c.Total,
+		&pending, &active, &grace, &soft, &hard, &term,
+		&c.ExpiringWeek, &c.Expired, &c.NewWeek, &c.Churned30d,
+		&c.OpenTickets, &c.OverdueTickets, &c.UnassignedTickets,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("db: dashboard counts: %w", err)
+	}
+	c.ByStatus["pending_payment"] = pending
+	c.ByStatus["active"] = active
+	c.ByStatus["grace_period"] = grace
+	c.ByStatus["soft_suspended"] = soft
+	c.ByStatus["hard_suspended"] = hard
+	c.ByStatus["terminated"] = term
+	return c, nil
+}
+
+const defaultDirectoryLimit = 500
+
+// ListDirectory returns the subscribers matching f.
+func (s *ConsoleStore) ListDirectory(ctx context.Context, f staffui.DirectoryFilter) (*staffui.DirectoryPage, error) {
+	if f.Status != "" && !inList(staffui.SubscriberStatuses, f.Status) {
+		return nil, fmt.Errorf("db: unknown subscriber status %q", f.Status)
+	}
+	if f.View != "" && !inList(staffui.DirectoryViews, f.View) {
+		return nil, fmt.Errorf("db: unknown directory view %q", f.View)
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = defaultDirectoryLimit
+	}
+
+	query := strings.TrimSpace(f.Query)
+	// Only a value that fits subscribers.id (int4) is tried as an id. A
+	// phone number is all digits too, and casting 9876543210 to int fails
+	// the whole statement with "out of range" — which is what a CSR typing
+	// a caller's number would otherwise get instead of a match.
+	var idQuery *int
+	if n, err := strconv.ParseInt(query, 10, 32); err == nil && n > 0 {
+		id := int(n)
+		idQuery = &id
+	}
+
+	// One statement with NULL-guarded predicates, same reasoning as
+	// RevenueStore.ListSubscribers: a second query string is a second place
+	// for a filter to be forgotten. The LIKE pattern escapes the operator's
+	// own % and _ so "50%" searches for that text rather than everything.
+	const q = `
+		WITH live AS (
+		  SELECT subscriber_id, assigned_ip FROM live_sessions
+		   WHERE updated_at > now() - ($1 * interval '1 second')
+		),
+		churned AS (
+		  SELECT DISTINCT subscriber_id FROM subscriber_status_history
+		   WHERE new_status = 'terminated' AND NOT is_baseline
+		     AND occurred_at >= now() - interval '30 days'
+		),
+		matched AS (
+		  SELECT s.id, s.username, s.status, s.mobile_number, p.name AS plan_name,
+		         s.plan_expiry, s.created_at, (l.subscriber_id IS NOT NULL) AS online
+		    FROM subscribers s
+		    LEFT JOIN plans p ON p.id = s.plan_id
+		    LEFT JOIN live l ON l.subscriber_id = s.id
+		   WHERE ($2::text = '' OR s.status = $2)
+		     AND ($3::text = ''
+		          OR ($3 = 'expiring' AND s.status = 'active'
+		              AND s.plan_expiry >= now() AND s.plan_expiry < now() + interval '7 days')
+		          OR ($3 = 'expired' AND s.status <> 'terminated' AND s.plan_expiry < now())
+		          OR ($3 = 'new' AND s.created_at >= now() - interval '7 days')
+		          OR ($3 = 'churned' AND s.id IN (SELECT subscriber_id FROM churned))
+		          OR ($3 = 'online' AND l.subscriber_id IS NOT NULL))
+		     AND ($4::text = ''
+		          OR s.username ILIKE $5 ESCAPE '\'
+		          OR s.mobile_number ILIKE $5 ESCAPE '\'
+		          OR s.email ILIKE $5 ESCAPE '\'
+		          OR s.caf_number = $4
+		          OR l.assigned_ip = $4
+		          OR s.id = $6::int)
+		)
+		SELECT id, username, status, mobile_number, COALESCE(plan_name, ''),
+		       plan_expiry, created_at, online,
+		       (SELECT count(*) FROM matched),
+		       (SELECT count(*) FROM subscribers)
+		  FROM matched
+		 ORDER BY id
+		 LIMIT $7`
+
+	rows, err := s.pool.Query(ctx, q, liveSessionTTLSeconds, f.Status, f.View,
+		query, "%"+escapeLike(query)+"%", idQuery, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list directory: %w", err)
+	}
+	defer rows.Close()
+
+	page := &staffui.DirectoryPage{Rows: make([]staffui.DirectoryRow, 0, 32)}
+	for rows.Next() {
+		var r staffui.DirectoryRow
+		if err := rows.Scan(&r.ID, &r.Username, &r.Status, &r.MobileNumber, &r.PlanName,
+			&r.PlanExpiry, &r.CreatedAt, &r.Online, &page.Matched, &page.Total); err != nil {
+			return nil, fmt.Errorf("db: scan directory row: %w", err)
+		}
+		page.Rows = append(page.Rows, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate directory: %w", err)
+	}
+	// No rows means the count columns were never read; the unfiltered total
+	// is still worth showing ("0 of 340"), so fetch it on its own.
+	if len(page.Rows) == 0 {
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM subscribers`).Scan(&page.Total); err != nil {
+			return nil, fmt.Errorf("db: count subscribers: %w", err)
+		}
+	}
+	page.Truncated = page.Matched > len(page.Rows)
+	return page, nil
+}
+
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+func inList(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+const defaultSessionLimit = 500
+
+// ListLiveSessions returns subscribers online now, newest session first.
+//
+// "Online" uses the same freshness rule as every other reader of
+// live_sessions (liveSessionTTLSeconds), so this list, the dashboard's count
+// and the subscriber page's online badge cannot disagree.
+func (s *ConsoleStore) ListLiveSessions(ctx context.Context, f staffui.SessionFilter) ([]staffui.LiveSession, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = defaultSessionLimit
+	}
+	query := strings.TrimSpace(f.Query)
+	const q = `
+		SELECT l.subscriber_id, s.username, l.session_id, l.nas_ip, l.assigned_ip,
+		       l.bytes_in, l.bytes_out, l.speed_profile, l.fup_throttled,
+		       l.started_at, l.updated_at
+		  FROM live_sessions l
+		  JOIN subscribers s ON s.id = l.subscriber_id
+		 WHERE l.updated_at > now() - ($1 * interval '1 second')
+		   AND (NOT $2::bool OR l.fup_throttled)
+		   AND ($3::text = ''
+		        OR s.username ILIKE $4 ESCAPE '\'
+		        OR l.assigned_ip = $3 OR l.nas_ip = $3 OR l.session_id = $3)
+		 ORDER BY l.started_at DESC
+		 LIMIT $5`
+	rows, err := s.pool.Query(ctx, q, liveSessionTTLSeconds, f.FUPOnly,
+		query, "%"+escapeLike(query)+"%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list live sessions: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]staffui.LiveSession, 0, 32)
+	for rows.Next() {
+		var l staffui.LiveSession
+		if err := rows.Scan(&l.SubscriberID, &l.Username, &l.SessionID, &l.NasIP, &l.AssignedIP,
+			&l.BytesIn, &l.BytesOut, &l.SpeedProfile, &l.FUPThrottled,
+			&l.StartedAt, &l.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("db: scan live session: %w", err)
+		}
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate live sessions: %w", err)
+	}
+	return out, nil
+}
+
+// ListCompletedSessions returns sessions that ended between f.From and f.To,
+// most recent first.
+//
+// The start_time < To predicate is redundant for correctness (a session
+// starts before it stops) but lets PostgreSQL skip the future monthly
+// partitions of subscriber_session_history without scanning them.
+func (s *ConsoleStore) ListCompletedSessions(ctx context.Context, f staffui.SessionFilter) ([]staffui.CompletedSession, error) {
+	if f.From.IsZero() || f.To.IsZero() || !f.To.After(f.From) {
+		return nil, fmt.Errorf("db: completed sessions need a From before To, got %v..%v", f.From, f.To)
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = defaultSessionLimit
+	}
+	query := strings.TrimSpace(f.Query)
+	const q = `
+		SELECT h.subscriber_id, s.username, h.session_id,
+		       COALESCE(host(h.nas_ip_address), ''), COALESCE(host(h.assigned_ipv4), ''),
+		       h.start_time, h.stop_time, h.input_octets, h.output_octets,
+		       COALESCE(h.terminate_cause, '')
+		  FROM subscriber_session_history h
+		  JOIN subscribers s ON s.id = h.subscriber_id
+		 WHERE h.stop_time IS NOT NULL
+		   AND h.stop_time >= $1 AND h.stop_time < $2
+		   AND h.start_time < $2
+		   AND ($3::text = ''
+		        OR s.username ILIKE $4 ESCAPE '\'
+		        OR host(h.assigned_ipv4) = $3 OR host(h.nas_ip_address) = $3
+		        OR h.session_id = $3)
+		 ORDER BY h.stop_time DESC
+		 LIMIT $5`
+	rows, err := s.pool.Query(ctx, q, f.From, f.To, query, "%"+escapeLike(query)+"%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list completed sessions: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]staffui.CompletedSession, 0, 32)
+	for rows.Next() {
+		var c staffui.CompletedSession
+		if err := rows.Scan(&c.SubscriberID, &c.Username, &c.SessionID, &c.NasIP, &c.AssignedIP,
+			&c.StartTime, &c.StopTime, &c.InputOctets, &c.OutputOctets, &c.TerminateCause); err != nil {
+			return nil, fmt.Errorf("db: scan completed session: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate completed sessions: %w", err)
+	}
+	return out, nil
+}

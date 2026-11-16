@@ -48,7 +48,7 @@ func (h *Handler) BulkAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		h.renderSubscribers(w, r, s, "", "", "Could not read the submitted form.")
+		h.renderSubscribers(w, r, s, DirectoryFilter{}, "", "Could not read the submitted form.")
 		return
 	}
 
@@ -59,7 +59,7 @@ func (h *Handler) BulkAction(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(ids) == 0 {
-		h.renderSubscribers(w, r, s, "", "", "Select at least one subscriber before applying a bulk action.")
+		h.renderSubscribers(w, r, s, DirectoryFilter{}, "", "Select at least one subscriber before applying a bulk action.")
 		return
 	}
 
@@ -74,41 +74,41 @@ func (h *Handler) BulkAction(w http.ResponseWriter, r *http.Request) {
 	case "notify":
 		h.bulkNotify(w, r, s, ctx, ids)
 	default:
-		h.renderSubscribers(w, r, s, "", "", "Unknown bulk action.")
+		h.renderSubscribers(w, r, s, DirectoryFilter{}, "", "Unknown bulk action.")
 	}
 }
 
 func (h *Handler) bulkPlanChange(w http.ResponseWriter, r *http.Request, s Session, ctx context.Context, ids []int) {
 	planID, err := strconv.Atoi(r.PostFormValue("plan_id"))
 	if err != nil || planID <= 0 {
-		h.renderSubscribers(w, r, s, "", "", "Choose a plan for the bulk plan change.")
+		h.renderSubscribers(w, r, s, DirectoryFilter{}, "", "Choose a plan for the bulk plan change.")
 		return
 	}
 	results := h.bulkActions.ChangePlanForMany(ctx, ids, planID)
 	ok, failed := splitBulkResults(results)
-	h.renderSubscribers(w, r, s, "", summarizeBulk("Plan changed", ok, failed), "")
+	h.renderSubscribers(w, r, s, DirectoryFilter{}, summarizeBulk("Plan changed", ok, failed), "")
 }
 
 func (h *Handler) bulkStatusChange(w http.ResponseWriter, r *http.Request, s Session, ctx context.Context, ids []int) {
 	status := r.PostFormValue("status")
 	if !api.BulkAllowedStatuses[status] {
-		h.renderSubscribers(w, r, s, "", "", "Choose a valid status for the bulk status change.")
+		h.renderSubscribers(w, r, s, DirectoryFilter{}, "", "Choose a valid status for the bulk status change.")
 		return
 	}
 	results := h.bulkActions.UpdateStatusForMany(ctx, ids, status)
 	ok, failed := splitBulkResults(results)
-	h.renderSubscribers(w, r, s, "", summarizeBulk("Status set to "+status+" for", ok, failed), "")
+	h.renderSubscribers(w, r, s, DirectoryFilter{}, summarizeBulk("Status set to "+status+" for", ok, failed), "")
 }
 
 func (h *Handler) bulkCredit(w http.ResponseWriter, r *http.Request, s Session, ctx context.Context, ids []int) {
 	reason := strings.TrimSpace(r.PostFormValue("reason"))
 	if reason == "" {
-		h.renderSubscribers(w, r, s, "", "", "A reason is required for a bulk wallet credit.")
+		h.renderSubscribers(w, r, s, DirectoryFilter{}, "", "A reason is required for a bulk wallet credit.")
 		return
 	}
 	amount, err := decimal.NewFromString(strings.TrimSpace(r.PostFormValue("amount")))
 	if err != nil || amount.LessThanOrEqual(decimal.Zero) {
-		h.renderSubscribers(w, r, s, "", "", "Amount must be a positive decimal, for example 100.00.")
+		h.renderSubscribers(w, r, s, DirectoryFilter{}, "", "Amount must be a positive decimal, for example 100.00.")
 		return
 	}
 
@@ -126,14 +126,14 @@ func (h *Handler) bulkCredit(w http.ResponseWriter, r *http.Request, s Session, 
 	if len(failed) > 0 {
 		msg += " Failed: " + strings.Join(failed, "; ") + "."
 	}
-	h.renderSubscribers(w, r, s, "", msg, "")
+	h.renderSubscribers(w, r, s, DirectoryFilter{}, msg, "")
 }
 
 func (h *Handler) bulkNotify(w http.ResponseWriter, r *http.Request, s Session, ctx context.Context, ids []int) {
 	title := strings.TrimSpace(r.PostFormValue("title"))
 	body := strings.TrimSpace(r.PostFormValue("body"))
 	if title == "" || body == "" {
-		h.renderSubscribers(w, r, s, "", "", "A title and message are required to send a notification.")
+		h.renderSubscribers(w, r, s, DirectoryFilter{}, "", "A title and message are required to send a notification.")
 		return
 	}
 	var channels []string
@@ -148,17 +148,17 @@ func (h *Handler) bulkNotify(w http.ResponseWriter, r *http.Request, s Session, 
 	}
 	showInPortal := r.PostFormValue("show_in_portal") == "on"
 	if len(channels) == 0 && !showInPortal {
-		h.renderSubscribers(w, r, s, "", "", "Pick at least one channel or the portal banner for the notification.")
+		h.renderSubscribers(w, r, s, DirectoryFilter{}, "", "Pick at least one channel or the portal banner for the notification.")
 		return
 	}
 
 	enqueued, err := h.bulkActions.SendBulkNotification(ctx, s.Username, ids, title, body, channels, showInPortal)
 	if err != nil {
 		log.Error().Err(err).Msg("staffui: bulk notification failed")
-		h.renderSubscribers(w, r, s, "", "", "Could not send the notification.")
+		h.renderSubscribers(w, r, s, DirectoryFilter{}, "", "Could not send the notification.")
 		return
 	}
-	h.renderSubscribers(w, r, s, "",
+	h.renderSubscribers(w, r, s, DirectoryFilter{},
 		fmt.Sprintf("Notification sent to %d of %d selected subscriber(s) (%d message(s) enqueued).",
 			len(ids), len(ids), enqueued), "")
 }

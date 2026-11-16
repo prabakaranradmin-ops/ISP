@@ -9,10 +9,12 @@
 
   onReady(function () {
     initShortcutsHelp();
+    initNavMenus();
     initGoToNav();
     initSearchFocus();
     initTabs();
     initSelectAll();
+    initConfirmForms();
     initNasSecretGenerator();
   });
 
@@ -49,6 +51,36 @@
       } else if (e.key === "Escape" && !panel.hidden) {
         close();
       }
+    });
+  }
+
+  // ── Top-bar menus ───────────────────────────────────────────────────────
+  //
+  // The menus are native <details>, which already open and close on click
+  // and keyboard. This adds what <details> lacks as a menu: opening one
+  // closes the others, and a click elsewhere or Escape closes it.
+
+  function initNavMenus() {
+    var groups = document.querySelectorAll(".topbar .navgroup");
+    if (!groups.length) return;
+
+    function closeAll(except) {
+      groups.forEach(function (g) { if (g !== except) g.open = false; });
+    }
+
+    groups.forEach(function (g) {
+      g.addEventListener("toggle", function () { if (g.open) closeAll(g); });
+    });
+    document.addEventListener("click", function (e) {
+      if (!e.target.closest(".navgroup")) closeAll(null);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape") return;
+      var open = document.querySelector(".topbar .navgroup[open]");
+      if (!open) return;
+      open.open = false;
+      var summary = open.querySelector("summary");
+      if (summary) summary.focus();
     });
   }
 
@@ -142,6 +174,20 @@
       });
 
       show(buttons[0].getAttribute("data-tab"));
+    });
+  }
+
+  // ── Confirm before a disruptive submit ──────────────────────────────────
+  //
+  // A form with data-confirm asks first (Disconnect on the Sessions
+  // screen). Without this script the form still submits; the server-side
+  // role check and CSRF token are what actually protect the action.
+
+  function initConfirmForms() {
+    document.querySelectorAll("form[data-confirm]").forEach(function (form) {
+      form.addEventListener("submit", function (e) {
+        if (!window.confirm(form.getAttribute("data-confirm"))) e.preventDefault();
+      });
     });
   }
 

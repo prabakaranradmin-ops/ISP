@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -69,10 +71,47 @@ func (h *Handler) GetActiveSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sess)
 }
 
+// Errors RequestDisconnect reports, so each caller can word them its own way
+// (a JSON error code for the API, a sentence for the console).
+var (
+	ErrSessionControlUnavailable = errors.New("api: session control not configured")
+	ErrSessionNotFound           = errors.New("api: no active session with that id")
+)
+
+// RequestDisconnect enqueues a PoD (Disconnect-Request) for a live session and
+// writes the audit entry. The radiusd worker pool sends the packet and retries
+// with backoff, so this returns once the task is queued, not once the NAS has
+// answered. It returns the subscriber the session belonged to.
+//
+// Shared by the API route and the operations console, the same way the
+// console delegates password resets and bulk actions here: one code path, one
+// audit line, whichever screen the disconnect came from.
+func (h *Handler) RequestDisconnect(ctx context.Context, sessionID string) (int, error) {
+	if h.sessionCtl == nil || h.tasks == nil {
+		return 0, ErrSessionControlUnavailable
+	}
+	subscriberID, nasIP, err := h.sessionCtl.ResolveSessionSubscriber(ctx, sessionID)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrSessionNotFound, err)
+	}
+
+	payload, _ := json.Marshal(fup.PoDPayload{SubscriberID: subscriberID}) //nolint:errcheck // static struct, cannot fail
+	task := jobqueue.NewTask(fup.TaskTypePoD, payload,
+		jobqueue.Queue(fup.QueueNetCommands), jobqueue.MaxRetry(5), jobqueue.Retention(sessionTaskRetention))
+	if _, err := h.tasks.Enqueue(task); err != nil {
+		log.Error().Err(err).Str("session_id", sessionID).Msg("api: enqueue PoD task failed")
+		return 0, fmt.Errorf("api: enqueue disconnect: %w", err)
+	}
+
+	middleware.Audit(ctx, "session.disconnect", sessionID, map[string]any{
+		"subscriber_id": subscriberID, "nas_ip": nasIP,
+	})
+	return subscriberID, nil
+}
+
 // DisconnectSession handles POST /api/v1/sessions/{session_id}/disconnect.
-// Enqueues a PoD (Disconnect-Request) task; the radiusd worker pool sends the
-// packet and retries with backoff, so this returns 202 rather than waiting for
-// the NAS round trip.
+// Returns 202 rather than waiting for the NAS round trip; see
+// RequestDisconnect.
 //
 // API §7 | DDS §5.3
 func (h *Handler) DisconnectSession(w http.ResponseWriter, r *http.Request) {
@@ -81,30 +120,17 @@ func (h *Handler) DisconnectSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", "session_id is required")
 		return
 	}
-	if h.sessionCtl == nil || h.tasks == nil {
+	_, err := h.RequestDisconnect(r.Context(), sessionID)
+	switch {
+	case errors.Is(err, ErrSessionControlUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "ERR_UNAVAILABLE", "session control not configured")
-		return
-	}
-
-	subscriberID, nasIP, err := h.sessionCtl.ResolveSessionSubscriber(r.Context(), sessionID)
-	if err != nil {
+	case errors.Is(err, ErrSessionNotFound):
 		writeError(w, http.StatusNotFound, "ERR_SESSION_NOT_FOUND", "no active session with that id")
-		return
-	}
-
-	payload, _ := json.Marshal(fup.PoDPayload{SubscriberID: subscriberID}) //nolint:errcheck // static struct, cannot fail
-	task := jobqueue.NewTask(fup.TaskTypePoD, payload,
-		jobqueue.Queue(fup.QueueNetCommands), jobqueue.MaxRetry(5), jobqueue.Retention(sessionTaskRetention))
-	if _, err := h.tasks.Enqueue(task); err != nil {
-		log.Error().Err(err).Str("session_id", sessionID).Msg("api: enqueue PoD task failed")
+	case err != nil:
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not enqueue disconnect")
-		return
+	default:
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "pod_enqueued"})
 	}
-
-	middleware.Audit(r.Context(), "session.disconnect", sessionID, map[string]any{
-		"subscriber_id": subscriberID, "nas_ip": nasIP,
-	})
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "pod_enqueued"})
 }
 
 // fupOverrideRequest is the POST /api/v1/sessions/{session_id}/fup-override body.

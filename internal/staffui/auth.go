@@ -245,7 +245,10 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.setSessionCookie(w, token)
-	http.Redirect(w, r, "/staff/subscribers", http.StatusSeeOther)
+	// Home picks the first section this role may open. A fixed target here
+	// sent franchise-scoped roles, who cannot open Subscribers, straight to
+	// a 403 page as their first sight of the console.
+	http.Redirect(w, r, "/staff/", http.StatusSeeOther)
 }
 
 // Logout ends the session.

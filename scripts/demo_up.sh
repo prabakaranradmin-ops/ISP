@@ -148,8 +148,9 @@ pass "demo data seeded (2 subscribers, 3 plans, 1 invoice, 4 past sessions)"
 # offline". A real row only appears when a router actually authenticates,
 # which a demo box has no way to do — so one is written here directly.
 #
-# This is demo scaffolding, not a fixture the application depends on: nothing
-# reads it except that panel and the health endpoint. The usage figure is
+# This is demo scaffolding, not a fixture the application depends on: it is
+# read by that panel, the health endpoint, and the console's dashboard and
+# Sessions screen. The usage figure is
 # deliberately set to 67% of the plan quota — high enough that the panel shows
 # a meaningful bar, below the 80% mark that would trigger a genuine FUP
 # warning and hand testers a notification nobody sent on purpose.
@@ -175,7 +176,19 @@ if [ -n "$SUB_ID" ]; then
                     session_id = EXCLUDED.session_id,
                     bytes_in = EXCLUDED.bytes_in, bytes_out = EXCLUDED.bytes_out,
                     bytes_total = EXCLUDED.bytes_total,
-                    started_at = EXCLUDED.started_at, updated_at = now();" >/dev/null 2>&1; then
+                    started_at = EXCLUDED.started_at, updated_at = now();
+                -- The open accounting row a real Accounting-Start writes
+                -- alongside live_sessions. Disconnect (console Sessions
+                -- screen, POST /sessions/{id}/disconnect) resolves a session
+                -- through this table, so without it the demo's one live
+                -- session could be seen but never disconnected. Clamped to
+                -- the month start so it routes to an existing partition.
+                INSERT INTO subscriber_session_history (
+                    subscriber_id, session_id, nas_ip_address, assigned_ipv4, start_time)
+                SELECT ${SUB_ID}, 'demo-live-001', '10.10.0.1'::inet, '100.64.0.7'::inet,
+                       GREATEST(date_trunc('month', now()), now() - interval '3 hours')
+                WHERE NOT EXISTS (SELECT 1 FROM subscriber_session_history
+                                   WHERE session_id = 'demo-live-001' AND stop_time IS NULL);" >/dev/null 2>&1; then
         pass "live session seeded for test_user (dashboard shows 67% of quota used)"
     else
         # Not fatal: everything except one dashboard panel still works.
