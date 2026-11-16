@@ -31,20 +31,25 @@ ON CONFLICT (id) DO NOTHING;
 
 -- ── Subscribers ──────────────────────────────────────────────────────────────
 -- password_hash values are bcrypt(cost=12) of "testpassword" — NEVER use in production
+--
+-- test_user carries a plan_expiry because migration 048's
+-- chk_authorised_subscriber_is_billable refuses an active subscriber without
+-- one; before this column was set here, the whole seed failed on this row.
+-- suspended_user is hard_suspended, which that constraint exempts.
 INSERT INTO subscribers
-    (caf_number, username, password_hash, mobile_number, plan_id, status, wallet_balance, registered_state, dunning_state)
+    (caf_number, username, password_hash, mobile_number, plan_id, status, wallet_balance, registered_state, dunning_state, plan_expiry)
 VALUES
     ('CAF-0001', 'test_user',
      '$2a$12$gn685/ch8wxn9XO33DI4lei.c/vdxKTXTg1VV0Cty2qHQLnnfnHbq',
      '+919876543210',
      (SELECT id FROM plans WHERE name = 'TN_Super_100M'),
-     'active', 799.00, 'TN', 'active'),
+     'active', 799.00, 'TN', 'active', NOW() + INTERVAL '30 days'),
 
     ('CAF-0002', 'suspended_user',
      '$2a$12$gn685/ch8wxn9XO33DI4lei.c/vdxKTXTg1VV0Cty2qHQLnnfnHbq',
      '+919876543211',
      (SELECT id FROM plans WHERE name = 'TN_Basic_50M'),
-     'hard_suspended', 0.00, 'TN', 'active')
+     'hard_suspended', 0.00, 'TN', 'active', NULL)
 ON CONFLICT (username) DO NOTHING;
 
 -- ── Wallet Ledger (initial credit for test_user) ─────────────────────────────

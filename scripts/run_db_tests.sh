@@ -19,7 +19,7 @@ export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL='*'
 
 PG_IMAGE="${PG_IMAGE:-postgres:15-alpine}"
-GO_IMAGE="${GO_IMAGE:-golang:1.22}"
+GO_IMAGE="${GO_IMAGE:-golang:1.23}"  # must satisfy go.mod's go directive
 NETWORK="db_tests_net_$$"
 CONTAINER="db_tests_pg_$$"
 
