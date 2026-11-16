@@ -164,7 +164,14 @@ func (s *CRMStore) ConvertLead(ctx context.Context, leadID int, sub api.Subscrib
 				plan_id, franchise_id, status, dunning_state, wallet_balance,
 				registered_state, kyc_status, plan_expiry
 			)
-			SELECT $1,$2,$3,$4,NULLIF($5,''),$6,$7,'active','active',0.00,$8,'pending',NULL
+			-- pending_payment, exactly as a direct sign-up (subscriberRecordFrom):
+			-- payment precedes authorisation. This was 'active' with a NULL
+			-- plan_expiry, which migration 048's
+			-- chk_authorised_subscriber_is_billable rejects — every conversion
+			-- failed from 048 until this was changed — and which, before 048,
+			-- put a converted lead on the network free with nothing to bill
+			-- them. The auto-renewal scanner activates them once funded.
+			SELECT $1,$2,$3,$4,NULLIF($5,''),$6,$7,'pending_payment','active',0.00,$8,'pending',NULL
 			  FROM ctx WHERE ctx.actor IS NOT NULL
 			RETURNING *
 		)

@@ -72,8 +72,9 @@ func seedSubscriber(ctx context.Context, t *testing.T, pool *pgxpool.Pool, id in
 	}
 	_, err = pool.Exec(ctx, `
 		INSERT INTO subscribers
-			(id, caf_number, username, password_hash, mobile_number, plan_id, status, registered_state)
-		VALUES ($1, 'CAF-LIVE-001', 'live@isp', '$2a$12$seedhash', '+919000000001', 1, 'active', 'TN')
+			(id, caf_number, username, password_hash, mobile_number, plan_id, status, registered_state, plan_expiry)
+		VALUES ($1, 'CAF-LIVE-001', 'live@isp', '$2a$12$seedhash', '+919000000001', 1, 'active', 'TN',
+		        now() + interval '30 days')
 		ON CONFLICT (id) DO NOTHING`, id)
 	if err != nil {
 		t.Fatalf("seed subscriber: %v", err)

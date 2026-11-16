@@ -329,7 +329,11 @@ func TestFR_NOTIF_009_NotificationStore(t *testing.T) {
 		}
 	})
 
-	t.Run("an unregistered template is stored as NULL rather than losing the row", func(t *testing.T) {
+	// b48c281 reversed this deliberately: resolving an unknown id to NULL
+	// had left every notification ever sent with no traceable template, so
+	// a wrong id now fails loudly. A blank id (system events with no
+	// template) is still stored as NULL.
+	t.Run("an unregistered template is refused rather than logged as NULL", func(t *testing.T) {
 		err := store.CreateNotificationLog(ctx, notifications.NotificationLog{
 			SubscriberID:      1,
 			Channel:           "sms",
@@ -338,11 +342,24 @@ func TestFR_NOTIF_009_NotificationStore(t *testing.T) {
 			ProviderMessageID: "sms-1",
 			DeliveryStatus:    "sent",
 		})
-		if err != nil {
-			t.Fatalf("CreateNotificationLog with unknown template: %v", err)
+		if err == nil {
+			t.Fatal("an unknown template id must be an error, not a silent NULL")
 		}
-		if n := countRows(ctx, t, pool, `SELECT COUNT(*) FROM notification_log WHERE provider_message_id = 'sms-1' AND template_id IS NULL`); n != 1 {
-			t.Error("want the audit row kept with a NULL template_id")
+	})
+
+	t.Run("a blank template id is stored as NULL", func(t *testing.T) {
+		err := store.CreateNotificationLog(ctx, notifications.NotificationLog{
+			SubscriberID:      1,
+			Channel:           "sms",
+			TriggeredByEvent:  "adhoc",
+			ProviderMessageID: "sms-2",
+			DeliveryStatus:    "sent",
+		})
+		if err != nil {
+			t.Fatalf("CreateNotificationLog without a template: %v", err)
+		}
+		if n := countRows(ctx, t, pool, `SELECT COUNT(*) FROM notification_log WHERE provider_message_id = 'sms-2' AND template_id IS NULL`); n != 1 {
+			t.Error("want the row kept with a NULL template_id")
 		}
 	})
 

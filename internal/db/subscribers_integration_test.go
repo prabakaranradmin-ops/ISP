@@ -117,6 +117,10 @@ func TestFR_SUB_001_APIStore_SubscriberLifecycle(t *testing.T) {
 		DunningState:    "active",
 		KYCStatus:       "pending",
 		WalletBalance:   "250.00",
+		// An active subscriber must carry a plan_expiry since migration 048
+		// (chk_authorised_subscriber_is_billable) — this is an already-paying
+		// account, as an import would create, not a fresh sign-up.
+		PlanExpiry: func() *time.Time { e := time.Now().Add(30 * 24 * time.Hour); return &e }(),
 	}, "$2a$12$hashedpassword")
 	if err != nil {
 		t.Fatalf("CreateSubscriber: %v", err)
@@ -199,6 +203,11 @@ func TestFR_SUB_001_APIStore_SubscriberLifecycle(t *testing.T) {
 			MobileNumber:    "+919876500002",
 			PlanID:          1,
 			RegisteredState: "TN",
+			// A valid row in every other respect, so the only thing that can
+			// refuse it is the unique index under test.
+			Status:       "pending_payment",
+			DunningState: "active",
+			KYCStatus:    "pending",
 		}, "$2a$12$hash")
 		if err == nil {
 			t.Fatal("expected a unique violation for a duplicate username")
@@ -486,7 +495,9 @@ func TestFR_SUB_003_PortalStore_GetPlanRenewalInfo(t *testing.T) {
 	})
 
 	t.Run("a subscriber with no plan_expiry set yet returns a nil pointer", func(t *testing.T) {
-		seedSubscriber(ctx, t, pool, 2, seedOpts{Username: "renewal-info-2@isp"})
+		// pending_payment is the only state that legitimately has no
+		// plan_expiry (migration 048); an active one now always has one.
+		seedSubscriber(ctx, t, pool, 2, seedOpts{Username: "renewal-info-2@isp", Status: "pending_payment"})
 
 		_, currentExpiry, err := store.GetPlanRenewalInfo(ctx, 2)
 		if err != nil {
@@ -662,16 +673,22 @@ func TestSubscribers_MobileNumberE164Constraint(t *testing.T) {
 	t.Run("a non-E.164 mobile_number is rejected", func(t *testing.T) {
 		_, err := pool.Exec(ctx, `
 			INSERT INTO subscribers (caf_number, username, password_hash, mobile_number, plan_id, status, registered_state)
-			VALUES ('CAF-BAD', 'bad-phone@isp', 'h', '9876543210', 1, 'active', 'TN')`) // missing leading +
+			VALUES ('CAF-BAD', 'bad-phone@isp', 'h', '9876543210', 1, 'pending_payment', 'TN')`) // missing leading +
 		if err == nil {
 			t.Fatal("expected the chk_subscribers_mobile_e164 constraint to reject a number missing '+'")
+		}
+		// Named, because with status 'active' and no plan_expiry this row was
+		// being refused by chk_authorised_subscriber_is_billable instead, and
+		// the test passed without the E.164 rule being exercised at all.
+		if !strings.Contains(err.Error(), "chk_subscribers_mobile_e164") {
+			t.Fatalf("rejected by the wrong constraint: %v", err)
 		}
 	})
 
 	t.Run("a valid E.164 mobile_number is accepted", func(t *testing.T) {
 		_, err := pool.Exec(ctx, `
 			INSERT INTO subscribers (caf_number, username, password_hash, mobile_number, plan_id, status, registered_state)
-			VALUES ('CAF-GOOD', 'good-phone@isp', 'h', '+919876543210', 1, 'active', 'TN')`)
+			VALUES ('CAF-GOOD', 'good-phone@isp', 'h', '+919876543210', 1, 'pending_payment', 'TN')`)
 		if err != nil {
 			t.Fatalf("a valid E.164 number must be accepted: %v", err)
 		}

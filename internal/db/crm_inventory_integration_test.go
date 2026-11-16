@@ -150,7 +150,9 @@ func TestFR_CRM_002_ConvertLeadCreatesSubscriberAndMarksLead(t *testing.T) {
 	if sub.MobileNumber != lead.MobileNumber {
 		t.Errorf("subscriber mobile = %q, want the lead's %q", sub.MobileNumber, lead.MobileNumber)
 	}
-	if sub.Username != "ravi@isp" || sub.Status != "active" {
+	// pending_payment, as a direct sign-up is: a converted lead gets no
+	// network access until their first cycle is paid for.
+	if sub.Username != "ravi@isp" || sub.Status != "pending_payment" {
 		t.Errorf("subscriber: %+v", sub)
 	}
 }

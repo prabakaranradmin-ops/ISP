@@ -235,6 +235,16 @@ func seedSubscriber(ctx context.Context, t *testing.T, pool *pgxpool.Pool, id in
 	if o.MobileNumber == "" {
 		o.MobileNumber = "+919876543210"
 	}
+	// Since migration 048 (chk_authorised_subscriber_is_billable) every status
+	// that grants service needs a plan_expiry. This helper used to insert
+	// those with NULL, which failed every test built on it — 118 of them —
+	// from 048 until this default was added. Thirty days out is "paid and not
+	// due", so it changes nothing for a test that does not care about expiry;
+	// any test that does sets PlanExpiry itself.
+	if o.PlanExpiry == nil && o.Status != "pending_payment" && o.Status != "hard_suspended" && o.Status != "terminated" {
+		paidUntil := time.Now().Add(30 * 24 * time.Hour)
+		o.PlanExpiry = &paidUntil
+	}
 
 	_, err := pool.Exec(ctx, `
 		INSERT INTO subscribers (

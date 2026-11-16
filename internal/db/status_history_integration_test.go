@@ -123,6 +123,10 @@ func TestFR_RPT_001_CreationIsAttributed(t *testing.T) {
 		MobileNumber:    "+919876500011",
 		PlanID:          1,
 		RegisteredState: "TN",
+		// What every creation path now sends (subscriberRecordFrom).
+		Status:       "pending_payment",
+		DunningState: "active",
+		KYCStatus:    "pending",
 	}, "$2a$12$seedhash")
 	if err != nil {
 		t.Fatalf("CreateSubscriber: %v", err)
