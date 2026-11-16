@@ -293,3 +293,148 @@ func (s *ConsoleStore) ListCompletedSessions(ctx context.Context, f staffui.Sess
 	}
 	return out, nil
 }
+
+// ── Ticket queue (FR-CON-005) ───────────────────────────────────────────────
+
+const defaultTicketLimit = 300
+
+// ListTicketQueue returns tickets across all subscribers matching f.
+//
+// Ordering puts what needs attention first: overdue, then by priority
+// (critical → low), then the soonest resolution deadline, then the oldest.
+// The "closed" and "all" views order by most recently updated instead, since
+// nothing in them is waiting on anyone.
+func (s *ConsoleStore) ListTicketQueue(ctx context.Context, f staffui.TicketFilter) ([]staffui.QueueTicket, error) {
+	view := f.View
+	if view == "" {
+		view = "open"
+	}
+	if !inList(staffui.TicketViews, view) {
+		return nil, fmt.Errorf("db: unknown ticket view %q", f.View)
+	}
+	if f.Priority != "" && !inList(staffui.TicketPriorities, f.Priority) {
+		return nil, fmt.Errorf("db: unknown ticket priority %q", f.Priority)
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = defaultTicketLimit
+	}
+	query := strings.TrimSpace(f.Query)
+	var idQuery *int
+	if n, err := strconv.ParseInt(query, 10, 32); err == nil && n > 0 {
+		id := int(n)
+		idQuery = &id
+	}
+	var subID *int
+	if f.SubscriberID > 0 {
+		subID = &f.SubscriberID
+	}
+
+	const q = `
+		SELECT t.id, t.subscriber_id, s.username, t.category, t.description,
+		       t.priority, t.status, t.assigned_to, COALESCE(NULLIF(u.full_name, ''), u.username, ''),
+		       t.sla_response_due_at, t.sla_resolution_due_at, t.created_at, t.updated_at,
+		       (t.status IN ('open','in_progress') AND t.sla_resolution_due_at < now()) AS overdue
+		  FROM tickets t
+		  JOIN subscribers s ON s.id = t.subscriber_id
+		  LEFT JOIN staff_users u ON u.id = t.assigned_to
+		 WHERE CASE $1::text
+		         WHEN 'open'       THEN t.status IN ('open','in_progress')
+		         WHEN 'overdue'    THEN t.status IN ('open','in_progress') AND t.sla_resolution_due_at < now()
+		         WHEN 'unassigned' THEN t.status IN ('open','in_progress') AND t.assigned_to IS NULL
+		         WHEN 'mine'       THEN t.status IN ('open','in_progress')
+		                            AND t.assigned_to = (SELECT id FROM staff_users WHERE username = $2)
+		         WHEN 'closed'     THEN t.status IN ('resolved','closed') AND t.updated_at >= now() - interval '30 days'
+		         ELSE true
+		       END
+		   AND ($3::text = '' OR t.priority = $3)
+		   AND ($4::int IS NULL OR t.subscriber_id = $4)
+		   AND ($5::text = ''
+		        OR t.id = $6::int OR t.subscriber_id = $6::int
+		        OR s.username ILIKE $7 ESCAPE '\'
+		        OR t.description ILIKE $7 ESCAPE '\')
+		 ORDER BY
+		   CASE WHEN $1 IN ('closed','all') THEN t.updated_at END DESC,
+		   (t.status IN ('open','in_progress') AND t.sla_resolution_due_at < now()) DESC,
+		   CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+		   t.sla_resolution_due_at ASC NULLS LAST,
+		   t.created_at ASC
+		 LIMIT $8`
+	rows, err := s.pool.Query(ctx, q, view, f.StaffUsername, f.Priority, subID,
+		query, idQuery, "%"+escapeLike(query)+"%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list ticket queue: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]staffui.QueueTicket, 0, 32)
+	for rows.Next() {
+		var t staffui.QueueTicket
+		if err := rows.Scan(&t.ID, &t.SubscriberID, &t.Username, &t.Category, &t.Description,
+			&t.Priority, &t.Status, &t.AssignedTo, &t.AssigneeName,
+			&t.ResponseDue, &t.ResolutionDue, &t.CreatedAt, &t.UpdatedAt, &t.Overdue); err != nil {
+			return nil, fmt.Errorf("db: scan ticket: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate tickets: %w", err)
+	}
+	return out, nil
+}
+
+// HelpdeskSummary computes the figures above the queue.
+//
+// "Closed in 30 days" and the median both use the first time a ticket
+// reached resolved or closed, from ticket_status_history (migration 031),
+// the same definition FR-RPT-001's resolution report uses: a ticket reopened
+// and closed again is not counted twice, and its time-to-close is not reset.
+// Baseline rows are excluded — their occurred_at is when capture began, not
+// when the ticket was resolved.
+func (s *ConsoleStore) HelpdeskSummary(ctx context.Context) (*staffui.HelpdeskSummary, error) {
+	const q = `
+		WITH first_close AS (
+		  SELECT t.id, t.created_at, min(h.occurred_at) AS closed_at
+		    FROM tickets t
+		    JOIN ticket_status_history h ON h.ticket_id = t.id
+		   WHERE h.new_status IN ('resolved','closed') AND NOT h.is_baseline
+		   GROUP BY t.id, t.created_at
+		)
+		SELECT
+		  (SELECT count(*) FROM tickets WHERE status IN ('open','in_progress')),
+		  (SELECT count(*) FROM tickets WHERE status IN ('open','in_progress') AND sla_resolution_due_at < now()),
+		  (SELECT count(*) FROM tickets WHERE status IN ('open','in_progress') AND assigned_to IS NULL),
+		  (SELECT count(*) FROM first_close WHERE closed_at >= now() - interval '30 days'),
+		  (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM closed_at - created_at) / 3600.0)
+		     FROM first_close WHERE closed_at >= now() - interval '30 days')`
+	var sum staffui.HelpdeskSummary
+	if err := s.pool.QueryRow(ctx, q).Scan(&sum.Open, &sum.Overdue, &sum.Unassigned,
+		&sum.Closed30d, &sum.MedianCloseHours); err != nil {
+		return nil, fmt.Errorf("db: helpdesk summary: %w", err)
+	}
+	return &sum, nil
+}
+
+// ListTicketAssignees returns active staff in the roles the API lets update
+// tickets (csrOrTech: csr, technician, isp_owner), so the console never
+// offers an assignee who could not then work the ticket.
+func (s *ConsoleStore) ListTicketAssignees(ctx context.Context) ([]staffui.Assignee, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, username, COALESCE(full_name, ''), role
+		  FROM staff_users
+		 WHERE active AND role IN ('csr','technician','isp_owner')
+		 ORDER BY role, username`)
+	if err != nil {
+		return nil, fmt.Errorf("db: list ticket assignees: %w", err)
+	}
+	defer rows.Close()
+	var out []staffui.Assignee
+	for rows.Next() {
+		var a staffui.Assignee
+		if err := rows.Scan(&a.ID, &a.Username, &a.FullName, &a.Role); err != nil {
+			return nil, fmt.Errorf("db: scan assignee: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}

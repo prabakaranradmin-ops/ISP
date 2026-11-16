@@ -294,3 +294,12 @@ a.tile:hover { border-color: var(--accent); }
 }
 .btn-danger:hover { background: var(--bad-bg); }
 .small { font-size: 12px; }
+
+/* ── Ticket queue (FR-CON-005) ─────────────────────────────────────────── */
+.summary-strip { margin-bottom: 18px; }
+.tiles-5 { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.tile .unit { font-size: 16px; font-weight: 500; color: var(--muted); }
+table.queue td.issue { max-width: 320px; }
+table.queue form.inline { flex-wrap: wrap; }
+table.queue select { padding: 5px 6px; font-size: 13px; }
+tr.row-overdue td:first-child { box-shadow: inset 3px 0 0 var(--bad-fg); padding-left: 8px; }

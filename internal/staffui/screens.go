@@ -384,16 +384,36 @@ type ticketsData struct {
 	Tickets      []portal.TicketEntry
 	Looked       bool
 	Statuses     []string
+
+	// Queue mode (FR-CON-005), used whenever the console store is wired:
+	// every subscriber's tickets in one list, with the helpdesk figures.
+	QueueMode  bool
+	Queue      []QueueTicket
+	Summary    *HelpdeskSummary
+	Filter     TicketFilter
+	Views      []string
+	Priorities []string
+	Assignees  []Assignee
+	// FilterQuery re-encodes the active filter so each row's update form
+	// returns the operator to the same view.
+	FilterQuery string
 }
 
-// Tickets shows a subscriber's support queue.
+var ticketStatuses = []string{"open", "in_progress", "resolved", "closed"}
+
+// Tickets is the support queue: every subscriber's tickets by default,
+// narrowed by the view chips, priority, a search, or one subscriber.
 func (h *Handler) Tickets(w http.ResponseWriter, r *http.Request) {
 	s, ok := h.requireSection(w, r, "tickets")
 	if !ok {
 		return
 	}
+	if h.console != nil {
+		h.renderTicketQueue(w, r, s)
+		return
+	}
 	d := h.page(s, "Support", "tickets")
-	td := ticketsData{Statuses: []string{"open", "in_progress", "resolved", "closed"}}
+	td := ticketsData{Statuses: ticketStatuses}
 
 	idParam := strings.TrimSpace(r.URL.Query().Get("subscriber_id"))
 	if idParam != "" {
@@ -437,18 +457,46 @@ func (h *Handler) UpdateTicketStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := r.PostFormValue("status")
+	currentStatus := r.PostFormValue("current_status")
 	subscriberID := r.PostFormValue("subscriber_id")
 
 	// Validated against the allowed set rather than passed through: the column
 	// has no CHECK constraint, so an arbitrary string would persist and then
 	// render as an unknown badge everywhere it appears.
-	valid := map[string]bool{"open": true, "in_progress": true, "resolved": true, "closed": true}
-	if !valid[status] {
+	if !inStrings(ticketStatuses, status) {
 		h.renderError(w, r, s, http.StatusUnprocessableEntity, "That is not a valid ticket status.")
 		return
 	}
 
-	updated, err := h.tickets.UpdateTicketAdmin(r.Context(), ticketID, &status, nil, nil)
+	// Assignment (queue mode). Blank means "leave as is". Any other value must
+	// be one of the staff the queue offered — tickets.assigned_to's FK would
+	// accept any staff id, including a billing admin who cannot then open
+	// the ticket.
+	var assignee *int
+	if raw := strings.TrimSpace(r.PostFormValue("assigned_to")); raw != "" {
+		id, err := strconv.Atoi(raw)
+		if err != nil || !h.isTicketAssignee(r.Context(), id) {
+			h.renderError(w, r, s, http.StatusUnprocessableEntity, "That person cannot be assigned tickets.")
+			return
+		}
+		assignee = &id
+	}
+
+	// Only a real change of status is applied and announced. An assignment
+	// from the queue re-submits the row's unchanged status, and telling the
+	// subscriber "your ticket was updated" for an internal reassignment is
+	// noise at best.
+	statusChanged := currentStatus == "" || currentStatus != status
+	var statusPtr *string
+	if statusChanged {
+		statusPtr = &status
+	}
+	if statusPtr == nil && assignee == nil {
+		http.Redirect(w, r, "/staff/tickets?"+ticketReturnQuery(r, subscriberID).Encode(), http.StatusSeeOther) //nolint:gosec
+		return
+	}
+
+	updated, err := h.tickets.UpdateTicketAdmin(r.Context(), ticketID, statusPtr, assignee, nil)
 	if err != nil {
 		log.Error().Err(err).Int("ticket_id", ticketID).Msg("staffui: ticket update failed")
 		h.renderError(w, r, s, http.StatusInternalServerError, "Could not update that ticket.")
@@ -458,19 +506,115 @@ func (h *Handler) UpdateTicketStatus(w http.ResponseWriter, r *http.Request) {
 	// FR-NOTIF-007: tell the subscriber. A CSR resolving a ticket from here is
 	// the exact "embarrassed in front of a subscriber" gap this closes — the
 	// customer would otherwise never learn their ticket moved.
-	if updated != nil {
+	if updated != nil && statusChanged {
 		h.enqueueTicketUpdate(r.Context(), *updated)
 	}
 
 	// gosec G710 (open redirect): the target can never leave /staff/tickets —
-	// it is a fixed literal, and subscriberID only ever fills a query
-	// parameter's value, not the redirect's host. Genuinely fixed anyway:
-	// subscriberID was raw PostFormValue, concatenated unescaped, so a value
-	// containing & or # could inject additional query parameters or corrupt
-	// the target the browser navigates to. url.Values.Encode is the correct
-	// way to build this regardless of whether that was exploitable today.
-	redirectQuery := url.Values{"subscriber_id": {subscriberID}, "updated": {"1"}}
-	http.Redirect(w, r, "/staff/tickets?"+redirectQuery.Encode(), http.StatusSeeOther) //nolint:gosec
+	// it is a fixed literal, and every parameter only fills a query value,
+	// built with url.Values.Encode rather than concatenated, so a value
+	// containing & or # cannot inject parameters or corrupt the target.
+	q := ticketReturnQuery(r, subscriberID)
+	q.Set("updated", "1")
+	http.Redirect(w, r, "/staff/tickets?"+q.Encode(), http.StatusSeeOther) //nolint:gosec
+}
+
+// ticketReturnQuery rebuilds the queue filter the update form came from,
+// from known parameter names only, so the operator lands back on the same
+// view rather than the default one.
+func ticketReturnQuery(r *http.Request, subscriberID string) url.Values {
+	q := url.Values{}
+	for _, k := range []string{"view", "priority", "q"} {
+		if v := strings.TrimSpace(r.PostFormValue("return_" + k)); v != "" {
+			q.Set(k, v)
+		}
+	}
+	if subscriberID != "" {
+		q.Set("subscriber_id", subscriberID)
+	}
+	return q
+}
+
+func (h *Handler) isTicketAssignee(ctx context.Context, id int) bool {
+	if h.console == nil {
+		return false
+	}
+	as, err := h.console.ListTicketAssignees(ctx)
+	if err != nil {
+		return false
+	}
+	for _, a := range as {
+		if a.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// renderTicketQueue is the console-store path of Tickets (FR-CON-005).
+func (h *Handler) renderTicketQueue(w http.ResponseWriter, r *http.Request, s Session) {
+	d := h.page(s, "Support", "tickets")
+	q := r.URL.Query()
+	f := TicketFilter{
+		View:          q.Get("view"),
+		Priority:      q.Get("priority"),
+		Query:         strings.TrimSpace(q.Get("q")),
+		StaffUsername: s.Username,
+		Limit:         300,
+	}
+	if f.View == "" {
+		f.View = "open"
+	}
+	if !inStrings(TicketViews, f.View) {
+		d.Error = "Unknown ticket list " + f.View + "; showing open tickets."
+		f.View = "open"
+	}
+	if f.Priority != "" && !inStrings(TicketPriorities, f.Priority) {
+		d.Error = "Unknown priority " + f.Priority + "; showing every priority."
+		f.Priority = ""
+	}
+	if raw := strings.TrimSpace(q.Get("subscriber_id")); raw != "" {
+		if id, err := strconv.Atoi(raw); err == nil && id > 0 {
+			f.SubscriberID = id
+		} else {
+			d.Error = "Enter a numeric subscriber id."
+		}
+	}
+	if q.Get("updated") != "" {
+		d.Message = "Ticket updated."
+	}
+
+	td := ticketsData{
+		QueueMode:  true,
+		Statuses:   ticketStatuses,
+		Filter:     f,
+		Views:      TicketViews,
+		Priorities: TicketPriorities,
+	}
+	fq := url.Values{"view": {f.View}}
+	if f.Priority != "" {
+		fq.Set("priority", f.Priority)
+	}
+	if f.Query != "" {
+		fq.Set("q", f.Query)
+	}
+	td.FilterQuery = fq.Encode()
+
+	var err error
+	if td.Queue, err = h.console.ListTicketQueue(r.Context(), f); err != nil {
+		log.Error().Err(err).Msg("staffui: ticket queue failed")
+		d.Error = "Could not load tickets."
+	}
+	if sum, err := h.console.HelpdeskSummary(r.Context()); err == nil {
+		td.Summary = sum
+	} else {
+		log.Error().Err(err).Msg("staffui: helpdesk summary failed")
+	}
+	if as, err := h.console.ListTicketAssignees(r.Context()); err == nil {
+		td.Assignees = as
+	}
+	d.Data = td
+	h.render(w, "tickets", d)
 }
 
 // enqueueTicketUpdate tells the subscriber their ticket's status changed

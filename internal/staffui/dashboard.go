@@ -19,6 +19,10 @@ type ConsoleStore interface {
 	ListDirectory(ctx context.Context, f DirectoryFilter) (*DirectoryPage, error)
 	ListLiveSessions(ctx context.Context, f SessionFilter) ([]LiveSession, error)
 	ListCompletedSessions(ctx context.Context, f SessionFilter) ([]CompletedSession, error)
+	ListTicketQueue(ctx context.Context, f TicketFilter) ([]QueueTicket, error)
+	HelpdeskSummary(ctx context.Context) (*HelpdeskSummary, error)
+	// ListTicketAssignees returns active staff whose role can work tickets.
+	ListTicketAssignees(ctx context.Context) ([]Assignee, error)
 }
 
 // SubscriberStatuses is every value subscribers.status may hold (migration
@@ -207,4 +211,75 @@ type SessionFilter struct {
 	// From/To bound completed sessions by stop time. Ignored for live ones.
 	From, To time.Time
 	Limit    int
+}
+
+// ── Ticket queue (FR-CON-005) ───────────────────────────────────────────────
+
+// TicketViews are the queue's preset filters.
+//
+//	open        open or in progress (the default)
+//	overdue     open or in progress, past the SLA resolution deadline
+//	unassigned  open or in progress, nobody assigned
+//	mine        open or in progress, assigned to the viewing operator
+//	closed      resolved or closed, updated in the last 30 days
+//	all         everything, newest first
+var TicketViews = []string{"open", "overdue", "unassigned", "mine", "closed", "all"}
+
+// TicketPriorities are the values migration 023's CHECK allows.
+var TicketPriorities = []string{"critical", "high", "medium", "low"}
+
+// TicketFilter narrows the queue.
+type TicketFilter struct {
+	View     string // one of TicketViews; "" means "open"
+	Priority string // one of TicketPriorities, or "" for any
+	// Query matches a ticket id or subscriber id (exact), or the username or
+	// description (substring).
+	Query string
+	// StaffUsername is the viewing operator, used by the "mine" view. A
+	// username rather than an id because that is what the session carries:
+	// the console JWT's subject is the username, and Session.StaffID is
+	// never populated from it.
+	StaffUsername string
+	// SubscriberID, when non-zero, limits the queue to one subscriber.
+	SubscriberID int
+	Limit        int
+}
+
+// QueueTicket is one row of the ticket queue.
+type QueueTicket struct {
+	ID            int
+	SubscriberID  int
+	Username      string
+	Category      string
+	Description   string
+	Priority      string
+	Status        string
+	AssignedTo    *int
+	AssigneeName  string
+	ResponseDue   *time.Time
+	ResolutionDue *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	// Overdue is computed by the store against its own clock, so the badge
+	// and the "overdue" view can never disagree about a ticket.
+	Overdue bool
+}
+
+// HelpdeskSummary is the figures strip above the queue.
+type HelpdeskSummary struct {
+	Open       int
+	Overdue    int
+	Unassigned int
+	Closed30d  int
+	// MedianCloseHours is nil when nothing was resolved in the window — "no
+	// data", which a zero would misreport as "instant".
+	MedianCloseHours *float64
+}
+
+// Assignee is a staff member a ticket can be assigned to.
+type Assignee struct {
+	ID       int
+	Username string
+	FullName string
+	Role     string
 }

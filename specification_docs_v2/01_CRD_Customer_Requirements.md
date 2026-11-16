@@ -569,7 +569,7 @@ add-ons for OTT/IPTV are covered by CRD-EXP-014's product catalogue.
 
 | Item | Backend exists? | Effort to close | Status |
 |---|---|---|---|
-| CRD-EXP-012 (console screens) | Yes | Low per screen | In progress — FR-CON-001..004 done 2026-11-16 |
+| CRD-EXP-012 (console screens) | Yes | Low per screen | In progress — FR-CON-001..005 done 2026-11-16 |
 | CRD-EXP-013 (billing/catalogue extensions) | Partly | Low–medium each | Open |
 | CRD-EXP-014 (new modules) | No | Medium each | Open |
 | CRD-EXP-015 (blocked) | No | — | Deferred until each blocker is cleared |

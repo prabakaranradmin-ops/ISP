@@ -16,9 +16,32 @@ type fakeConsole struct {
 	page      *DirectoryPage
 	live      []LiveSession
 	completed []CompletedSession
+	queue     []QueueTicket
+	summary   *HelpdeskSummary
+	assignees []Assignee
 	err       error
 	gotFilt   *DirectoryFilter
 	gotSess   *SessionFilter
+	gotTicket *TicketFilter
+}
+
+func (f *fakeConsole) ListTicketQueue(_ context.Context, filt TicketFilter) ([]QueueTicket, error) {
+	f.gotTicket = &filt
+	return f.queue, f.err
+}
+
+func (f *fakeConsole) HelpdeskSummary(context.Context) (*HelpdeskSummary, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.summary == nil {
+		return &HelpdeskSummary{}, nil
+	}
+	return f.summary, nil
+}
+
+func (f *fakeConsole) ListTicketAssignees(context.Context) ([]Assignee, error) {
+	return f.assignees, nil
 }
 
 func (f *fakeConsole) ListLiveSessions(_ context.Context, filt SessionFilter) ([]LiveSession, error) {

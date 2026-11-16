@@ -297,3 +297,112 @@ func TestConsole_Sessions(t *testing.T) {
 		t.Error("a missing window must be an error, not an unbounded scan")
 	}
 }
+
+func TestConsole_TicketQueue(t *testing.T) {
+	ctx := context.Background()
+	database, pool := newTestDB(t)
+	seedPlan(ctx, t, pool, 1, "Home 50M", "50M/50M", 0, "", "499.00")
+	in30d := time.Now().Add(30 * 24 * time.Hour)
+	seedSubscriber(ctx, t, pool, 1, seedOpts{Username: "alice", PlanExpiry: &in30d, MobileNumber: "+919800000001"})
+	seedSubscriber(ctx, t, pool, 2, seedOpts{Username: "bob", PlanExpiry: &in30d, MobileNumber: "+919800000002"})
+	seedStaffUser(ctx, t, pool, 7, "csr1", "csr")
+	seedStaffUser(ctx, t, pool, 8, "tech1", "technician")
+	seedStaffUser(ctx, t, pool, 9, "bill1", "billing_admin")
+
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	// ids 1..5 in insertion order.
+	mustExec(`INSERT INTO tickets (subscriber_id, category, description) VALUES
+	            (1, 'connectivity', 'router keeps rebooting'),   -- 1: overdue, unassigned
+	            (2, 'billing', 'charged twice'),                  -- 2: critical, assigned to csr1
+	            (1, 'other', 'change wifi name'),                 -- 3: low, assigned to tech1
+	            (2, 'connectivity', 'slow speeds at night'),      -- 4: resolved after 10h
+	            (1, 'billing', 'invoice copy 50%_off')            -- 5: resolved after 20h`)
+	mustExec(`UPDATE tickets SET priority = 'high', sla_resolution_due_at = now() - interval '1 hour' WHERE id = 1`)
+	mustExec(`UPDATE tickets SET priority = 'critical', assigned_to = 7, sla_resolution_due_at = now() + interval '2 hours' WHERE id = 2`)
+	mustExec(`UPDATE tickets SET priority = 'low', assigned_to = 8, sla_resolution_due_at = now() + interval '3 days' WHERE id = 3`)
+	mustExec(`UPDATE tickets SET created_at = now() - interval '10 hours' WHERE id = 4`)
+	mustExec(`UPDATE tickets SET created_at = now() - interval '20 hours' WHERE id = 5`)
+	// Real transitions, so the history trigger records the close time.
+	mustExec(`UPDATE tickets SET status = 'resolved' WHERE id IN (4, 5)`)
+
+	store := database.Console()
+	ids := func(f staffui.TicketFilter) []int {
+		t.Helper()
+		ts, err := store.ListTicketQueue(ctx, f)
+		if err != nil {
+			t.Fatalf("ListTicketQueue(%+v): %v", f, err)
+		}
+		var out []int
+		for _, x := range ts {
+			out = append(out, x.ID)
+		}
+		return out
+	}
+	eq := func(name string, got []int, want ...int) {
+		t.Helper()
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%s: want %v, got %v", name, want, got)
+		}
+	}
+
+	// Overdue first, then priority, then deadline.
+	eq("open (default), attention order", ids(staffui.TicketFilter{}), 1, 2, 3)
+	eq("overdue", ids(staffui.TicketFilter{View: "overdue"}), 1)
+	eq("unassigned", ids(staffui.TicketFilter{View: "unassigned"}), 1)
+	eq("mine (csr1)", ids(staffui.TicketFilter{View: "mine", StaffUsername: "csr1"}), 2)
+	eq("closed in 30 days", len2(ids(staffui.TicketFilter{View: "closed"})), 2)
+	eq("all", len2(ids(staffui.TicketFilter{View: "all"})), 5)
+	eq("priority filter", ids(staffui.TicketFilter{Priority: "critical"}), 2)
+	eq("one subscriber", ids(staffui.TicketFilter{SubscriberID: 2}), 2)
+	eq("search description", ids(staffui.TicketFilter{View: "all", Query: "WIFI"}), 3)
+	eq("search username", ids(staffui.TicketFilter{Query: "bob"}), 2)
+	eq("search ticket id", ids(staffui.TicketFilter{View: "all", Query: "4"}), 4)
+	eq("LIKE metacharacters are literal", ids(staffui.TicketFilter{View: "all", Query: "%_"}), 5)
+
+	ts, err := store.ListTicketQueue(ctx, staffui.TicketFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ts[0].Overdue || ts[1].Overdue || ts[1].AssigneeName != "csr1" || ts[0].Username != "alice" {
+		t.Errorf("row fields wrong: %+v / %+v", ts[0], ts[1])
+	}
+
+	if _, err := store.ListTicketQueue(ctx, staffui.TicketFilter{View: "vip"}); err == nil {
+		t.Error("unknown view must be an error")
+	}
+	if _, err := store.ListTicketQueue(ctx, staffui.TicketFilter{Priority: "urgent"}); err == nil {
+		t.Error("unknown priority must be an error")
+	}
+
+	sum, err := store.HelpdeskSummary(ctx)
+	if err != nil {
+		t.Fatalf("HelpdeskSummary: %v", err)
+	}
+	if sum.Open != 3 || sum.Overdue != 1 || sum.Unassigned != 1 || sum.Closed30d != 2 {
+		t.Errorf("summary counts: %+v", sum)
+	}
+	if sum.MedianCloseHours == nil || *sum.MedianCloseHours < 14.9 || *sum.MedianCloseHours > 15.1 {
+		t.Errorf("median of 10h and 20h should be 15h, got %v", sum.MedianCloseHours)
+	}
+
+	as, err := store.ListTicketAssignees(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range as {
+		if a.Role == "billing_admin" {
+			t.Error("a billing admin cannot work tickets and must not be offered as an assignee")
+		}
+	}
+	if len(as) != 2 {
+		t.Errorf("want csr1 and tech1, got %+v", as)
+	}
+}
+
+// len2 turns a slice into its length, for asserting counts through eq.
+func len2(xs []int) []int { return []int{len(xs)} }

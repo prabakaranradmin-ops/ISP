@@ -1,5 +1,84 @@
 {{define "content"}}
 {{$d := .Data}}
+{{if $d.QueueMode}}
+<h1>Support{{if $d.Filter.SubscriberID}} <span class="muted">&middot; subscriber {{$d.Filter.SubscriberID}}</span>{{end}}</h1>
+
+{{with $d.Summary}}
+<div class="tiles tiles-5 summary-strip">
+  <a class="tile" href="/staff/tickets?view=open"><span class="tile-label">Open</span><span class="tile-num">{{.Open}}</span></a>
+  <a class="tile{{if .Overdue}} tile-alert{{end}}" href="/staff/tickets?view=overdue"><span class="tile-label">Past resolution target</span><span class="tile-num">{{.Overdue}}</span></a>
+  <a class="tile" href="/staff/tickets?view=unassigned"><span class="tile-label">Unassigned</span><span class="tile-num">{{.Unassigned}}</span></a>
+  <a class="tile" href="/staff/tickets?view=closed"><span class="tile-label">Closed in 30 days</span><span class="tile-num">{{.Closed30d}}</span></a>
+  <div class="tile"><span class="tile-label">Median time to close</span><span class="tile-num">{{optHours .MedianCloseHours}}{{if .MedianCloseHours}}<span class="unit"> h</span>{{end}}</span></div>
+</div>
+{{end}}
+
+<nav class="filterbar" aria-label="Ticket lists">
+  {{range $d.Views}}
+  <a class="chip{{if eq . $d.Filter.View}} on{{end}}" href="/staff/tickets?view={{.}}{{if $d.Filter.SubscriberID}}&amp;subscriber_id={{$d.Filter.SubscriberID}}{{end}}">{{ticketView .}}</a>
+  {{end}}
+</nav>
+
+<form class="searchbar" method="get" action="/staff/tickets">
+  <input type="hidden" name="view" value="{{$d.Filter.View}}">
+  <input name="q" value="{{$d.Filter.Query}}" placeholder="Ticket id, subscriber id, username or text" aria-label="Search tickets">
+  <label class="inline-field">Priority
+    <select name="priority">
+      <option value="">Any</option>
+      {{range $d.Priorities}}<option value="{{.}}"{{if eq . $d.Filter.Priority}} selected{{end}}>{{humanize .}}</option>{{end}}
+    </select>
+  </label>
+  {{if $d.Filter.SubscriberID}}<input type="hidden" name="subscriber_id" value="{{$d.Filter.SubscriberID}}">{{end}}
+  <button class="primary" type="submit">Show</button>
+  {{if or $d.Filter.Query $d.Filter.Priority $d.Filter.SubscriberID}}<a class="btn" href="/staff/tickets?view={{$d.Filter.View}}">Clear</a>{{end}}
+</form>
+
+<p class="muted">{{len $d.Queue}} ticket{{if ne (len $d.Queue) 1}}s{{end}}{{if eq (len $d.Queue) 300}} &middot; showing the first 300; narrow the search{{end}}</p>
+<div class="card table-card">
+  <table class="queue">
+    <thead><tr>
+      <th>#</th><th>Subscriber</th><th>Issue</th><th>Priority</th><th>Status</th>
+      <th>Assignee</th><th>Resolve by</th><th>Filed</th><th>Update</th>
+    </tr></thead>
+    <tbody>
+    {{range $d.Queue}}
+      <tr{{if .Overdue}} class="row-overdue"{{end}}>
+        <td class="num">{{.ID}}</td>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td class="issue"><span class="muted small">{{humanize .Category}}</span><br>{{.Description}}</td>
+        <td><span class="pill {{badge .Priority}}">{{.Priority}}</span></td>
+        <td><span class="pill {{badge .Status}}">{{.Status}}</span></td>
+        <td>{{if .AssigneeName}}{{.AssigneeName}}{{else}}<span class="muted">Unassigned</span>{{end}}</td>
+        <td class="num">{{optDatetime .ResolutionDue}}{{if .Overdue}} <span class="pill bad">overdue</span>{{end}}</td>
+        <td class="num">{{datetime .CreatedAt}}</td>
+        <td>
+          {{$t := .}}
+          <form method="post" action="/staff/tickets/{{.ID}}/status" class="inline">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="hidden" name="current_status" value="{{.Status}}">
+            <input type="hidden" name="return_view" value="{{$d.Filter.View}}">
+            <input type="hidden" name="return_priority" value="{{$d.Filter.Priority}}">
+            <input type="hidden" name="return_q" value="{{$d.Filter.Query}}">
+            {{if $d.Filter.SubscriberID}}<input type="hidden" name="subscriber_id" value="{{$d.Filter.SubscriberID}}">{{end}}
+            <select name="status" aria-label="Status for ticket {{.ID}}">
+              {{range $d.Statuses}}<option value="{{.}}"{{if eq . $t.Status}} selected{{end}}>{{.}}</option>{{end}}
+            </select>
+            <select name="assigned_to" aria-label="Assignee for ticket {{.ID}}">
+              <option value="">{{if $t.AssigneeName}}Keep assignee{{else}}Assign to&hellip;{{end}}</option>
+              {{range $d.Assignees}}<option value="{{.ID}}"{{if and $t.AssignedTo (eq .ID (deref $t.AssignedTo))}} disabled{{end}}>{{if .FullName}}{{.FullName}}{{else}}{{.Username}}{{end}}</option>{{end}}
+            </select>
+            <button type="submit">Update</button>
+          </form>
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="9" class="empty">{{if eq $d.Filter.View "open"}}No open tickets. The queue is clear.{{else}}No tickets match.{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{else}}
 <h1>Support</h1>
 <form class="searchbar" method="get" action="/staff/tickets">
   <input name="subscriber_id" value="{{if $d.SubscriberID}}{{$d.SubscriberID}}{{end}}" placeholder="Subscriber id" aria-label="Subscriber id">
@@ -35,5 +114,6 @@
 </div>
 {{else}}
 <p class="muted">Enter a subscriber id to work their tickets.</p>
+{{end}}
 {{end}}
 {{end}}

@@ -88,15 +88,15 @@
 <section>
   <h3>Support</h3>
   <div class="tiles">
-    <a class="tile" href="/staff/tickets">
+    <a class="tile" href="/staff/tickets?view=open">
       <span class="tile-label">Open tickets</span>
       <span class="tile-num">{{$c.OpenTickets}}</span>
     </a>
-    <a class="tile{{if $c.OverdueTickets}} tile-alert{{end}}" href="/staff/tickets">
+    <a class="tile{{if $c.OverdueTickets}} tile-alert{{end}}" href="/staff/tickets?view=overdue">
       <span class="tile-label">Past resolution target</span>
       <span class="tile-num">{{$c.OverdueTickets}}</span>
     </a>
-    <a class="tile" href="/staff/tickets">
+    <a class="tile" href="/staff/tickets?view=unassigned">
       <span class="tile-label">Unassigned</span>
       <span class="tile-num">{{$c.UnassignedTickets}}</span>
     </a>

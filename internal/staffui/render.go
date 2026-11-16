@@ -33,6 +33,7 @@ var funcMap = template.FuncMap{
 	"date":        func(t time.Time) string { return t.Format("02 Jan 2006") },
 	"badge":       badgeClass,
 	"humanize":    humanizeStatus,
+	"ticketView":  func(v string) string { return ticketViewLabels[v] },
 	"pct":         func(f float64) string { return fmt.Sprintf("%.2f", f) },
 	"gbytes":      gbytes,
 	"bytes":       humanBytes,
@@ -222,6 +223,12 @@ func badgeClass(status string) string {
 	default:
 		return "neutral"
 	}
+}
+
+// ticketViewLabels names the ticket queue's preset lists.
+var ticketViewLabels = map[string]string{
+	"open": "Open", "overdue": "Past target", "unassigned": "Unassigned",
+	"mine": "Assigned to me", "closed": "Closed (30 days)", "all": "All",
 }
 
 // humanizeStatus turns a stored status ("soft_suspended") into the words an

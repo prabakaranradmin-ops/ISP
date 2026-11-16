@@ -401,6 +401,41 @@ test.describe('Support tickets', () => {
     await snap(page, 'tickets-updated');
   });
 
+  test('the queue spans subscribers, and assignment lands in the assignee\'s own list', async ({ page }) => {
+    // A ticket raised through the portal, so the row is real.
+    await page.goto('/ui/login');
+    await page.getByLabel('Username').fill('test_user');
+    await page.getByLabel('Password').fill('testpassword');
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.goto('/ui/tickets');
+    const description = `Queue E2E ${Date.now()}`;
+    await page.selectOption('select[name="category"]', { index: 0 });
+    await page.fill('textarea[name="description"]', description);
+    await page.getByRole('button', { name: /Submit Ticket/i }).click();
+    await expect(page.getByText(description)).toBeVisible({ timeout: 10_000 });
+
+    // No subscriber id typed: the queue is the default view.
+    await signIn(page, 'csr');
+    await page.goto('/staff/tickets');
+    const row = page.locator('tr', { hasText: description });
+    await expect(row).toBeVisible();
+    await expect(page.locator('.summary-strip')).toContainText('Unassigned');
+    await snap(page, 'tickets-queue');
+
+    await row.locator('select[name="assigned_to"]').selectOption({ label: 'Suresh Babu (Ground Tech)' });
+    await row.getByRole('button', { name: 'Update' }).click();
+    await expect(page.getByText('Ticket updated.')).toBeVisible();
+    await expect(page.locator('tr', { hasText: description })).toContainText('Suresh Babu');
+    // Assignment alone leaves the status where it was.
+    await expect(page.locator('tr', { hasText: description }).locator('span.pill', { hasText: 'open' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    await signIn(page, 'tech');
+    await page.goto('/staff/tickets');
+    await page.getByRole('link', { name: 'Assigned to me' }).click();
+    await expect(page.locator('tr', { hasText: description })).toBeVisible();
+  });
+
   test('a status change without the CSRF token is refused', async ({ page }) => {
     await signIn(page, 'csr');
     await page.goto('/staff/tickets?subscriber_id=1');
