@@ -1,0 +1,93 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Leads</h1>
+{{with $d}}
+{{if .ByStage}}
+<div class="tiles tiles-5 summary-strip">
+  {{range .ByStage}}
+  <a class="tile" href="/staff/leads?stage={{.Stage}}"><span class="tile-label">{{humanize .Stage}}</span><span class="tile-num">{{.Count}}</span></a>
+  {{end}}
+  {{with .Funnel}}<div class="tile"><span class="tile-label">Converted overall</span><span class="tile-num">{{.ConversionRatePct}}<span class="unit">%</span></span></div>{{end}}
+</div>
+{{end}}
+
+<details class="card"{{if .Form.FullName}} open{{end}}>
+  <summary><strong>Add a lead</strong> <span class="muted">&mdash; a prospect who has not signed up yet</span></summary>
+  <form method="post" action="/staff/leads/new" class="lead-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <div class="formgrid">
+      <label>Full name <input name="full_name" required value="{{.Form.FullName}}" placeholder="Ramesh Kumar"></label>
+      <label>Mobile number <input name="mobile_number" required value="{{.Form.MobileNumber}}" placeholder="+919876543210"></label>
+      <label>Email <input name="email" type="email" value="{{.Form.Email}}"></label>
+      <label>Source
+        <select name="source">
+          {{$src := .Form.Source}}{{range .Sources}}<option value="{{.}}"{{if eq . $src}} selected{{end}}>{{humanize .}}</option>{{end}}
+        </select>
+      </label>
+      <label>Assigned to <input name="assigned_to" value="{{.Form.AssignedTo}}" placeholder="Who follows up"></label>
+      <label>Notes <input name="notes" value="{{.Form.Notes}}" placeholder="Area, plan interest, best time to call"></label>
+    </div>
+    <button class="primary" type="submit">Add lead</button>
+  </form>
+</details>
+
+<nav class="filterbar" aria-label="Lead stages">
+  <a class="chip{{if eq .Stage "open"}} on{{end}}" href="/staff/leads">Open</a>
+  {{range .Stages}}<a class="chip{{if eq . $d.Stage}} on{{end}}" href="/staff/leads?stage={{.}}">{{humanize .}}</a>{{end}}
+  <a class="chip{{if eq .Stage "all"}} on{{end}}" href="/staff/leads?stage=all">All</a>
+</nav>
+
+<form class="searchbar" method="get" action="/staff/leads">
+  <input type="hidden" name="stage" value="{{.Stage}}">
+  <input name="q" value="{{.Query}}" placeholder="Name, mobile or email" aria-label="Search leads">
+  <label class="inline-field">Source
+    <select name="source">
+      <option value="">Any</option>
+      {{range .Sources}}<option value="{{.}}"{{if eq . $d.Source}} selected{{end}}>{{humanize .}}</option>{{end}}
+    </select>
+  </label>
+  <button class="primary" type="submit">Show</button>
+</form>
+
+<p class="muted">{{len .Leads}} lead{{if ne (len .Leads) 1}}s{{end}}</p>
+<div class="card table-card">
+  <table>
+    <thead><tr><th>#</th><th>Prospect</th><th>Source</th><th>Stage</th><th>Assigned to</th><th>Added</th><th>Move</th>{{if .CanConvert}}<th></th>{{end}}</tr></thead>
+    <tbody>
+    {{range .Leads}}
+      {{$l := .}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td><strong>{{.FullName}}</strong><br><span class="muted small num">{{.MobileNumber}}{{if .Email}} &middot; {{.Email}}{{end}}</span>{{if .Notes}}<br><span class="small">{{.Notes}}</span>{{end}}</td>
+        <td>{{humanize .Source}}</td>
+        <td><span class="pill {{leadBadge .Status}}">{{humanize .Status}}</span>{{if .LostReason}}<br><span class="muted small">{{.LostReason}}</span>{{end}}
+          {{if .ConvertedSubscriberID}}<br><a class="small" href="/staff/subscribers/{{deref .ConvertedSubscriberID}}">Subscriber #{{deref .ConvertedSubscriberID}}</a>{{end}}</td>
+        <td>{{if .AssignedTo}}{{.AssignedTo}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="num">{{date .CreatedAt}}</td>
+        <td>
+          {{if ne .Status "converted"}}
+          <form method="post" action="/staff/leads/{{.ID}}/update" class="inline">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="hidden" name="return_stage" value="{{$d.Stage}}">
+            <input type="hidden" name="return_source" value="{{$d.Source}}">
+            <input type="hidden" name="return_q" value="{{$d.Query}}">
+            <select name="status" aria-label="Stage for lead {{.ID}}">
+              {{range $d.Movable}}<option value="{{.}}"{{if eq . $l.Status}} selected{{end}}>{{humanize .}}</option>{{end}}
+            </select>
+            <input name="lost_reason" placeholder="Reason, if lost" aria-label="Lost reason for lead {{.ID}}" value="{{.LostReason}}">
+            <button type="submit">Save</button>
+          </form>
+          {{else}}<span class="muted small">Converted {{optDate .ConvertedAt}}</span>{{end}}
+        </td>
+        {{if $d.CanConvert}}
+        <td class="right">{{if and (ne .Status "converted") (ne .Status "lost")}}<a class="btn" href="/staff/leads/{{.ID}}/convert">Convert</a>{{end}}</td>
+        {{end}}
+      </tr>
+    {{else}}
+      <tr><td colspan="{{if $d.CanConvert}}8{{else}}7{{end}}" class="empty">No leads match.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}

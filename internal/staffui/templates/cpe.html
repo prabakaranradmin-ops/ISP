@@ -1,0 +1,117 @@
+{{define "content"}}
+{{$d := .Data}}
+{{with $d}}
+{{if .Device}}
+{{$dev := .Device}}
+<h1>CPE {{$dev.SerialNumber}}</h1>
+<p class="muted"><a href="/staff/cpe">&larr; All devices</a></p>
+
+<div class="grid3">
+  <div class="card">
+    <h3>Device</h3>
+    <dl>
+      <dt>Serial</dt><dd class="num">{{$dev.SerialNumber}}</dd>
+      <dt>Model</dt><dd>{{if $dev.ProductClass}}{{$dev.ProductClass}}{{else}}<span class="muted">&mdash;</span>{{end}}{{if $dev.OUI}} <span class="muted small">OUI {{$dev.OUI}}</span>{{end}}</dd>
+      <dt>Firmware</dt><dd>{{if $dev.SoftwareVersion}}{{$dev.SoftwareVersion}}{{else}}<span class="muted">&mdash;</span>{{end}}</dd>
+      <dt>Subscriber</dt><dd>{{if .Username}}<a href="/staff/subscribers/{{deref $dev.SubscriberID}}">{{.Username}}</a>{{else}}<span class="muted">Not issued</span>{{end}}</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <h3>Last contact</h3>
+    <dl>
+      <dt>Checked in</dt><dd>{{optDatetime $dev.LastInformAt}}{{if .Silent}} <span class="pill warn">silent</span>{{end}}</dd>
+      <dt>Event</dt><dd>{{if $dev.LastInformEvent}}{{$dev.LastInformEvent}}{{else}}<span class="muted">&mdash;</span>{{end}}</dd>
+      <dt>State</dt><dd><span class="pill {{cpeBadge $dev.ProvisioningState}}">{{humanize $dev.ProvisioningState}}</span></dd>
+      {{if $dev.LastFault}}<dt>Last fault</dt><dd class="small">{{$dev.LastFault}}</dd>{{end}}
+    </dl>
+  </div>
+</div>
+
+{{if .CanAct}}
+<div class="card">
+  <h3>Actions</h3>
+  <p class="muted">Routers behind CGNAT cannot be reached on demand, so every action is queued and runs the next time this device checks in{{if $dev.LastInformAt}} (it last did {{optDatetime $dev.LastInformAt}}){{end}}. Rebooting it by hand makes it check in at once.</p>
+  <div class="cpe-actions">
+    <form method="post" action="/staff/cpe/{{$dev.SerialNumber}}/action" data-confirm="Reboot {{$dev.SerialNumber}}? The subscriber loses connection for a minute or two.">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reboot">
+      <button type="submit">Queue reboot</button>
+    </form>
+    <form method="post" action="/staff/cpe/{{$dev.SerialNumber}}/action">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reprovision">
+      <button type="submit">Re-apply plan settings</button>
+    </form>
+    <form method="post" action="/staff/cpe/{{$dev.SerialNumber}}/action" class="inline">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="parameters">
+      <input name="arg" placeholder="Parameter names, comma separated" aria-label="Parameter names" size="34">
+      <button type="submit">Queue read</button>
+    </form>
+    <form method="post" action="/staff/cpe/{{$dev.SerialNumber}}/action" class="inline" data-confirm="Upgrade firmware on {{$dev.SerialNumber}}? A wrong image can leave the router unusable.">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="firmware">
+      <input name="arg" type="url" placeholder="https://firmware.example/image.bin" aria-label="Firmware URL" size="34">
+      <button type="submit">Queue upgrade</button>
+    </form>
+  </div>
+</div>
+{{end}}
+
+<div class="card table-card">
+  <h3>Queued and past actions</h3>
+  <table>
+    <thead><tr><th>#</th><th>Action</th><th>Detail</th><th>Status</th><th>Queued by</th><th>Queued</th><th>Sent</th><th>Done</th></tr></thead>
+    <tbody>
+    {{range .Tasks}}
+      <tr>
+        <td class="num">{{.ID}}</td>
+        <td>{{.RPCType}}</td>
+        <td class="small">{{range $k, $v := .Params}}{{$v}} {{end}}{{if .FaultString}}<br><span class="pill bad">{{.FaultCode}}</span> {{.FaultString}}{{end}}</td>
+        <td><span class="pill {{cpeTaskBadge .Status}}">{{.Status}}</span></td>
+        <td>{{.CreatedBy}}</td>
+        <td class="num">{{datetime .CreatedAt}}</td>
+        <td class="num">{{optDatetime .SentAt}}</td>
+        <td class="num">{{optDatetime .CompletedAt}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="8" class="empty">Nothing has been queued for this device.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{else}}
+<h1>CPE devices</h1>
+<form class="searchbar" method="get" action="/staff/cpe">
+  <input name="q" value="{{.Query}}" placeholder="Serial, username or model" aria-label="Search devices">
+  <label class="inline-field">Show
+    <select name="show">
+      <option value="managed"{{if eq .Show "managed"}} selected{{end}}>Checked in at least once</option>
+      <option value="silent"{{if eq .Show "silent"}} selected{{end}}>Silent for over 24 hours</option>
+      <option value="fault"{{if eq .Show "fault"}} selected{{end}}>In fault</option>
+      <option value="all"{{if eq .Show "all"}} selected{{end}}>All, including stock never connected</option>
+    </select>
+  </label>
+  <button class="primary" type="submit">Show</button>
+</form>
+<p class="muted">{{len .Devices}} device{{if ne (len .Devices) 1}}s{{end}}</p>
+<div class="card table-card">
+  <table>
+    <thead><tr><th>Serial</th><th>Subscriber</th><th>Model</th><th>Firmware</th><th>Last check-in</th><th>State</th><th class="right">Queued</th></tr></thead>
+    <tbody>
+    {{range .Devices}}
+      <tr>
+        <td class="num"><a href="/staff/cpe/{{.SerialNumber}}">{{.SerialNumber}}</a></td>
+        <td>{{if .Username}}<a href="/staff/subscribers/{{deref .SubscriberID}}">{{.Username}}</a>{{else}}<span class="muted">Not issued</span>{{end}}</td>
+        <td>{{.ProductClass}}</td>
+        <td>{{.SoftwareVersion}}</td>
+        <td class="num">{{optDatetime .LastInformAt}}{{if .Silent}} <span class="pill warn">silent</span>{{end}}</td>
+        <td><span class="pill {{cpeBadge .ProvisioningState}}">{{humanize .ProvisioningState}}</span></td>
+        <td class="num right">{{if .PendingTasks}}{{.PendingTasks}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">{{if eq $d.Show "managed"}}No device has checked in with the ACS yet.{{else}}No devices match.{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}
+{{end}}

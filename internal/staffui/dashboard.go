@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/tr069"
 	"github.com/rs/zerolog/log"
 )
 
@@ -25,6 +26,7 @@ type ConsoleStore interface {
 	ListTicketAssignees(ctx context.Context) ([]Assignee, error)
 	ListInvoices(ctx context.Context, f MoneyFilter) ([]InvoiceRow, *InvoiceTotals, error)
 	ListPayments(ctx context.Context, f MoneyFilter) ([]PaymentRow, *PaymentTotals, error)
+	ListACSDevices(ctx context.Context, view, query string, limit int) ([]CPEDeviceRow, error)
 }
 
 // SubscriberStatuses is every value subscribers.status may hold (migration
@@ -343,4 +345,28 @@ type PaymentRow struct {
 type PaymentTotals struct {
 	Count  int
 	Amount string
+}
+
+// ── CPE devices (FR-CON-008) ────────────────────────────────────────────────
+
+// CPEViews are the device list's filters.
+//
+//	managed  has checked in with the ACS at least once (the default)
+//	silent   managed, but nothing heard for over 24 hours
+//	fault    provisioning_state = fault
+//	all      every cpe_devices row, including stock never connected
+var CPEViews = []string{"managed", "silent", "fault", "all"}
+
+// CPESilentAfter is how long without an Inform before a device is flagged
+// silent. CPE periodic Inform defaults to between one and twelve hours, so a
+// day of silence means a device that is off or unreachable, not just between
+// check-ins.
+const CPESilentAfter = 24 * time.Hour
+
+// CPEDeviceRow is one device in the CPE list.
+type CPEDeviceRow struct {
+	tr069.Device
+	Username     string
+	PendingTasks int
+	Silent       bool
 }

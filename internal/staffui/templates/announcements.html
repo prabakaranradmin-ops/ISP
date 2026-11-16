@@ -1,0 +1,74 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Announcements</h1>
+{{with $d}}
+<details class="card"{{if .Form.Title}} open{{end}}>
+  <summary><strong>Compose an announcement</strong> <span class="muted">&mdash; saved as a draft; nothing is sent until you press Send</span></summary>
+  <form method="post" action="/staff/announcements/new">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <div class="formgrid">
+      <label>Title <input name="title" required value="{{.Form.Title}}" placeholder="Planned maintenance tonight"></label>
+      <label>Message <input name="body" required value="{{.Form.Body}}" placeholder="Service may drop between 1 and 3 am while we upgrade equipment."></label>
+      <label>Kind
+        <select name="class">
+          <option value="marketing"{{if ne .Form.Class "transactional"}} selected{{end}}>Promotional (respects do-not-disturb)</option>
+          <option value="transactional"{{if eq .Form.Class "transactional"}} selected{{end}}>Service notice (reaches everyone)</option>
+        </select>
+      </label>
+      <label>Only subscribers on plan
+        <select name="segment_plan_id">
+          <option value="">Any plan</option>
+          {{$fp := .FormPlan}}{{range .Plans}}<option value="{{.ID}}"{{if eq .ID $fp}} selected{{end}}>{{.Name}}</option>{{end}}
+        </select>
+      </label>
+      <label>Only subscribers who are
+        <select name="segment_status">
+          <option value="">Any status (terminated excluded)</option>
+          {{range .Statuses}}{{if ne . "terminated"}}<option value="{{.}}">{{humanize .}}</option>{{end}}{{end}}
+        </select>
+      </label>
+    </div>
+    <fieldset class="channels">
+      <legend>Send by</legend>
+      {{$chosen := .Form.Channels}}
+      {{range .Channels}}<label><input type="checkbox" name="channels" value="{{.}}"{{if hasString $chosen .}} checked{{end}}> {{channelLabel .}}</label>{{end}}
+      <label><input type="checkbox" name="show_in_portal" value="1"{{if .Form.ShowInPortal}} checked{{end}}> Banner in the customer portal</label>
+    </fieldset>
+    <button class="primary" type="submit">Save draft</button>
+  </form>
+</details>
+
+<div class="card table-card">
+  <table>
+    <thead><tr><th>Announcement</th><th>Audience</th><th>Sent by</th><th>Status</th><th>Created</th><th></th></tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr>
+        <td><strong>{{.Title}}</strong><br><span class="small">{{.Body}}</span><br>
+          <span class="muted small">{{range $i, $c := .Channels}}{{if $i}}, {{end}}{{channelLabel $c}}{{end}}{{if .ShowInPortal}}{{if .Channels}}, {{end}}portal banner{{end}} &middot; {{if eq .Class "transactional"}}service notice{{else}}promotional{{end}}</span></td>
+        <td class="small">
+          {{if .PlanName}}Plan {{.PlanName}}{{else if .SegmentPlanID}}Plan #{{deref .SegmentPlanID}}{{else}}Any plan{{end}},
+          {{if .SegmentStatus}}{{humanize (optString .SegmentStatus)}}{{else}}any status{{end}}
+          {{if eq .Status "draft"}}{{if ge .Audience 0}}<br><strong>Reaches {{.Audience}} now</strong>{{end}}
+          {{else}}<br>{{.RecipientCount}} message{{if ne .RecipientCount 1}}s{{end}} queued{{end}}
+        </td>
+        <td>{{.CreatedBy}}</td>
+        <td><span class="pill {{annBadge .Status}}">{{.Status}}</span>{{if .SentAt}}<br><span class="muted small">{{optDatetime .SentAt}}</span>{{end}}</td>
+        <td class="num">{{datetime .CreatedAt}}</td>
+        <td class="right">
+          {{if eq .Status "draft"}}
+          <form method="post" action="/staff/announcements/{{.ID}}/send" data-confirm="Send &quot;{{.Title}}&quot;{{if ge .Audience 0}} to about {{.Audience}} subscribers{{end}}? This cannot be undone.">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <button type="submit" class="primary">Send</button>
+          </form>
+          {{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">No announcements yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}

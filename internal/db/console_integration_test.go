@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/inventory"
 	"github.com/maaransoft/isp-bss-oss/internal/staffui"
 )
 
@@ -516,5 +517,110 @@ func TestConsole_InvoicesAndPayments(t *testing.T) {
 
 	if _, _, err := store.ListInvoices(ctx, staffui.MoneyFilter{}); err == nil {
 		t.Error("a missing window must be an error, not an unbounded scan")
+	}
+}
+
+func TestConsole_ListACSDevices(t *testing.T) {
+	ctx := context.Background()
+	database, pool := newTestDB(t)
+	seedPlan(ctx, t, pool, 1, "Home 50M", "50M/50M", 0, "", "499.00")
+	seedSubscriber(ctx, t, pool, 1, seedOpts{Username: "alice", MobileNumber: "+919800000001"})
+
+	inv := database.Inventory()
+	dt, err := inv.CreateDeviceType(ctx, inventory.DeviceType{Name: "HG8245", Vendor: "Huawei"})
+	if err != nil {
+		t.Fatalf("CreateDeviceType: %v", err)
+	}
+	for _, sn := range []string{"SN-FRESH", "SN-SILENT", "SN-FAULT", "SN-STOCK"} {
+		if _, err := inv.CreateDevice(ctx, inventory.Device{DeviceTypeID: dt.ID, SerialNumber: sn}); err != nil {
+			t.Fatalf("CreateDevice %s: %v", sn, err)
+		}
+	}
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	mustExec(`UPDATE cpe_devices SET last_inform_at = now() - interval '1 hour', provisioning_state = 'provisioned',
+	                 product_class = 'HG8245H', status = 'issued', subscriber_id = 1 WHERE serial_number = 'SN-FRESH'`)
+	mustExec(`UPDATE cpe_devices SET last_inform_at = now() - interval '3 days', provisioning_state = 'provisioned'
+	           WHERE serial_number = 'SN-SILENT'`)
+	mustExec(`UPDATE cpe_devices SET last_inform_at = now() - interval '2 hours', provisioning_state = 'fault'
+	           WHERE serial_number = 'SN-FAULT'`)
+	fresh := scanString(ctx, t, pool, `SELECT id::text FROM cpe_devices WHERE serial_number = 'SN-FRESH'`)
+	mustExec(`INSERT INTO cpe_tasks (device_id, rpc_type, params, status, priority, created_by) VALUES
+	            ($1::int, 'Reboot', '{}', 'pending', 10, 'noc'),
+	            ($1::int, 'Reboot', '{}', 'completed', 10, 'noc')`, fresh)
+
+	store := database.Console()
+	list := func(view, q string) []string {
+		t.Helper()
+		rows, err := store.ListACSDevices(ctx, view, q, 0)
+		if err != nil {
+			t.Fatalf("ListACSDevices(%q,%q): %v", view, q, err)
+		}
+		var out []string
+		for _, r := range rows {
+			out = append(out, r.SerialNumber)
+		}
+		return out
+	}
+	eq := func(name string, got []string, want ...string) {
+		t.Helper()
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%s: want %v, got %v", name, want, got)
+		}
+	}
+	eq("managed, most recent check-in first", list("", ""), "SN-FRESH", "SN-FAULT", "SN-SILENT")
+	eq("silent", list("silent", ""), "SN-SILENT")
+	eq("fault", list("fault", ""), "SN-FAULT")
+	eq("all includes never-connected stock last", list("all", ""), "SN-FRESH", "SN-FAULT", "SN-SILENT", "SN-STOCK")
+	eq("search by subscriber", list("managed", "ALI"), "SN-FRESH")
+	eq("search by model", list("managed", "8245h"), "SN-FRESH")
+
+	rows, err := store.ListACSDevices(ctx, "managed", "SN-FRESH", 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("one row: %+v %v", rows, err)
+	}
+	if rows[0].Username != "alice" || rows[0].PendingTasks != 1 || rows[0].Silent {
+		t.Errorf("fresh row: want alice, 1 pending (completed excluded), not silent; got %+v", rows[0])
+	}
+	if rows, _ := store.ListACSDevices(ctx, "silent", "", 0); len(rows) != 1 || !rows[0].Silent {
+		t.Errorf("the silent row must carry Silent=true: %+v", rows)
+	}
+	if _, err := store.ListACSDevices(ctx, "bogus", "", 0); err == nil {
+		t.Error("an unknown view must be an error")
+	}
+}
+
+func TestConsole_CountAnnouncementAudience(t *testing.T) {
+	ctx := context.Background()
+	database, pool := newTestDB(t)
+	seedPlan(ctx, t, pool, 1, "Home 50M", "50M/50M", 0, "", "499.00")
+	seedPlan(ctx, t, pool, 2, "Home 100M", "100M/100M", 0, "", "799.00")
+	seedSubscriber(ctx, t, pool, 1, seedOpts{Username: "a", PlanID: 1, MobileNumber: "+919800000001"})
+	seedSubscriber(ctx, t, pool, 2, seedOpts{Username: "b", PlanID: 2, MobileNumber: "+919800000002"})
+	seedSubscriber(ctx, t, pool, 3, seedOpts{Username: "c", PlanID: 2, Status: "pending_payment", MobileNumber: "+919800000003"})
+	seedSubscriber(ctx, t, pool, 4, seedOpts{Username: "d", PlanID: 2, Status: "terminated", MobileNumber: "+919800000004"})
+
+	store := database.Console()
+	count := func(plan *int, status *string) int {
+		t.Helper()
+		n, err := store.CountAnnouncementAudience(ctx, nil, plan, status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	two, active := 2, "active"
+	if n := count(nil, nil); n != 3 {
+		t.Errorf("everyone except terminated: want 3, got %d", n)
+	}
+	if n := count(&two, nil); n != 2 {
+		t.Errorf("plan 2 (terminated excluded): want 2, got %d", n)
+	}
+	if n := count(&two, &active); n != 1 {
+		t.Errorf("plan 2, active: want 1, got %d", n)
 	}
 }

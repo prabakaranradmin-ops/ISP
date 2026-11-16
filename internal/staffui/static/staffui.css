@@ -303,3 +303,21 @@ table.queue td.issue { max-width: 320px; }
 table.queue form.inline { flex-wrap: wrap; }
 table.queue select { padding: 5px 6px; font-size: 13px; }
 tr.row-overdue td:first-child { box-shadow: inset 3px 0 0 var(--bad-fg); padding-left: 8px; }
+
+/* CPE actions: each its own small form, wrapping on narrow screens. */
+.cpe-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.cpe-actions form { margin: 0; }
+
+/* Announcement channels: a row of checkboxes under the form grid. */
+fieldset.channels { border: 1px solid var(--rule); border-radius: 4px; padding: 10px 14px; margin: 0 0 14px; display: flex; flex-wrap: wrap; gap: 8px 18px; }
+fieldset.channels legend { font-weight: 600; font-size: 13px; padding: 0 4px; }
+fieldset.channels label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+details.card > summary { cursor: pointer; }
+details.card[open] > summary { margin-bottom: 14px; }
+
+/* Announcement channels: a row of checkboxes under the form grid. */
+fieldset.channels { border: 1px solid var(--rule); border-radius: 4px; padding: 10px 14px; margin: 0 0 14px; display: flex; flex-wrap: wrap; gap: 8px 18px; }
+fieldset.channels legend { font-weight: 600; font-size: 13px; padding: 0 4px; }
+fieldset.channels label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+details.card > summary { cursor: pointer; }
+details.card[open] > summary { margin-bottom: 14px; }

@@ -153,12 +153,18 @@ test.describe('Dashboard and menus', () => {
     // Linked tiles only: the status names also appear in the legend inside
     // the (unlinked) "All subscribers" tile.
     const tile = (label: string) => page.locator('a.tile', { hasText: label });
-    // The seed has one active and one hard-suspended subscriber, and
-    // demo_up.sh gives test_user a live session.
-    await expect(page.locator('.tile-total .tile-num')).toHaveText('2');
-    await expect(tile('Online now').locator('.tile-num')).toHaveText('1');
-    await expect(tile('Active').locator('.tile-num')).toHaveText('1');
-    await expect(tile('Hard suspended').locator('.tile-num')).toHaveText('1');
+    // Counts are checked for consistency rather than against fixed numbers:
+    // other tests (lead conversion) add subscribers to the same database,
+    // as real use does. The total must equal its own per-status breakdown,
+    // and the seed guarantees at least one active, one hard-suspended and
+    // one online subscriber.
+    const num = async (loc: ReturnType<Page['locator']>) => Number((await loc.innerText()).trim());
+    const total = await num(page.locator('.tile-total .tile-num'));
+    const legend = await page.locator('.tile-total .legend b').allInnerTexts();
+    expect(legend.reduce((sum, n) => sum + Number(n), 0)).toBe(total);
+    expect(await num(tile('Online now').locator('.tile-num'))).toBeGreaterThanOrEqual(1);
+    expect(await num(tile('Active').locator('.tile-num'))).toBeGreaterThanOrEqual(1);
+    expect(await num(tile('Hard suspended').locator('.tile-num'))).toBeGreaterThanOrEqual(1);
     await snap(page, 'dashboard-owner');
 
     await tile('Hard suspended').click();
@@ -194,6 +200,143 @@ test.describe('Dashboard and menus', () => {
     await network.locator('summary').click();
     await expect(network).toHaveAttribute('open', '');
     await expect(finance).not.toHaveAttribute('open', '');
+  });
+});
+
+test.describe('Announcements', () => {
+  test('a draft is reviewed with its reach, sent once, and cannot be sent twice', async ({ page }) => {
+    const title = `Maintenance E2E ${Date.now()}`;
+    await signIn(page, 'billing');
+    await page.goto('/staff/announcements');
+    await page.locator('details.card summary').click();
+    await page.fill('input[name="title"]', title);
+    await page.fill('input[name="body"]', 'Service may drop between 1 and 3 am.');
+    await page.selectOption('select[name="class"]', 'transactional');
+    await page.selectOption('select[name="segment_status"]', 'active');
+    await page.locator('input[name="channels"][value="sms"]').check();
+    await page.getByRole('button', { name: 'Save draft' }).click();
+    await expect(page.getByText('Draft saved.')).toBeVisible();
+
+    const row = page.locator('tbody tr', { hasText: title });
+    await expect(row).toContainText('draft');
+    await expect(row).toContainText(/Reaches \d+ now/);
+    await snap(page, 'announcements-draft');
+
+    // Keep the send form's CSRF token, to replay the same send afterwards.
+    const csrf = await row.locator('input[name="csrf_token"]').inputValue();
+    const action = await row.locator('form').getAttribute('action');
+    page.once('dialog', (d) => d.accept());
+    await row.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByText(/Sent to \d+ subscribers?: \d+ messages? queued/)).toBeVisible();
+    await expect(page.locator('tbody tr', { hasText: title })).toContainText('sent');
+
+    // A double-click, or a replayed request, must not broadcast again.
+    const again = await page.request.post(action!, { form: { csrf_token: csrf } });
+    expect(await again.text()).toContain('already been sent');
+  });
+
+  test('a CSR cannot open announcements', async ({ page }) => {
+    await signIn(page, 'csr');
+    expect((await page.request.get('/staff/announcements')).status()).toBe(403);
+  });
+});
+
+test.describe('CPE devices', () => {
+  test('a technician queues a reboot and sees it waiting for the device', async ({ page }) => {
+    await signIn(page, 'tech');
+    await page.goto('/staff/cpe');
+    // seed_local.sql issues one TR-069 router to test_user.
+    const row = page.locator('tbody tr', { hasText: 'HWTC-DEMO-0001' });
+    await expect(row).toContainText('test_user');
+    await row.getByRole('link', { name: 'HWTC-DEMO-0001' }).click();
+    await expect(page.getByText(/next time this device checks in/)).toBeVisible();
+    await snap(page, 'cpe-device');
+
+    page.once('dialog', (d) => d.accept());
+    await page.getByRole('button', { name: 'Queue reboot' }).click();
+    await expect(page.getByText(/Queued\. It runs the next time the device checks in/)).toBeVisible();
+    const task = page.locator('tbody tr', { hasText: 'Reboot' }).first();
+    await expect(task).toContainText('pending');
+    await expect(task).toContainText('tech');
+  });
+
+  test('a bad firmware URL is refused before anything is queued', async ({ page }) => {
+    await signIn(page, 'noc');
+    await page.goto('/staff/cpe/HWTC-DEMO-0001');
+    const before = await page.locator('tbody tr', { hasText: 'Download' }).count();
+    // The input is type=url; set it directly so the server-side check, not
+    // the browser's, is what is exercised.
+    await page.locator('input[name="arg"][type="url"]').evaluate((el: HTMLInputElement) => { el.type = 'text'; el.value = 'ftp://x/fw.bin'; });
+    page.once('dialog', (d) => d.accept());
+    await page.getByRole('button', { name: 'Queue upgrade' }).click();
+    await expect(page.getByText(/Not queued: url must be an http/)).toBeVisible();
+    expect(await page.locator('tbody tr', { hasText: 'Download' }).count()).toBe(before);
+  });
+
+  test('a CSR cannot open the CPE screen', async ({ page }) => {
+    await signIn(page, 'csr');
+    expect((await page.request.get('/staff/cpe')).status()).toBe(403);
+  });
+});
+
+test.describe('Leads', () => {
+  test('a lead is added, worked, and converted into a pending-payment subscriber', async ({ page }) => {
+    const stamp = Date.now().toString().slice(-7);
+    const name = `Lead E2E ${stamp}`;
+    const mobile = `+91981${stamp}`;
+
+    await signIn(page, 'csr');
+    await page.goto('/staff/leads');
+    await page.locator('details.card summary').click();
+    await page.fill('input[name="full_name"]', name);
+    await page.fill('input[name="mobile_number"]', mobile);
+    await page.selectOption('select[name="source"]', 'referral');
+    await page.getByRole('button', { name: 'Add lead' }).click();
+    await expect(page.getByText(new RegExp(`Lead #\\d+ added for ${name}`))).toBeVisible();
+
+    const row = page.locator('tbody tr', { hasText: name });
+    await row.locator('select[name="status"]').selectOption('qualified');
+    await row.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText('Lead updated.')).toBeVisible();
+    await expect(page.locator('tbody tr', { hasText: name })).toContainText('Qualified');
+    // A CSR works leads but cannot turn one into a billable account.
+    await expect(page.locator('tbody tr', { hasText: name }).getByRole('link', { name: 'Convert' })).toHaveCount(0);
+    await snap(page, 'leads');
+
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    await signIn(page, 'billing');
+    await page.goto('/staff/leads');
+    await page.locator('tbody tr', { hasText: name }).getByRole('link', { name: 'Convert' }).click();
+    await expect(page.getByText(mobile)).toBeVisible(); // carried over, not retyped
+    await page.fill('input[name="caf_number"]', `CAF-E2E-${stamp}`);
+    await page.fill('input[name="username"]', `lead_e2e_${stamp}`);
+    await page.fill('input[name="password"]', 'e2e-password-123');
+    await page.fill('input[name="registered_state"]', 'TN');
+    await page.getByRole('button', { name: 'Create subscriber' }).click();
+    await expect(page.getByText('Subscriber created')).toBeVisible();
+    await expect(page.locator('.pill', { hasText: 'pending payment' })).toBeVisible();
+    await snap(page, 'lead-converted');
+
+    // The new account really is pending payment, not on the network for free.
+    await page.getByRole('link', { name: 'Open the subscriber' }).click();
+    await expect(page.locator('body')).toContainText('pending_payment');
+  });
+
+  test('a lead cannot be closed as lost without a reason', async ({ page }) => {
+    await signIn(page, 'csr');
+    await page.goto('/staff/leads');
+    // Its own lead, so the test never depends on what an earlier one left.
+    const stamp = Date.now().toString().slice(-7);
+    const name = `Lost E2E ${stamp}`;
+    await page.locator('details.card summary').click();
+    await page.fill('input[name="full_name"]', name);
+    await page.fill('input[name="mobile_number"]', `+91982${stamp}`);
+    await page.getByRole('button', { name: 'Add lead' }).click();
+    const row = page.locator('tbody tr', { hasText: name });
+    await row.locator('select[name="status"]').selectOption('lost');
+    await row.locator('input[name="lost_reason"]').fill('');
+    await row.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText(/why the lead was lost/)).toBeVisible();
   });
 });
 

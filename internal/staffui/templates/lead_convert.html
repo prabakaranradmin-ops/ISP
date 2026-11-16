@@ -1,0 +1,56 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Convert lead into a subscriber</h1>
+<p class="muted"><a href="/staff/leads">&larr; Back to leads</a></p>
+{{with $d}}
+{{if .Result}}
+<div class="card">
+  <h3>Subscriber created</h3>
+  <p><strong>{{.Result.Subscriber.Username}}</strong> (subscriber #{{.Result.Subscriber.ID}}) was created from lead #{{.Result.Lead.ID}}.
+     The account starts <span class="pill neutral">pending payment</span> and goes live once the first cycle is paid.</p>
+  {{if .Result.CPEIssued}}<p>Router <span class="num">{{.Result.CPEIssued}}</span> was issued to them.</p>{{end}}
+  {{if .Result.CPEWarning}}<div class="alert warn">{{.Result.CPEWarning}}</div>{{end}}
+  <p><a class="btn" href="/staff/subscribers/{{.Result.Subscriber.ID}}">Open the subscriber</a></p>
+</div>
+{{else}}
+{{with .Lead}}
+<div class="card">
+  <h3>Carried over from lead #{{.ID}}</h3>
+  <dl>
+    <dt>Name</dt><dd>{{.FullName}}</dd>
+    <dt>Mobile</dt><dd class="num">{{.MobileNumber}}</dd>
+    <dt>Email</dt><dd>{{if .Email}}{{.Email}}{{else}}<span class="muted">&mdash;</span>{{end}}</dd>
+    <dt>Stage</dt><dd><span class="pill {{leadBadge .Status}}">{{humanize .Status}}</span></dd>
+  </dl>
+</div>
+{{end}}
+{{if not .Plans}}
+<div class="card"><p class="empty">There are no plans yet. Add a tariff under <a href="/staff/catalogue">Catalogue</a> first.</p></div>
+{{else}}
+<div class="card">
+  <form method="post" action="/staff/leads/{{.Lead.ID}}/convert">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <div class="formgrid">
+      <label>CAF number <input name="caf_number" required value="{{.Form.CAFNumber}}" placeholder="CAF-2026-0001"></label>
+      <label>Username <input name="username" required value="{{.Form.Username}}"></label>
+      <label>Password <input name="password" type="password" required autocomplete="new-password"></label>
+      <label>Plan
+        <select name="plan_id" required>
+          {{$pid := .Form.PlanID}}{{range .Plans}}<option value="{{.ID}}"{{if eq .ID $pid}} selected{{end}}>{{.Name}} &mdash; &#8377;{{money .Price}} / {{.ValidityDays}} days</option>{{end}}
+        </select>
+      </label>
+      <label>Registered state (for GST) <input name="registered_state" required value="{{.Form.RegisteredState}}" placeholder="Tamil Nadu"></label>
+      <label>Router serial (optional) <input name="cpe_serial" value="{{.Form.CPESerial}}" placeholder="Issue a device now"></label>
+    </div>
+    <h3>KYC (optional)</h3>
+    <div class="formgrid">
+      <label>Aadhaar <input name="aadhaar" autocomplete="off"></label>
+      <label>PAN <input name="pan" autocomplete="off"></label>
+    </div>
+    <button class="primary" type="submit">Create subscriber</button>
+  </form>
+</div>
+{{end}}
+{{end}}
+{{end}}
+{{end}}

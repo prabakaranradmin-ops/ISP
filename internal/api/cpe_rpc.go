@@ -3,10 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"strconv"
 
-	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/maaransoft/isp-bss-oss/internal/tr069"
 )
 
@@ -30,45 +29,48 @@ type CPEControlQuerier interface {
 // resolveDevice looks a device up by serial, writing the error response
 // itself and returning nil when it cannot be found.
 func (h *Handler) resolveDevice(w http.ResponseWriter, r *http.Request) *tr069.Device {
-	serial := r.PathValue("serial")
-	if serial == "" {
-		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", "serial is required")
-		return nil
-	}
-	if h.cpeControl == nil {
+	device, err := h.CPEDevice(r.Context(), r.PathValue("serial"))
+	switch {
+	case err == nil:
+		return device
+	case CPEInvalidReason(err) != "":
+		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", CPEInvalidReason(err))
+	case errors.Is(err, ErrCPEUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "ERR_UNAVAILABLE", "TR-069 ACS not configured")
-		return nil
-	}
-
-	device, err := h.cpeControl.GetDeviceBySerialACS(r.Context(), serial)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "device lookup failed")
-		return nil
-	}
-	if device == nil {
+	case errors.Is(err, ErrCPENotFound):
 		writeError(w, http.StatusNotFound, "ERR_NOT_FOUND", "no device with that serial number")
-		return nil
+	default:
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "device lookup failed")
 	}
-	return device
+	return nil
 }
 
-// queueRPC is the shared tail of every control endpoint.
-func (h *Handler) queueRPC(w http.ResponseWriter, r *http.Request, device *tr069.Device,
-	rpcType string, params map[string]string, priority int, auditAction string,
-) {
-	task, err := h.cpeControl.EnqueueTask(r.Context(), device.ID, rpcType, params, priority,
-		middleware.SubjectFromContext(r.Context()))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not queue the RPC")
+// queueAction is the shared tail of every control endpoint. 202, not 200:
+// nothing has happened to the device yet, and saying otherwise would have a
+// technician standing next to a router that has not rebooted wondering why.
+func (h *Handler) queueAction(w http.ResponseWriter, r *http.Request, device *tr069.Device, action string, names []string, url string) {
+	task, err := h.QueueCPEAction(r.Context(), device, action, names, url)
+	if reason := CPEInvalidReason(err); reason != "" {
+		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", reason)
 		return
 	}
-
-	middleware.Audit(r.Context(), auditAction, device.SerialNumber, map[string]any{
-		"task_id": task.ID, "rpc_type": rpcType,
-	})
-	// 202, not 200: nothing has happened to the device yet, and saying
-	// otherwise would have a technician standing next to a router that has
-	// not rebooted wondering why.
+	if err != nil {
+		msg := "could not queue the RPC"
+		if action == CPEActionReprovision {
+			msg = "could not flag the device for reprovisioning"
+		}
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", msg)
+		return
+	}
+	if action == CPEActionReprovision {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"serial_number":  device.SerialNumber,
+			"state":          tr069.StateNeedsReprovision,
+			"delivered_when": "the device opens its next CWMP session",
+			"last_inform_at": device.LastInformAt,
+		})
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"task":           task,
 		"delivery":       "queued",
@@ -79,13 +81,9 @@ func (h *Handler) queueRPC(w http.ResponseWriter, r *http.Request, device *tr069
 
 // RebootCPE handles POST /api/v1/cpe/devices/{serial}/reboot.
 func (h *Handler) RebootCPE(w http.ResponseWriter, r *http.Request) {
-	device := h.resolveDevice(w, r)
-	if device == nil {
-		return
+	if device := h.resolveDevice(w, r); device != nil {
+		h.queueAction(w, r, device, CPEActionReboot, nil, "")
 	}
-	// Priority 10: a reboot a technician is waiting on should overtake
-	// routine provisioning already sitting in the queue.
-	h.queueRPC(w, r, device, tr069.RPCReboot, nil, 10, "cpe.reboot")
 }
 
 type firmwareRequest struct {
@@ -98,26 +96,12 @@ func (h *Handler) UpgradeCPEFirmware(w http.ResponseWriter, r *http.Request) {
 	if device == nil {
 		return
 	}
-
 	var req firmwareRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", err.Error())
 		return
 	}
-	// A Download with no URL, or one the device cannot fetch, can leave a
-	// router half-upgraded — so the obvious mistakes are refused here rather
-	// than on the hardware.
-	if req.URL == "" {
-		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "url is required")
-		return
-	}
-	if !hasHTTPScheme(req.URL) {
-		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION",
-			"url must be an http:// or https:// address the device can reach")
-		return
-	}
-
-	h.queueRPC(w, r, device, tr069.RPCDownload, map[string]string{"url": req.URL}, 20, "cpe.firmware")
+	h.queueAction(w, r, device, CPEActionFirmware, nil, req.URL)
 }
 
 type getParamsRequest struct {
@@ -131,48 +115,20 @@ func (h *Handler) GetCPEParameters(w http.ResponseWriter, r *http.Request) {
 	if device == nil {
 		return
 	}
-
 	var req getParamsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", err.Error())
 		return
 	}
-	if len(req.Names) == 0 {
-		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "at least one parameter name is required")
-		return
-	}
-
-	params := make(map[string]string, len(req.Names))
-	for i, n := range req.Names {
-		params[strconv.Itoa(i)] = n
-	}
-	h.queueRPC(w, r, device, tr069.RPCGetParameterValues, params, 50, "cpe.get_parameters")
+	h.queueAction(w, r, device, CPEActionParameters, req.Names, "")
 }
 
-// ReprovisionCPE handles POST /api/v1/cpe/devices/{serial}/reprovision.
-//
-// Marks the device as needing configuration rather than queueing the RPC
-// directly: the ACS rebuilds the parameter set from the subscriber's current
-// plan when the device next Informs, so a plan change between now and then
-// is reflected rather than baked in at button-press time.
+// ReprovisionCPE handles POST /api/v1/cpe/devices/{serial}/reprovision. See
+// QueueCPEAction on why this flags the device rather than queueing an RPC.
 func (h *Handler) ReprovisionCPE(w http.ResponseWriter, r *http.Request) {
-	device := h.resolveDevice(w, r)
-	if device == nil {
-		return
+	if device := h.resolveDevice(w, r); device != nil {
+		h.queueAction(w, r, device, CPEActionReprovision, nil, "")
 	}
-
-	if err := h.cpeControl.SetProvisioningState(r.Context(), device.ID, tr069.StateNeedsReprovision, ""); err != nil {
-		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not flag the device for reprovisioning")
-		return
-	}
-
-	middleware.Audit(r.Context(), "cpe.reprovision", device.SerialNumber, nil)
-	writeJSON(w, http.StatusAccepted, map[string]any{
-		"serial_number":  device.SerialNumber,
-		"state":          tr069.StateNeedsReprovision,
-		"delivered_when": "the device opens its next CWMP session",
-		"last_inform_at": device.LastInformAt,
-	})
 }
 
 // ListCPETasks handles GET /api/v1/cpe/devices/{serial}/tasks?status=.

@@ -230,6 +230,14 @@ type HandlerDeps struct {
 	Disconnector SessionDisconnector
 	// InvoicePDF backs the Invoices screen's PDF link. The API handler itself.
 	InvoicePDF InvoicePDFRenderer
+	// Leads backs the Leads screen. The API handler itself.
+	Leads LeadManager
+	// CPE backs the CPE devices screen's actions. The API handler itself.
+	CPE CPEController
+	// Announcer and Audience back the Announcements screen: the API handler
+	// for compose/send, and the console store for the draft reach estimate.
+	Announcer AnnouncementManager
+	Audience  AudienceCounter
 }
 
 // Handler serves the console.
@@ -269,6 +277,10 @@ type Handler struct {
 	console            ConsoleStore
 	disconnector       SessionDisconnector
 	invoicePDF         InvoicePDFRenderer
+	leads              LeadManager
+	cpe                CPEController
+	announcer          AnnouncementManager
+	audience           AudienceCounter
 }
 
 // NewHandler constructs the console handler.
@@ -309,6 +321,10 @@ func NewHandler(deps HandlerDeps) *Handler {
 		console:            deps.Console,
 		disconnector:       deps.Disconnector,
 		invoicePDF:         deps.InvoicePDF,
+		leads:              deps.Leads,
+		cpe:                deps.CPE,
+		announcer:          deps.Announcer,
+		audience:           deps.Audience,
 	}
 }
 
@@ -339,6 +355,12 @@ var sections = []Section{
 		[]string{"isp_owner", "noc_engineer", "billing_admin", "csr", "technician"}, false},
 	{"subscribers", "Subscribers", "/staff/subscribers",
 		[]string{"isp_owner", "noc_engineer", "billing_admin", "csr", "technician"}, false},
+	// The API's leadWrite roles, minus the franchise-scoped ones: this
+	// screen is ISP-wide (it passes a nil scope), and a partner's view of
+	// their own pipeline belongs with My Subscribers, not here. Converting
+	// is narrower still and gated inside the screen (canConvertLead).
+	{"leads", "Leads", "/staff/leads",
+		[]string{"isp_owner", "billing_admin", "csr", "technician"}, false},
 	{"billing", "Billing", "/staff/billing",
 		[]string{"isp_owner", "billing_admin", "csr"}, false},
 	{"tickets", "Support", "/staff/tickets",
@@ -364,6 +386,10 @@ var sections = []Section{
 	// is narrower and gated inside the screen (canDisconnect).
 	{"sessions", "Sessions", "/staff/sessions",
 		[]string{"isp_owner", "noc_engineer", "billing_admin", "csr", "technician"}, false},
+	// The roles the API lets queue TR-069 actions (nocOrTech). Viewing is
+	// the same set: the screen exists to act on equipment.
+	{"cpe", "CPE Devices", "/staff/cpe",
+		[]string{"isp_owner", "noc_engineer", "technician"}, false},
 	{"nas", "Routers", "/staff/nas",
 		[]string{"isp_owner", "noc_engineer"}, false},
 	// Same reach as Routers: a cross-device view of the same estate, not a
@@ -424,6 +450,10 @@ var sections = []Section{
 	// hiding the whole section — a billing_admin needs to see the field
 	// queue even though only csr/technician/owner can dispatch it, and vice
 	// versa for approvals.
+	// The roles the API lets compose and send (the admin gate on POST
+	// /announcements and /send): a broadcast can reach every customer.
+	{"announcements", "Announcements", "/staff/announcements",
+		[]string{"isp_owner", "billing_admin"}, false},
 	{"tasks", "Tasks", "/staff/tasks",
 		[]string{"isp_owner", "noc_engineer", "billing_admin", "csr", "technician"}, false},
 }
@@ -478,11 +508,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/subscribers/{id}/password/reveal", h.authed(h.requireCSRF(h.RevealPassword)))
 	mux.Handle("POST /staff/subscribers/{id}/password", h.authed(h.requireCSRF(h.ResetPassword)))
 	mux.Handle("POST /staff/subscribers/{id}/plan-change", h.authed(h.requireCSRF(h.ChangeSubscriberPlan)))
+	mux.Handle("GET /staff/leads", h.authed(h.Leads))
+	mux.Handle("POST /staff/leads/new", h.authed(h.requireCSRF(h.CreateLeadForm)))
+	mux.Handle("POST /staff/leads/{id}/update", h.authed(h.requireCSRF(h.UpdateLeadForm)))
+	mux.Handle("GET /staff/leads/{id}/convert", h.authed(h.ConvertLeadPage))
+	mux.Handle("POST /staff/leads/{id}/convert", h.authed(h.requireCSRF(h.ConvertLeadForm)))
 	mux.Handle("GET /staff/catalogue", h.authed(h.Catalogue))
 	mux.Handle("POST /staff/catalogue/plans", h.authed(h.requireCSRF(h.CreatePlan)))
 	mux.Handle("POST /staff/catalogue/gst", h.authed(h.requireCSRF(h.CreateGSTRate)))
 	mux.Handle("GET /staff/sessions", h.authed(h.Sessions))
 	mux.Handle("POST /staff/sessions/{session_id}/disconnect", h.authed(h.requireCSRF(h.DisconnectSessionForm)))
+	mux.Handle("GET /staff/cpe", h.authed(h.CPEList))
+	mux.Handle("GET /staff/cpe/{serial}", h.authed(h.CPEDetail))
+	mux.Handle("POST /staff/cpe/{serial}/action", h.authed(h.requireCSRF(h.CPEActionForm)))
 	mux.Handle("GET /staff/nas", h.authed(h.NAS))
 	mux.Handle("GET /staff/network", h.authed(h.NetworkMap))
 	mux.Handle("POST /staff/nas/new", h.authed(h.requireCSRF(h.CreateNASDeviceForm)))
@@ -518,6 +556,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/inventory/devices/{serial}/return", h.authed(h.requireCSRF(h.ReturnDeviceForm)))
 	mux.Handle("POST /staff/inventory/purchases/new", h.authed(h.requireCSRF(h.RecordPurchaseForm)))
 	mux.Handle("GET /staff/reports", h.authed(h.Reports))
+	mux.Handle("GET /staff/announcements", h.authed(h.Announcements))
+	mux.Handle("POST /staff/announcements/new", h.authed(h.requireCSRF(h.ComposeAnnouncementForm)))
+	mux.Handle("POST /staff/announcements/{id}/send", h.authed(h.requireCSRF(h.SendAnnouncementForm)))
 	mux.Handle("GET /staff/tasks", h.authed(h.Tasks))
 	mux.Handle("POST /staff/tasks/field/new", h.authed(h.requireCSRF(h.CreateFieldTaskForm)))
 	mux.Handle("POST /staff/tasks/field/{id}/update", h.authed(h.requireCSRF(h.UpdateFieldTaskForm)))

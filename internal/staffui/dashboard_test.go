@@ -12,20 +12,23 @@ import (
 // fakeConsole records the filter it was asked for, so a test can assert what
 // a URL turned into, and returns canned figures.
 type fakeConsole struct {
-	counts    *DashboardCounts
-	page      *DirectoryPage
-	live      []LiveSession
-	completed []CompletedSession
-	queue     []QueueTicket
-	summary   *HelpdeskSummary
-	assignees []Assignee
-	err       error
-	gotFilt   *DirectoryFilter
-	gotSess   *SessionFilter
-	gotTicket *TicketFilter
-	invoices  []InvoiceRow
-	payments  []PaymentRow
-	gotMoney  *MoneyFilter
+	counts      *DashboardCounts
+	page        *DirectoryPage
+	live        []LiveSession
+	completed   []CompletedSession
+	queue       []QueueTicket
+	summary     *HelpdeskSummary
+	assignees   []Assignee
+	err         error
+	gotFilt     *DirectoryFilter
+	gotSess     *SessionFilter
+	gotTicket   *TicketFilter
+	invoices    []InvoiceRow
+	payments    []PaymentRow
+	gotMoney    *MoneyFilter
+	cpeRows     []CPEDeviceRow
+	gotCPEView  string
+	gotCPEQuery string
 }
 
 func (f *fakeConsole) ListTicketQueue(_ context.Context, filt TicketFilter) ([]QueueTicket, error) {
@@ -61,6 +64,15 @@ func (f *fakeConsole) ListPayments(_ context.Context, filt MoneyFilter) ([]Payme
 		return nil, nil, f.err
 	}
 	return f.payments, &PaymentTotals{Count: len(f.payments), Amount: "0.00"}, nil
+}
+
+func (f *fakeConsole) ListACSDevices(_ context.Context, view, query string, _ int) ([]CPEDeviceRow, error) {
+	f.gotCPEView, f.gotCPEQuery = view, query
+	return f.cpeRows, f.err
+}
+
+func (f *fakeConsole) CountAnnouncementAudience(context.Context, *int, *int, *string) (int, error) {
+	return 42, f.err
 }
 
 func (f *fakeConsole) ListLiveSessions(_ context.Context, filt SessionFilter) ([]LiveSession, error) {

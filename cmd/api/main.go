@@ -362,6 +362,14 @@ func run(ctx context.Context) error {
 		Disconnector: apiHandler,
 		// Same instance: the console serves the API's own invoice PDF.
 		InvoicePDF: apiHandler,
+		// Same instance: the console runs the API's own lead pipeline rules.
+		Leads: apiHandler,
+		// Same instance: console CPE actions queue the API's own RPCs.
+		CPE: apiHandler,
+		// Compose/send through the API's own claim and fan-out; the reach
+		// estimate from the console store.
+		Announcer: apiHandler,
+		Audience:  database.Console(),
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —

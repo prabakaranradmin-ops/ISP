@@ -28,11 +28,19 @@ var staticFS = func() fs.FS {
 func staticHandler() http.Handler { return http.FileServer(http.FS(staticFS)) }
 
 var funcMap = template.FuncMap{
-	"money":       func(d decimal.Decimal) string { return d.StringFixed(2) },
-	"datetime":    func(t time.Time) string { return t.Format("02 Jan 2006 15:04") },
-	"date":        func(t time.Time) string { return t.Format("02 Jan 2006") },
-	"badge":       badgeClass,
-	"humanize":    humanizeStatus,
+	"money":        func(d decimal.Decimal) string { return d.StringFixed(2) },
+	"datetime":     func(t time.Time) string { return t.Format("02 Jan 2006 15:04") },
+	"date":         func(t time.Time) string { return t.Format("02 Jan 2006") },
+	"badge":        badgeClass,
+	"humanize":     humanizeStatus,
+	"leadBadge":    leadBadge,
+	"cpeBadge":     cpeBadge,
+	"cpeTaskBadge": cpeTaskBadge,
+	"annBadge":     annBadge,
+	"hasString":    inStrings,
+	"channelLabel": func(c string) string {
+		return map[string]string{"whatsapp": "WhatsApp", "sms": "SMS", "email": "Email", "push": "App push"}[c]
+	},
 	"ticketView":  func(v string) string { return ticketViewLabels[v] },
 	"pct":         func(f float64) string { return fmt.Sprintf("%.2f", f) },
 	"gbytes":      gbytes,
@@ -145,10 +153,10 @@ var navGroups = []struct {
 	Keys  []string
 }{
 	{"", []string{"dashboard"}},
-	{"Subscribers", []string{"subscribers", "my-subscribers", "catalogue"}},
+	{"Subscribers", []string{"subscribers", "leads", "my-subscribers", "catalogue"}},
 	{"Finance", []string{"invoices", "billing", "revenue", "ledger", "reports", "procurement", "franchise", "my-pnl"}},
-	{"Service", []string{"tickets", "tasks", "inventory"}},
-	{"Network", []string{"sessions", "nas", "network", "lea"}},
+	{"Service", []string{"tickets", "tasks", "announcements", "inventory"}},
+	{"Network", []string{"sessions", "cpe", "nas", "network", "lea"}},
 	{"Admin", []string{"accounts", "demo"}},
 }
 
@@ -232,6 +240,63 @@ var ticketViewLabels = map[string]string{
 	"mine": "Assigned to me", "closed": "Closed (30 days)", "all": "All",
 }
 
+// annBadge colours an announcement's status.
+func annBadge(status string) string {
+	switch status {
+	case "sent":
+		return "ok"
+	case "draft", "sending":
+		return "warn"
+	case "failed":
+		return "bad"
+	default:
+		return "neutral"
+	}
+}
+
+// cpeBadge colours a provisioning state.
+func cpeBadge(state string) string {
+	switch state {
+	case "provisioned":
+		return "ok"
+	case "registered", "needs_reprovision":
+		return "warn"
+	case "fault":
+		return "bad"
+	default:
+		return "neutral"
+	}
+}
+
+// cpeTaskBadge colours a queued RPC's status.
+func cpeTaskBadge(status string) string {
+	switch status {
+	case "completed":
+		return "ok"
+	case "pending", "sent":
+		return "warn"
+	case "failed", "expired":
+		return "bad"
+	default:
+		return "neutral"
+	}
+}
+
+// leadBadge colours a lead stage: neutral while untouched, amber while being
+// worked, green once converted, red once lost.
+func leadBadge(stage string) string {
+	switch stage {
+	case "converted":
+		return "ok"
+	case "contacted", "qualified":
+		return "warn"
+	case "lost":
+		return "bad"
+	default:
+		return "neutral"
+	}
+}
+
 // humanizeStatus turns a stored status ("soft_suspended") into the words an
 // operator would say ("Soft suspended").
 func humanizeStatus(s string) string {
@@ -291,7 +356,7 @@ var pageNames = []string{
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
 	"inventory", "reports", "tasks", "my_subscribers", "procurement", "ledger", "network",
-	"dashboard", "sessions", "money",
+	"dashboard", "sessions", "money", "leads", "lead_convert", "cpe", "announcements",
 }
 
 var pages = func() map[string]*template.Template {

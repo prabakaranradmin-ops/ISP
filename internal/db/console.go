@@ -596,3 +596,85 @@ func (s *ConsoleStore) ListPayments(ctx context.Context, f staffui.MoneyFilter) 
 	}
 	return out, tot, nil
 }
+
+// ── CPE devices (FR-CON-008) ────────────────────────────────────────────────
+
+// ListACSDevices returns CPE devices for the console's CPE screen with the
+// subscriber they are issued to and how many RPCs are waiting for them.
+// Silent is computed here, against the database clock, so the "silent" view
+// and the badge on each row can never disagree.
+func (s *ConsoleStore) ListACSDevices(ctx context.Context, view, query string, limit int) ([]staffui.CPEDeviceRow, error) {
+	if view == "" {
+		view = "managed"
+	}
+	if !inList(staffui.CPEViews, view) {
+		return nil, fmt.Errorf("db: unknown CPE view %q", view)
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	query = strings.TrimSpace(query)
+	silentSecs := int(staffui.CPESilentAfter.Seconds())
+	q := `
+		SELECT ` + tr069DeviceColumns + `,
+		       COALESCE(s.username, ''),
+		       (SELECT count(*) FROM cpe_tasks t WHERE t.device_id = d.id AND t.status IN ('pending','sent')),
+		       (d.last_inform_at IS NOT NULL AND d.last_inform_at < now() - ($2 * interval '1 second'))
+		  FROM cpe_devices d
+		  LEFT JOIN subscribers s ON s.id = d.subscriber_id
+		 WHERE CASE $1::text
+		         WHEN 'managed' THEN d.last_inform_at IS NOT NULL
+		         WHEN 'silent'  THEN d.last_inform_at < now() - ($2 * interval '1 second')
+		         WHEN 'fault'   THEN d.provisioning_state = 'fault'
+		         ELSE true
+		       END
+		   AND ($3::text = ''
+		        OR d.serial_number ILIKE $4 ESCAPE '\'
+		        OR s.username ILIKE $4 ESCAPE '\'
+		        OR d.product_class ILIKE $4 ESCAPE '\')
+		 ORDER BY d.last_inform_at DESC NULLS LAST, d.serial_number
+		 LIMIT $5`
+	rows, err := s.pool.Query(ctx, q, view, silentSecs, query, "%"+escapeLike(query)+"%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list ACS devices: %w", err)
+	}
+	defer rows.Close()
+	var out []staffui.CPEDeviceRow
+	for rows.Next() {
+		var r staffui.CPEDeviceRow
+		d := &r.Device
+		if err := rows.Scan(
+			&d.ID, &d.SerialNumber, &d.OUI, &d.ProductClass,
+			&d.DeviceTypeID, &d.SubscriberID, &d.ConnectionRequestURL,
+			&d.SoftwareVersion, &d.HardwareVersion,
+			&d.LastInformAt, &d.LastInformEvent,
+			&d.ProvisioningState, &d.LastFault, &d.ACSDiscovered,
+			&r.Username, &r.PendingTasks, &r.Silent,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan ACS device: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ── Announcements (FR-CON-009) ──────────────────────────────────────────────
+
+// CountAnnouncementAudience counts subscribers matching an announcement's
+// segment filters right now, so a draft can be reviewed against the reach
+// it would have before anyone presses Send. A nil filter matches everyone.
+// It is an estimate of reach, not of delivery: DND opt-outs and missing
+// contact details are applied per message at send time.
+func (s *ConsoleStore) CountAnnouncementAudience(ctx context.Context, franchiseID, planID *int, status *string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM subscribers
+		 WHERE status <> 'terminated'  -- as AnnouncementStore.ListSegmentSubscriberIDs
+		   AND ($1::int IS NULL OR franchise_id = $1)
+		   AND ($2::int IS NULL OR plan_id = $2)
+		   AND ($3::text IS NULL OR status = $3)`, franchiseID, planID, status).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("db: count announcement audience: %w", err)
+	}
+	return n, nil
+}

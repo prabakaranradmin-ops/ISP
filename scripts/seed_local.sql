@@ -111,6 +111,27 @@ CROSS JOIN (VALUES
 WHERE s.username = 'test_user'
 ON CONFLICT DO NOTHING;
 
+-- ── One router, issued to test_user and managed over TR-069 ──────────────────
+--
+-- So the console's CPE Devices screen has a real row to show and act on: a
+-- device that has checked in with the ACS (last_inform_at set), as a router
+-- in a customer's home would after its first boot. Actions queued against it
+-- stay pending — a demo box has no real CPE to deliver them to — which is
+-- exactly what the screen says will happen.
+INSERT INTO cpe_device_types (name, vendor)
+VALUES ('EchoLife HG8245H', 'Huawei')
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO cpe_devices (device_type_id, serial_number, status, subscriber_id,
+                         oui, product_class, software_version,
+                         last_inform_at, last_inform_event, provisioning_state)
+SELECT t.id, 'HWTC-DEMO-0001', 'issued', s.id,
+       '00E0FC', 'HG8245H', 'V3R017C10S115',
+       NOW() - INTERVAL '20 minutes', '2 PERIODIC', 'provisioned'
+FROM cpe_device_types t, subscribers s
+WHERE t.name = 'EchoLife HG8245H' AND s.username = 'test_user'
+ON CONFLICT (serial_number) DO NOTHING;
+
 -- ── Console operators, one per CRD persona ───────────────────────────────────
 --
 -- All five share the password 'staffpassword' for the demo. Real deployments
