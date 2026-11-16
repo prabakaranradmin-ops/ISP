@@ -56,13 +56,15 @@
 <div class="tiles summary-strip">
   <div class="tile"><span class="tile-label">Payments</span><span class="tile-num">{{.Count}}</span></div>
   <div class="tile"><span class="tile-label">Collected</span><span class="tile-num">&#8377;{{.Amount}}</span></div>
+  <div class="tile"><span class="tile-label">TDS deducted</span><span class="tile-num">&#8377;{{.TDS}}</span></div>
+  <div class="tile{{if .BouncedCount}} tile-alert{{end}}"><span class="tile-label">Bounced cheques</span><span class="tile-num">{{.BouncedCount}}{{if .BouncedCount}} <span class="unit">&#8377;{{.Bounced}}</span>{{end}}</span></div>
 </div>
 {{end}}
 <p class="muted">{{.From}} to {{.To}} &middot; wallet top-ups only; staff adjustments are on each subscriber's ledger{{if and .PayTotals (gt .PayTotals.Count (len .Payments))}} &middot; showing the {{len .Payments}} most recent of {{.PayTotals.Count}}{{end}}</p>
 <div class="card table-card">
   <table>
     <thead><tr>
-      <th>Date</th><th>Subscriber</th><th class="right">Amount</th><th>Paid via</th><th>Reference</th><th class="right">Balance after</th>
+      <th>Date</th><th>Subscriber</th><th class="right">Amount</th><th>Paid via</th><th>Reference</th><th class="right">Balance after</th>{{if .CanBounce}}<th></th>{{end}}
     </tr></thead>
     <tbody>
     {{range .Payments}}
@@ -70,12 +72,21 @@
         <td class="num">{{datetime .CreatedAt}}</td>
         <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
         <td class="num right">{{.Amount}}</td>
-        <td>{{if .Method}}{{.Method}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td>{{if .Method}}{{methodLabel .Method}}{{else}}<span class="muted">&mdash;</span>{{end}}
+          {{if eq .Status "bounced"}} <span class="pill bad">bounced</span>{{if .BounceReason}}<br><span class="muted small">{{.BounceReason}}</span>{{end}}{{end}}
+          {{if .ChequeNumber}}<br><span class="muted small">Cheque {{.ChequeNumber}}, {{.ChequeBank}}{{if .ChequeDate}}, {{optDate .ChequeDate}}{{end}}</span>{{end}}
+          {{if .TDSCertificate}}<br><span class="muted small">Certificate {{.TDSCertificate}}</span>{{end}}</td>
         <td class="num">{{if .Reference}}{{.Reference}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
         <td class="num right">{{.BalanceAfter}}</td>
+        {{if $d.CanBounce}}<td class="right">{{if and (eq .Method "cheque") (eq .Status "cleared")}}
+          <form method="post" action="/staff/invoices/payments/{{.ID}}/bounce" class="inline" data-confirm="Mark cheque {{.ChequeNumber}} bounced? Its value is taken back out of the wallet.">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input name="reason" required placeholder="Bank's reason" aria-label="Bounce reason">
+            <button type="submit" class="btn-danger">Bounced</button>
+          </form>{{end}}</td>{{end}}
       </tr>
     {{else}}
-      <tr><td colspan="6" class="empty">No payments in this period{{if $d.Query}} for that search{{end}}.</td></tr>
+      <tr><td colspan="{{if $d.CanBounce}}7{{else}}6{{end}}" class="empty">No payments in this period{{if $d.Query}} for that search{{end}}.</td></tr>
     {{end}}
     </tbody>
   </table>

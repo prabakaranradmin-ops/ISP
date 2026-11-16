@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
+	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/health"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
 	"github.com/maaransoft/isp-bss-oss/internal/revenue"
@@ -207,7 +208,11 @@ type subscriberDetailData struct {
 	// does not see a wallet ledger the API would refuse them. ShowSpeedOverride
 	// is narrower still — owner only, since it changes what a customer is
 	// being charged to receive, not just who can see it.
-	ShowBilling       bool
+	ShowBilling bool
+	// ShowRecordPayment: billing admin and owner, the API's admin gate on
+	// POST /wallets/recharge (FR-BIL-013).
+	ShowRecordPayment bool
+	PaymentMethods    []string
 	ShowTickets       bool
 	ShowSpeedOverride bool
 
@@ -252,8 +257,15 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 	if msg := r.URL.Query().Get("msg"); msg != "" {
 		d.Message = msg
 	}
+	// A recorded payment confirms by amount, parsed as a number so the URL
+	// can only ever carry a figure, not text of its own.
+	if paid, err := decimal.NewFromString(r.URL.Query().Get("paid")); err == nil && paid.IsPositive() {
+		d.Message = "Payment of ₹" + paid.StringFixed(2) + " recorded and credited to the wallet."
+	}
 	detail := subscriberDetailData{
 		ShowBilling:       canAccess("billing", s.Role, s.LeaAccess),
+		ShowRecordPayment: canRecordPayment(s.Role) && h.payments != nil,
+		PaymentMethods:    billing.PaymentMethods,
 		ShowTickets:       canAccess("tickets", s.Role, s.LeaAccess),
 		ShowSpeedOverride: s.Role == "isp_owner",
 		ShowCredentials:   canRevealPassword(s.Role),

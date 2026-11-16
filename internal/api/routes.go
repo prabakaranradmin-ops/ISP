@@ -95,6 +95,7 @@ type Handler struct {
 	lifecycle       LifecycleQuerier
 	refunds         RefundQuerier
 	creditNotes     CreditNoteIssuer
+	cheques         ChequeBouncer
 	subCache        SubscriberCacheInvalidator
 	approvals       ApprovalQuerier
 	fieldTasks      FieldTaskQuerier
@@ -155,6 +156,7 @@ type HandlerDeps struct {
 	Lifecycle        LifecycleQuerier
 	Refunds          RefundQuerier
 	CreditNotes      CreditNoteIssuer
+	Cheques          ChequeBouncer
 	SubCache         SubscriberCacheInvalidator
 	Approvals        ApprovalQuerier
 	FieldTasks       FieldTaskQuerier
@@ -212,6 +214,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		lifecycle:        deps.Lifecycle,
 		refunds:          deps.Refunds,
 		creditNotes:      deps.CreditNotes,
+		cheques:          deps.Cheques,
 		subCache:         deps.SubCache,
 		approvals:        deps.Approvals,
 		fieldTasks:       deps.FieldTasks,
@@ -517,6 +520,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		subscriberSelf(http.HandlerFunc(h.RegisterPushToken)))
 
 	// Wallets (API-003)
+	// A bounced cheque reverses its wallet credit (FR-BIL-014). Same tier as
+	// recording the payment in the first place.
+	mux.Handle("POST /api/v1/payments/{id}/bounce",
+		admin(http.HandlerFunc(h.BounceCheque)))
 	mux.Handle("POST /api/v1/wallets/recharge",
 		admin(http.HandlerFunc(h.WalletRecharge)))
 	mux.Handle("GET /api/v1/wallets/{subscriber_id}/ledger",
@@ -916,6 +923,14 @@ func (h *Handler) WalletRecharge(w http.ResponseWriter, r *http.Request) {
 		Amount           string `json:"amount"`
 		PaymentMethod    string `json:"payment_method"`
 		TransactionToken string `json:"transaction_token"`
+		// FR-BIL-013..015. Used when payment_method is one of
+		// billing.PaymentMethods; any other value keeps the older free-text
+		// behaviour so existing integrations do not break.
+		Reference      string `json:"reference"`
+		ChequeNumber   string `json:"cheque_number"`
+		ChequeBank     string `json:"cheque_bank"`
+		ChequeDate     string `json:"cheque_date"` // YYYY-MM-DD
+		TDSCertificate string `json:"tds_certificate"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", err.Error())
@@ -926,6 +941,32 @@ func (h *Handler) WalletRecharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "invalid amount")
 		return
 	}
+	if billing.IsPaymentMethod(req.PaymentMethod) {
+		pd := billing.PaymentDetail{
+			Method: req.PaymentMethod, Reference: firstNonEmpty(req.Reference, req.TransactionToken),
+			ChequeNumber: req.ChequeNumber, ChequeBank: req.ChequeBank, TDSCertificate: req.TDSCertificate,
+		}
+		if req.ChequeDate != "" {
+			d, err := time.Parse("2006-01-02", req.ChequeDate)
+			if err != nil {
+				writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "cheque_date must be YYYY-MM-DD")
+				return
+			}
+			pd.ChequeDate = &d
+		}
+		tx, err := h.RecordPayment(r.Context(), req.SubscriberID, amount, pd)
+		if reason := billing.PaymentInvalidReason(err); reason != "" {
+			writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", reason)
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, tx)
+		return
+	}
+
 	tx, err := h.walletSvc.Recharge(r.Context(), billing.RechargeRequest{
 		SubscriberID:     req.SubscriberID,
 		Amount:           amount,

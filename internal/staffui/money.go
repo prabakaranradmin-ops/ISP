@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,8 @@ type moneyData struct {
 	CSVQuery  string
 	// CanCredit shows the per-invoice "Credit note" link (FR-BIL-012).
 	CanCredit bool
+	// CanBounce shows "Bounced" on cleared cheque payments (FR-BIL-014).
+	CanBounce bool
 }
 
 // Money lists invoices or payments across every subscriber for a date range,
@@ -56,7 +59,8 @@ func (h *Handler) Money(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 	md := moneyData{Tab: q.Get("tab"), Query: strings.TrimSpace(q.Get("q")), Limit: moneyPageLimit,
-		CanCredit: canRequestCreditNote(s.Role) && h.creditNotes != nil}
+		CanCredit: canRequestCreditNote(s.Role) && h.creditNotes != nil,
+		CanBounce: canRecordPayment(s.Role) && h.payments != nil}
 	if md.Tab != "payments" {
 		md.Tab = "invoices"
 	}
@@ -64,6 +68,13 @@ func (h *Handler) Money(w http.ResponseWriter, r *http.Request) {
 	md.From, md.To = from.Format("2006-01-02"), to.Add(-24*time.Hour).Format("2006-01-02")
 	if msg != "" {
 		d.Error = msg
+	}
+	if code := q.Get("bounce"); code != "" {
+		if code == "ok" {
+			d.Message = bounceMessages["ok"]
+		} else if m, ok := bounceMessages[code]; ok {
+			d.Error = m
+		}
 	}
 	f := MoneyFilter{From: from, To: to, Query: md.Query, Limit: moneyPageLimit}
 	asCSV := q.Get("format") == "csv"
@@ -92,7 +103,13 @@ func (h *Handler) Money(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cq := q
+	// Built from the filter fields only, not copied from the URL: a copy
+	// would carry one-off parameters (the bounce outcome code) into the
+	// export link.
+	cq := url.Values{}
+	if md.Query != "" {
+		cq.Set("q", md.Query)
+	}
 	cq.Set("format", "csv")
 	cq.Set("tab", md.Tab)
 	cq.Set("from", md.From)

@@ -213,7 +213,9 @@ func run(ctx context.Context) error {
 		// Credit notes (FR-BIL-012): issued by BillingStore on approval, in
 		// one transaction with the wallet credit and GL reversal.
 		CreditNotes: database.Billing(),
-		SubCache:    &subCacheInvalidator{verifiers: database.VerifierCache()},
+		// Cheque bounce reversal (FR-BIL-014).
+		Cheques:  database.Billing(),
+		SubCache: &subCacheInvalidator{verifiers: database.VerifierCache()},
 		// Task & approval workflows (FR-WFL-001..002). WorkflowStore
 		// satisfies both queriers — approvals and field tasks share a
 		// migration and a store, but nothing else.
@@ -375,6 +377,8 @@ func run(ctx context.Context) error {
 		Audience:  database.Console(),
 		// Credit-note requests go through the API's approval workflow.
 		CreditNotes: apiHandler,
+		// Counter payments and cheque bounces through the API's own path.
+		Payments: apiHandler,
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —

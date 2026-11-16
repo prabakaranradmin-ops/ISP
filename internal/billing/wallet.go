@@ -18,6 +18,10 @@ const (
 	// AccountAdjustmentClearing is the counter-leg for staff-issued wallet
 	// credits, debits and refunds — MDS §4.14.
 	AccountAdjustmentClearing = "adjustment_clearing"
+	// AccountTDSReceivable is the counter-leg for a TDS credit: tax a
+	// business customer deducted and owes us a certificate for, which is an
+	// asset receivable from the tax department, not cash (migration 054).
+	AccountTDSReceivable = "tds_receivable"
 )
 
 // GLAccountCode maps a wallet ledger leg's Account label to the
@@ -38,6 +42,8 @@ func GLAccountCode(account string) string {
 		return "4000" // Subscription Revenue
 	case AccountAdjustmentClearing:
 		return "5200" // Wallet Adjustments & Refunds
+	case AccountTDSReceivable:
+		return "1300" // TDS Receivable
 	default:
 		return ""
 	}
@@ -106,6 +112,10 @@ type RechargePosting struct {
 	// line in two (revenue and 2200 GST Payable) without changing either
 	// wallet_ledgers leg — see postWalletGLEntry.
 	TaxAmount decimal.Decimal
+	// Payment, when set, is written as the credit leg's payment_details row
+	// in the same transaction (FR-BIL-013). Nil for postings that are not a
+	// payment received: renewals, adjustments, refunds, credit notes.
+	Payment *PaymentDetail
 }
 
 // RechargeRequest carries the inputs for a subscriber wallet top-up.
@@ -115,6 +125,11 @@ type RechargeRequest struct {
 	TransactionToken string // Razorpay payment_id or equivalent
 	FranchiseID      *int
 	Description      string
+	// Payment records how the money came in. Optional for compatibility: a
+	// caller with no method to give still posts the recharge, with no detail
+	// row. A TDS payment posts its counter leg to TDS Receivable instead of
+	// Cash / Bank.
+	Payment *PaymentDetail
 }
 
 // WalletService performs double-entry wallet operations with idempotency.
@@ -161,10 +176,11 @@ func (s *WalletService) Recharge(ctx context.Context, req RechargeRequest) (*Tra
 
 	posting := RechargePosting{
 		SubscriberID: req.SubscriberID,
+		Payment:      req.Payment,
 		Debit: WalletEntry{
 			SubscriberID: req.SubscriberID,
 			FranchiseID:  req.FranchiseID,
-			Account:      AccountGatewayClearing,
+			Account:      counterAccountFor(req.Payment),
 			EntryType:    "debit",
 			Amount:       req.Amount,
 			BalanceAfter: newBalance,

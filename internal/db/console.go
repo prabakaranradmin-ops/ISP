@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/staffui"
 )
 
@@ -552,13 +553,28 @@ func (s *ConsoleStore) ListPayments(ctx context.Context, f staffui.MoneyFilter) 
 	query := strings.TrimSpace(f.Query)
 	idQuery, _ := moneySearch(query)
 
+	if f.Method != "" && !inList(billing.PaymentMethods, f.Method) {
+		return nil, nil, fmt.Errorf("db: unknown payment method %q", f.Method)
+	}
+
+	// Method comes from payment_details (FR-BIL-013) and, for payments taken
+	// before it existed and not recognised by migration 054's backfill, from
+	// the recharge description. Totals split what the subscriber paid in
+	// money from TDS (a receivable, not cash) and leave bounced cheques out
+	// of both, since their value was taken back.
 	const q = `
 		WITH matched AS (
 		  SELECT w.id, w.subscriber_id, s.username, w.created_at, w.amount, w.balance_after,
-		         regexp_replace(COALESCE(w.description, ''), '^recharge via ', '') AS method,
-		         COALESCE(w.transaction_token, '') AS reference
+		         COALESCE(p.method, regexp_replace(COALESCE(w.description, ''), '^recharge via ', '')) AS method,
+		         COALESCE(p.reference, w.transaction_token, '') AS reference,
+		         COALESCE(p.cheque_number, '') AS cheque_number, COALESCE(p.cheque_bank, '') AS cheque_bank,
+		         p.cheque_date, COALESCE(p.tds_certificate, '') AS tds_certificate,
+		         COALESCE(p.status, 'cleared') AS status,
+		         COALESCE(p.bounce_reason, '') AS bounce_reason, COALESCE(p.recorded_by, '') AS recorded_by,
+		         p.wallet_ledger_id IS NOT NULL AS has_detail
 		    FROM wallet_ledgers w
 		    JOIN subscribers s ON s.id = w.subscriber_id
+		    LEFT JOIN payment_details p ON p.wallet_ledger_id = w.id
 		   WHERE w.account = 'subscriber_wallet'
 		     AND w.entry_type = 'credit'
 		     AND w.adjusted_by_username IS NULL
@@ -566,27 +582,34 @@ func (s *ConsoleStore) ListPayments(ctx context.Context, f staffui.MoneyFilter) 
 		     AND ($3::text = ''
 		          OR s.username ILIKE $4 ESCAPE '\'
 		          OR w.subscriber_id = $5::int
-		          OR w.transaction_token = $3)
+		          OR w.transaction_token = $3 OR p.reference = $3 OR p.cheque_number = $3)
+		     AND ($7::text = '' OR p.method = $7)
 		)
 		SELECT id, subscriber_id, username, created_at, amount::text, balance_after::text,
-		       method, reference,
+		       method, reference, cheque_number, cheque_bank, cheque_date, tds_certificate,
+		       status, bounce_reason, recorded_by, has_detail,
 		       (SELECT count(*) FROM matched),
-		       (SELECT COALESCE(sum(amount), 0)::text FROM matched)
+		       (SELECT COALESCE(sum(amount) FILTER (WHERE status = 'cleared' AND method <> 'tds'), 0)::text FROM matched),
+		       (SELECT COALESCE(sum(amount) FILTER (WHERE status = 'cleared' AND method = 'tds'), 0)::text FROM matched),
+		       (SELECT count(*) FILTER (WHERE status = 'bounced') FROM matched),
+		       (SELECT COALESCE(sum(amount) FILTER (WHERE status = 'bounced'), 0)::text FROM matched)
 		  FROM matched
 		 ORDER BY created_at DESC, id DESC
 		 LIMIT $6`
-	rows, err := s.pool.Query(ctx, q, f.From, f.To, query, "%"+escapeLike(query)+"%", idQuery, limit)
+	rows, err := s.pool.Query(ctx, q, f.From, f.To, query, "%"+escapeLike(query)+"%", idQuery, limit, f.Method)
 	if err != nil {
 		return nil, nil, fmt.Errorf("db: list payments: %w", err)
 	}
 	defer rows.Close()
 
 	out := make([]staffui.PaymentRow, 0, 32)
-	tot := &staffui.PaymentTotals{Amount: "0.00"}
+	tot := &staffui.PaymentTotals{Amount: "0.00", TDS: "0.00", Bounced: "0.00"}
 	for rows.Next() {
 		var r staffui.PaymentRow
 		if err := rows.Scan(&r.ID, &r.SubscriberID, &r.Username, &r.CreatedAt, &r.Amount,
-			&r.BalanceAfter, &r.Method, &r.Reference, &tot.Count, &tot.Amount); err != nil {
+			&r.BalanceAfter, &r.Method, &r.Reference, &r.ChequeNumber, &r.ChequeBank, &r.ChequeDate,
+			&r.TDSCertificate, &r.Status, &r.BounceReason, &r.RecordedBy, &r.HasDetail,
+			&tot.Count, &tot.Amount, &tot.TDS, &tot.BouncedCount, &tot.Bounced); err != nil {
 			return nil, nil, fmt.Errorf("db: scan payment: %w", err)
 		}
 		out = append(out, r)

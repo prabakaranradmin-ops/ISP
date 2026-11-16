@@ -38,6 +38,7 @@ var funcMap = template.FuncMap{
 	"cpeTaskBadge": cpeTaskBadge,
 	"annBadge":     annBadge,
 	"msgBadge":     msgBadge,
+	"methodLabel":  methodLabel,
 	"hasString":    inStrings,
 	"channelLabel": func(c string) string {
 		return map[string]string{"whatsapp": "WhatsApp", "sms": "SMS", "email": "Email", "push": "App push"}[c]
@@ -450,4 +451,12 @@ func (h *Handler) renderError(w http.ResponseWriter, _ *http.Request, s Session,
 	d := h.page(s, "Not available", "")
 	d.Error = msg
 	h.render(w, "error", d)
+}
+
+// methodLabel names a payment method the way a cashier would.
+func methodLabel(m string) string {
+	if l, ok := methodLabels[m]; ok {
+		return l
+	}
+	return m
 }

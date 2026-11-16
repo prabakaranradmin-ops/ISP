@@ -65,6 +65,29 @@
         </tbody>
       </table>
     </div>
+    {{if and $d.ShowRecordPayment $d.Subscriber}}
+    <div class="card">
+      <h3>Record a payment</h3>
+      <p class="muted small">For money received at the counter, by transfer or cheque, or TDS a business customer deducted. Online payments arrive by themselves.</p>
+      <form method="post" action="/staff/subscribers/{{$d.Subscriber.ID}}/payment" data-confirm="Record this payment? The wallet is credited at once.">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <div class="formgrid">
+          <label>Amount (&#8377;) <input name="amount" inputmode="decimal" required placeholder="799.00"></label>
+          <label>Paid by
+            <select name="method" required>
+              {{range $d.PaymentMethods}}<option value="{{.}}">{{methodLabel .}}</option>{{end}}
+            </select>
+          </label>
+          <label>Reference <input name="reference" placeholder="UTR or UPI reference"></label>
+          <label>Cheque number <input name="cheque_number" placeholder="For a cheque"></label>
+          <label>Bank <input name="cheque_bank" placeholder="For a cheque"></label>
+          <label>Cheque date <input name="cheque_date" type="date"></label>
+          <label>TDS certificate <input name="tds_certificate" placeholder="Form 16A number, for TDS"></label>
+        </div>
+        <button class="primary" type="submit">Record payment</button>
+      </form>
+    </div>
+    {{end}}
   </section>
   {{end}}
 

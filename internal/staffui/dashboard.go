@@ -300,7 +300,9 @@ type MoneyFilter struct {
 	// invoice id (exact), an invoice number written INV-000042, or a
 	// payment's transaction reference (exact).
 	Query string
-	Limit int
+	// Method narrows payments to one payment_details method; "" for any.
+	Method string
+	Limit  int
 }
 
 // InvoiceRow is one invoice in the cross-subscriber list. Amounts are
@@ -340,13 +342,29 @@ type PaymentRow struct {
 	// Method is what the recharge was described as ("cash", "razorpay
 	// webhook"). It lives in free text today; FR-BIL-013 makes it a column.
 	Method    string
-	Reference string // the idempotency token: a gateway payment id, or blank
+	Reference string // gateway id, bank UTR or UPI reference, or blank
+	// FR-BIL-013..015: the payment_details behind the row, when it has one.
+	ChequeNumber   string
+	ChequeBank     string
+	ChequeDate     *time.Time
+	TDSCertificate string
+	Status         string // cleared | bounced
+	BounceReason   string
+	RecordedBy     string
+	HasDetail      bool
 }
 
 // PaymentTotals sums every payment matching the filter.
 type PaymentTotals struct {
-	Count  int
+	Count int
+	// Amount is money actually collected: cleared payments other than TDS.
 	Amount string
+	// TDS is tax deducted by business customers, reported apart from cash
+	// because it is a receivable from the tax department (FR-BIL-015).
+	TDS string
+	// Bounced cheques, excluded from both figures above.
+	BouncedCount int
+	Bounced      string
 }
 
 // ── CPE devices (FR-CON-008) ────────────────────────────────────────────────

@@ -241,6 +241,8 @@ type HandlerDeps struct {
 	// CreditNotes files credit-note approval requests from the Invoices
 	// screen. The API handler itself.
 	CreditNotes CreditNoteRequester
+	// Payments records counter payments and cheque bounces. The API handler.
+	Payments PaymentManager
 }
 
 // Handler serves the console.
@@ -285,6 +287,7 @@ type Handler struct {
 	announcer          AnnouncementManager
 	audience           AudienceCounter
 	creditNotes        CreditNoteRequester
+	payments           PaymentManager
 }
 
 // NewHandler constructs the console handler.
@@ -330,6 +333,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		announcer:          deps.Announcer,
 		audience:           deps.Audience,
 		creditNotes:        deps.CreditNotes,
+		payments:           deps.Payments,
 	}
 }
 
@@ -517,6 +521,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/subscribers/{id}/speed-override/clear", h.authed(h.requireCSRF(h.ClearSpeedOverride)))
 	mux.Handle("POST /staff/subscribers/{id}/password/reveal", h.authed(h.requireCSRF(h.RevealPassword)))
 	mux.Handle("POST /staff/subscribers/{id}/password", h.authed(h.requireCSRF(h.ResetPassword)))
+	mux.Handle("POST /staff/subscribers/{id}/payment", h.authed(h.requireCSRF(h.RecordPaymentForm)))
 	mux.Handle("POST /staff/subscribers/{id}/plan-change", h.authed(h.requireCSRF(h.ChangeSubscriberPlan)))
 	mux.Handle("GET /staff/leads", h.authed(h.Leads))
 	mux.Handle("POST /staff/leads/new", h.authed(h.requireCSRF(h.CreateLeadForm)))
@@ -542,6 +547,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/invoices", h.authed(h.Money))
 	mux.Handle("GET /staff/invoices/{id}/pdf", h.authed(h.InvoicePDF))
 	mux.Handle("GET /staff/invoices/{id}/credit-note", h.authed(h.CreditNotePage))
+	mux.Handle("POST /staff/invoices/payments/{id}/bounce", h.authed(h.requireCSRF(h.BounceChequeForm)))
 	mux.Handle("POST /staff/invoices/{id}/credit-note", h.authed(h.requireCSRF(h.CreditNoteForm)))
 	mux.Handle("GET /staff/revenue", h.authed(h.Revenue))
 	mux.Handle("GET /staff/lea", h.authed(h.LEAPage))

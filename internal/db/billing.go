@@ -135,6 +135,20 @@ func recordPostingTx(ctx context.Context, dbTx pgx.Tx, p billing.RechargePosting
 		return nil, err
 	}
 
+	// FR-BIL-013: how the money came in, keyed by the wallet credit leg, in
+	// the same transaction so a payment can never exist without its method.
+	if p.Payment != nil {
+		pd := p.Payment
+		if _, err := dbTx.Exec(ctx, `
+			INSERT INTO payment_details (wallet_ledger_id, method, reference, cheque_number,
+			                             cheque_bank, cheque_date, tds_certificate, recorded_by)
+			VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), $6, NULLIF($7,''), NULLIF($8,''))`,
+			creditID, pd.Method, pd.Reference, pd.ChequeNumber, pd.ChequeBank, pd.ChequeDate,
+			pd.TDSCertificate, pd.RecordedBy); err != nil {
+			return nil, fmt.Errorf("db: insert payment details: %w", err)
+		}
+	}
+
 	token := ""
 	if p.Credit.TransactionToken != nil {
 		token = *p.Credit.TransactionToken

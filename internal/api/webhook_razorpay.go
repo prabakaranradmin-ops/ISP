@@ -95,6 +95,7 @@ func (h *Handler) RazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 		Amount:           amount,
 		TransactionToken: entity.ID,
 		Description:      "recharge via razorpay webhook",
+		Payment:          &billing.PaymentDetail{Method: billing.MethodOnline, Reference: entity.ID, RecordedBy: "razorpay"},
 	})
 	if err != nil {
 		log.Error().Err(err).Str("payment_id", entity.ID).Int("subscriber_id", subscriberID).

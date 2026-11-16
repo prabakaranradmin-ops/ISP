@@ -203,6 +203,54 @@ test.describe('Dashboard and menus', () => {
   });
 });
 
+test.describe('Payments with method', () => {
+  test('billing records a cheque, it is listed with its details, and a bounce reverses it', async ({ page }) => {
+    const chequeNo = Date.now().toString().slice(-6);
+    await signIn(page, 'billing');
+    await page.goto('/staff/subscribers/1');
+    await page.getByRole('button', { name: 'Billing', exact: true }).click();
+    await page.fill('input[name="amount"]', '1000.00');
+    await page.selectOption('select[name="method"]', 'cheque');
+    await page.fill('input[name="cheque_number"]', chequeNo);
+    await page.fill('input[name="cheque_bank"]', 'State Bank of India');
+    await page.fill('input[name="cheque_date"]', new Date().toISOString().slice(0, 10));
+    page.once('dialog', (d) => d.accept());
+    await page.getByRole('button', { name: 'Record payment' }).click();
+    await expect(page.getByText(/Payment of .1000\.00 recorded/)).toBeVisible();
+
+    await page.goto('/staff/invoices?tab=payments&from=2000-01-01');
+    const row = page.locator('tbody tr', { hasText: `Cheque ${chequeNo}` });
+    await expect(row).toContainText('State Bank of India');
+    await expect(row).toContainText('1000.00');
+    await snap(page, 'payments-cheque');
+
+    await row.locator('input[name="reason"]').fill('Insufficient funds');
+    page.once('dialog', (d) => d.accept());
+    await row.getByRole('button', { name: 'Bounced' }).click();
+    await expect(page.getByText('Cheque marked bounced')).toBeVisible();
+    await expect(page.locator('tbody tr', { hasText: `Cheque ${chequeNo}` })).toContainText('bounced');
+    await expect(page.locator('tbody tr', { hasText: `Cheque ${chequeNo}` }).getByRole('button', { name: 'Bounced' })).toHaveCount(0);
+  });
+
+  test('a cheque without its bank is refused with a reason', async ({ page }) => {
+    await signIn(page, 'billing');
+    await page.goto('/staff/subscribers/1');
+    await page.getByRole('button', { name: 'Billing', exact: true }).click();
+    await page.fill('input[name="amount"]', '10');
+    await page.selectOption('select[name="method"]', 'cheque');
+    await page.fill('input[name="cheque_number"]', '1');
+    page.once('dialog', (d) => d.accept());
+    await page.getByRole('button', { name: 'Record payment' }).click();
+    await expect(page.getByText(/a cheque needs its number, bank and date/)).toBeVisible();
+  });
+
+  test('a CSR is not offered the payment form', async ({ page }) => {
+    await signIn(page, 'csr');
+    await page.goto('/staff/subscribers/1');
+    await expect(page.getByRole('button', { name: 'Record payment' })).toHaveCount(0);
+  });
+});
+
 test.describe('Credit notes', () => {
   test('billing requests a credit note, a second person approves it, and it is issued', async ({ page }) => {
     const reason = `Line down E2E ${Date.now()}`;
@@ -443,7 +491,8 @@ test.describe('Invoices and payments', () => {
   test('payments list the seeded top-up and export as CSV', async ({ page }) => {
     await signIn(page, 'csr');
     await page.goto('/staff/invoices?tab=payments');
-    await expect(page.locator('tbody tr', { hasText: 'test_user' }).first()).toContainText('799.00');
+    // The seed's 799.00 top-up, wherever later tests' payments have put it.
+    await expect(page.locator('tbody tr', { hasText: 'test_user' }).filter({ hasText: '799.00' }).first()).toBeVisible();
     const res = await page.request.get('/staff/invoices?tab=payments&format=csv');
     expect(res.status()).toBe(200);
     expect(res.headers()['content-disposition']).toMatch(/^attachment;/);
@@ -579,7 +628,7 @@ test.describe('Subscribers', () => {
     await expect(page.getByText('CAF-0001')).toBeVisible();
     // Seeded with a live Redis session, so the connection panel must show real
     // figures rather than the offline state.
-    await expect(page.getByText('online')).toBeVisible();
+    await expect(page.getByText('online', { exact: true })).toBeVisible();
     await expect(page.getByText(/GB of .*GB/)).toBeVisible();
     await snap(page, 'subscriber-detail-owner');
   });
