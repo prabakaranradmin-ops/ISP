@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -177,6 +178,36 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, invoices)
 }
 
+// Errors RenderInvoicePDF reports, so the API and the console can each word
+// them for their own audience.
+var (
+	ErrInvoiceStoreUnavailable = errors.New("api: invoice store not configured")
+	ErrPDFUnavailable          = errors.New("api: PDF generation is not available")
+	ErrInvoiceNotFound         = errors.New("api: invoice not found")
+	errInvoiceLookup           = errors.New("api: invoice lookup failed")
+)
+
+// RenderInvoicePDF renders one invoice as PDF bytes. Staff-trusted: it has
+// no subscriber-ownership check, so only staff routes (the API's
+// billingOrCSR route and the console's Invoices screen) may call it. The
+// portal adds its own ownership check before reaching BuildInvoiceData.
+func (h *Handler) RenderInvoicePDF(ctx context.Context, invoiceID int) ([]byte, error) {
+	if h.invoices == nil {
+		return nil, ErrInvoiceStoreUnavailable
+	}
+	if h.pdfGen == nil {
+		return nil, ErrPDFUnavailable
+	}
+	detail, err := h.invoices.GetInvoiceDetail(ctx, invoiceID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errInvoiceLookup, err)
+	}
+	if detail == nil {
+		return nil, ErrInvoiceNotFound
+	}
+	return h.pdfGen.GeneratePDF(ctx, BuildInvoiceData(detail))
+}
+
 // GetInvoicePDF handles GET /api/v1/invoices/{invoice_id}/pdf.
 //
 // The OpenAPI contract also allows subscriber self-service on this route.
@@ -191,33 +222,28 @@ func (h *Handler) GetInvoicePDF(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", "invalid invoice_id")
 		return
 	}
-	if h.invoices == nil {
+
+	pdfBytes, err := h.RenderInvoicePDF(r.Context(), invoiceID)
+	switch {
+	case errors.Is(err, ErrInvoiceStoreUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "ERR_UNAVAILABLE", "invoice store not configured")
 		return
-	}
-	if h.pdfGen == nil {
+	case errors.Is(err, ErrPDFUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "ERR_UNAVAILABLE", "PDF generation is not available (no Chromium-based browser found)")
 		return
-	}
-
-	detail, err := h.invoices.GetInvoiceDetail(r.Context(), invoiceID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "invoice lookup failed")
-		return
-	}
-	if detail == nil {
+	case errors.Is(err, ErrInvoiceNotFound):
 		writeError(w, http.StatusNotFound, "ERR_NOT_FOUND", fmt.Sprintf("invoice %d not found", invoiceID))
 		return
-	}
-
-	pdfBytes, err := h.pdfGen.GeneratePDF(r.Context(), BuildInvoiceData(detail))
-	if err != nil {
+	case errors.Is(err, errInvoiceLookup):
+		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "invoice lookup failed")
+		return
+	case err != nil:
 		writeError(w, http.StatusBadGateway, "ERR_GATEWAY", "PDF generation failed")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/pdf")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=\"invoice-%d.pdf\"", detail.ID))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=\"invoice-%d.pdf\"", invoiceID))
 	// nosniff is the actual, concrete answer to what gosec G705 is gesturing at
 	// below (see that comment) rather than an unrelated addition: it is what
 	// stops an old or misconfigured browser from MIME-sniffing this response

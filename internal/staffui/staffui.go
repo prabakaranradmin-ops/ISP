@@ -228,6 +228,8 @@ type HandlerDeps struct {
 	// Disconnector backs the Sessions screen's Disconnect button. The API
 	// handler itself, same as SubscriberCreator/BulkActions.
 	Disconnector SessionDisconnector
+	// InvoicePDF backs the Invoices screen's PDF link. The API handler itself.
+	InvoicePDF InvoicePDFRenderer
 }
 
 // Handler serves the console.
@@ -266,6 +268,7 @@ type Handler struct {
 	networkHealth      NetworkHealthStore
 	console            ConsoleStore
 	disconnector       SessionDisconnector
+	invoicePDF         InvoicePDFRenderer
 }
 
 // NewHandler constructs the console handler.
@@ -305,6 +308,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		networkHealth:      deps.NetworkHealth,
 		console:            deps.Console,
 		disconnector:       deps.Disconnector,
+		invoicePDF:         deps.InvoicePDF,
 	}
 }
 
@@ -339,6 +343,10 @@ var sections = []Section{
 		[]string{"isp_owner", "billing_admin", "csr"}, false},
 	{"tickets", "Support", "/staff/tickets",
 		[]string{"isp_owner", "csr", "technician"}, false},
+	// Same reach as the API's billingOrCSR gate on GET /invoices/{id} and
+	// its PDF: a CSR answers "what did I pay, send me the bill" calls.
+	{"invoices", "Invoices & Payments", "/staff/invoices",
+		[]string{"isp_owner", "billing_admin", "csr"}, false},
 	{"revenue", "Revenue", "/staff/revenue",
 		[]string{"isp_owner"}, false},
 	// Catalogue is owner/billing only: a tariff change re-prices every
@@ -483,6 +491,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/billing/gstr1", h.authed(h.GSTR1Export))
 	mux.Handle("GET /staff/tickets", h.authed(h.Tickets))
 	mux.Handle("POST /staff/tickets/{id}/status", h.authed(h.requireCSRF(h.UpdateTicketStatus)))
+	mux.Handle("GET /staff/invoices", h.authed(h.Money))
+	mux.Handle("GET /staff/invoices/{id}/pdf", h.authed(h.InvoicePDF))
 	mux.Handle("GET /staff/revenue", h.authed(h.Revenue))
 	mux.Handle("GET /staff/lea", h.authed(h.LEAPage))
 	mux.Handle("POST /staff/lea", h.authed(h.requireCSRF(h.LEALookup)))

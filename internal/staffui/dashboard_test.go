@@ -23,6 +23,9 @@ type fakeConsole struct {
 	gotFilt   *DirectoryFilter
 	gotSess   *SessionFilter
 	gotTicket *TicketFilter
+	invoices  []InvoiceRow
+	payments  []PaymentRow
+	gotMoney  *MoneyFilter
 }
 
 func (f *fakeConsole) ListTicketQueue(_ context.Context, filt TicketFilter) ([]QueueTicket, error) {
@@ -42,6 +45,22 @@ func (f *fakeConsole) HelpdeskSummary(context.Context) (*HelpdeskSummary, error)
 
 func (f *fakeConsole) ListTicketAssignees(context.Context) ([]Assignee, error) {
 	return f.assignees, nil
+}
+
+func (f *fakeConsole) ListInvoices(_ context.Context, filt MoneyFilter) ([]InvoiceRow, *InvoiceTotals, error) {
+	f.gotMoney = &filt
+	if f.err != nil {
+		return nil, nil, f.err
+	}
+	return f.invoices, &InvoiceTotals{Count: len(f.invoices), Base: "0.00", Tax: "0.00", Total: "0.00", Credited: "0.00"}, nil
+}
+
+func (f *fakeConsole) ListPayments(_ context.Context, filt MoneyFilter) ([]PaymentRow, *PaymentTotals, error) {
+	f.gotMoney = &filt
+	if f.err != nil {
+		return nil, nil, f.err
+	}
+	return f.payments, &PaymentTotals{Count: len(f.payments), Amount: "0.00"}, nil
 }
 
 func (f *fakeConsole) ListLiveSessions(_ context.Context, filt SessionFilter) ([]LiveSession, error) {
@@ -120,16 +139,20 @@ func TestBuildNav(t *testing.T) {
 	})
 
 	t.Run("a one-item group collapses into that item's own link", func(t *testing.T) {
-		// A CSR's Subscribers group holds only "subscribers" (no catalogue),
-		// Finance only "billing", and Network only "sessions": each should
-		// read as a plain link named after the section, not a one-item menu.
+		// A CSR's Subscribers group holds only "subscribers" (no catalogue)
+		// and Network only "sessions": each should read as a plain link
+		// named after the section, not a one-item menu. Finance holds two
+		// (Invoices & Payments, Billing) and so stays a menu.
 		nav := buildNav(AllowedSections("csr", false), "")
-		want := []string{"Dashboard", "Subscribers", "Billing", "Service", "Sessions"}
+		want := []string{"Dashboard", "Subscribers", "Finance", "Service", "Sessions"}
 		if got := labels(nav); strings.Join(got, ",") != strings.Join(want, ",") {
 			t.Fatalf("labels: want %v, got %v", want, got)
 		}
-		if n := len(nav[2].Items); n != 1 || nav[2].Items[0].Key != "billing" {
-			t.Errorf("Finance should collapse to the billing link, got %+v", nav[2])
+		if n := len(nav[4].Items); n != 1 || nav[4].Items[0].Key != "sessions" {
+			t.Errorf("Network should collapse to the sessions link, got %+v", nav[4])
+		}
+		if n := len(nav[2].Items); n != 2 {
+			t.Errorf("a two-item Finance must stay a menu, got %+v", nav[2])
 		}
 	})
 

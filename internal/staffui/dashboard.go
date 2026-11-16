@@ -23,6 +23,8 @@ type ConsoleStore interface {
 	HelpdeskSummary(ctx context.Context) (*HelpdeskSummary, error)
 	// ListTicketAssignees returns active staff whose role can work tickets.
 	ListTicketAssignees(ctx context.Context) ([]Assignee, error)
+	ListInvoices(ctx context.Context, f MoneyFilter) ([]InvoiceRow, *InvoiceTotals, error)
+	ListPayments(ctx context.Context, f MoneyFilter) ([]PaymentRow, *PaymentTotals, error)
 }
 
 // SubscriberStatuses is every value subscribers.status may hold (migration
@@ -282,4 +284,63 @@ type Assignee struct {
 	Username string
 	FullName string
 	Role     string
+}
+
+// ── Invoices and payments (FR-CON-006) ──────────────────────────────────────
+
+// MoneyFilter narrows the invoice and payment lists to a half-open
+// [From, To) window plus an optional search.
+type MoneyFilter struct {
+	From, To time.Time
+	// Query matches a subscriber's username (substring), a subscriber id or
+	// invoice id (exact), an invoice number written INV-000042, or a
+	// payment's transaction reference (exact).
+	Query string
+	Limit int
+}
+
+// InvoiceRow is one invoice in the cross-subscriber list. Amounts are
+// decimal strings exactly as PostgreSQL rendered the NUMERIC column, so no
+// float ever touches money between the database and the page.
+type InvoiceRow struct {
+	ID           int
+	SubscriberID int
+	Username     string
+	CreatedAt    time.Time
+	Base         string
+	Tax          string
+	Total        string
+	Credited     string // sum of credit notes against it; "0.00" when none
+}
+
+// InvoiceTotals sums every invoice matching the filter, not just the rows
+// shown, so a truncated list still reports the true total.
+type InvoiceTotals struct {
+	Count    int
+	Base     string
+	Tax      string
+	Total    string
+	Credited string
+}
+
+// PaymentRow is one wallet top-up: a credit to the subscriber wallet with no
+// staff actor. Staff adjustments and approved credits (which carry
+// adjusted_by_username) are not payments and are excluded.
+type PaymentRow struct {
+	ID           int
+	SubscriberID int
+	Username     string
+	CreatedAt    time.Time
+	Amount       string
+	BalanceAfter string
+	// Method is what the recharge was described as ("cash", "razorpay
+	// webhook"). It lives in free text today; FR-BIL-013 makes it a column.
+	Method    string
+	Reference string // the idempotency token: a gateway payment id, or blank
+}
+
+// PaymentTotals sums every payment matching the filter.
+type PaymentTotals struct {
+	Count  int
+	Amount string
 }

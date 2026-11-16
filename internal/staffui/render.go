@@ -114,6 +114,7 @@ func optFloat1(f *float64) string {
 var sectionShortcuts = map[string]string{
 	"dashboard":   "h",
 	"sessions":    "o",
+	"invoices":    "v",
 	"subscribers": "s",
 	"catalogue":   "c",
 	"billing":     "b",
@@ -145,7 +146,7 @@ var navGroups = []struct {
 }{
 	{"", []string{"dashboard"}},
 	{"Subscribers", []string{"subscribers", "my-subscribers", "catalogue"}},
-	{"Finance", []string{"billing", "revenue", "ledger", "reports", "procurement", "franchise", "my-pnl"}},
+	{"Finance", []string{"invoices", "billing", "revenue", "ledger", "reports", "procurement", "franchise", "my-pnl"}},
 	{"Service", []string{"tickets", "tasks", "inventory"}},
 	{"Network", []string{"sessions", "nas", "network", "lea"}},
 	{"Admin", []string{"accounts", "demo"}},
@@ -290,7 +291,7 @@ var pageNames = []string{
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
 	"inventory", "reports", "tasks", "my_subscribers", "procurement", "ledger", "network",
-	"dashboard", "sessions",
+	"dashboard", "sessions", "money",
 }
 
 var pages = func() map[string]*template.Template {

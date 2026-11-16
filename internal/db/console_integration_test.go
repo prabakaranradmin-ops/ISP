@@ -406,3 +406,115 @@ func TestConsole_TicketQueue(t *testing.T) {
 
 // len2 turns a slice into its length, for asserting counts through eq.
 func len2(xs []int) []int { return []int{len(xs)} }
+
+func TestConsole_InvoicesAndPayments(t *testing.T) {
+	ctx := context.Background()
+	database, pool := newTestDB(t)
+	seedPlan(ctx, t, pool, 1, "Home 50M", "50M/50M", 0, "", "499.00")
+	seedGstRate(ctx, t, pool, 1)
+	in30d := time.Now().Add(30 * 24 * time.Hour)
+	seedSubscriber(ctx, t, pool, 1, seedOpts{Username: "alice", PlanExpiry: &in30d, MobileNumber: "+919800000001"})
+	seedSubscriber(ctx, t, pool, 2, seedOpts{Username: "=bob", PlanExpiry: &in30d, MobileNumber: "+919800000002"})
+
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	// Three invoices in the window, one 40 days before it.
+	mustExec(`INSERT INTO invoices (id, subscriber_id, base_amount, cgst_amount, sgst_amount, igst_amount,
+	                                total_amount, gst_rate_id, gb_included, gb_used, created_at) VALUES
+	            (101, 1, 499.00, 44.91, 44.91, 0, 588.82, 1, 0, 0, now() - interval '2 days'),
+	            (102, 2, 799.00, 71.91, 71.91, 0, 942.82, 1, 0, 0, now() - interval '1 day'),
+	            (103, 1, 100.00, 0, 0, 18.00, 118.00, 1, 0, 0, now() - interval '3 hours'),
+	            (104, 1, 499.00, 44.91, 44.91, 0, 588.82, 1, 0, 0, now() - interval '40 days')`)
+	mustExec(`INSERT INTO credit_notes (invoice_id, subscriber_id, base_amount, cgst_amount, sgst_amount,
+	                                    igst_amount, total_amount, reason)
+	          VALUES (102, 2, 100.00, 9.00, 9.00, 0, 118.00, 'overcharge')`)
+
+	// Payments are subscriber_wallet credits with no staff actor. Everything
+	// else here is a near-miss that must not be counted.
+	mustExec(`INSERT INTO wallet_ledgers (subscriber_id, account, entry_type, amount, balance_after,
+	                                      transaction_token, description, adjusted_by_username, created_at) VALUES
+	   (1, 'subscriber_wallet',        'credit', 500.00, 500.00, 'pay_A', 'recharge via razorpay webhook', NULL, now() - interval '2 days'),
+	   (1, 'payment_gateway_clearing', 'debit',  500.00, 500.00, NULL, 'counter-entry: recharge via razorpay webhook', NULL, now() - interval '2 days'),
+	   (2, 'subscriber_wallet',        'credit', 300.00, 300.00, NULL, 'recharge via cash', NULL, now() - interval '1 hour'),
+	   (2, 'subscriber_wallet',        'credit',  50.00, 350.00, NULL, 'staff adjustment: goodwill', 'owner', now() - interval '30 minutes'),
+	   (1, 'subscriber_wallet',        'debit',  499.00,   1.00, NULL, 'renewal', NULL, now() - interval '20 minutes'),
+	   (1, 'subscriber_wallet',        'credit', 999.00, 999.00, 'pay_OLD', 'recharge via razorpay webhook', NULL, now() - interval '40 days')`)
+
+	store := database.Console()
+	window := staffui.MoneyFilter{From: time.Now().Add(-7 * 24 * time.Hour), To: time.Now().Add(time.Minute)}
+
+	inv, tot, err := store.ListInvoices(ctx, window)
+	if err != nil {
+		t.Fatalf("ListInvoices: %v", err)
+	}
+	var ids []int
+	for _, i := range inv {
+		ids = append(ids, i.ID)
+	}
+	if fmt.Sprint(ids) != "[103 102 101]" {
+		t.Errorf("invoices in window, newest first: want [103 102 101], got %v", ids)
+	}
+	if tot.Count != 3 || tot.Base != "1398.00" || tot.Tax != "251.64" || tot.Total != "1649.64" || tot.Credited != "118.00" {
+		t.Errorf("totals over the window: %+v", tot)
+	}
+	if len(inv) == 3 && (inv[1].Credited != "118.00" || inv[0].Credited != "0" && inv[0].Credited != "0.00") {
+		t.Errorf("credited per invoice: %+v", inv)
+	}
+
+	one := func(q string) []int {
+		t.Helper()
+		f := window
+		f.Query = q
+		rows, _, err := store.ListInvoices(ctx, f)
+		if err != nil {
+			t.Fatalf("ListInvoices(%q): %v", q, err)
+		}
+		var out []int
+		for _, r := range rows {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	if got := one("INV-000102"); fmt.Sprint(got) != "[102]" {
+		t.Errorf("by invoice number: %v", got)
+	}
+	if got := one("inv-102"); fmt.Sprint(got) != "[102]" {
+		t.Errorf("by lower-case invoice number: %v", got)
+	}
+	if got := one("=bo"); fmt.Sprint(got) != "[102]" {
+		t.Errorf("by username fragment: %v", got)
+	}
+	if got := one("1"); fmt.Sprint(got) != "[103 101]" {
+		t.Errorf("by subscriber id 1: %v", got)
+	}
+
+	capped := window
+	capped.Limit = 1
+	if rows, tot, err := store.ListInvoices(ctx, capped); err != nil || len(rows) != 1 || tot.Count != 3 || tot.Total != "1649.64" {
+		t.Errorf("a capped page must still total everything: rows=%d tot=%+v err=%v", len(rows), tot, err)
+	}
+
+	pay, ptot, err := store.ListPayments(ctx, window)
+	if err != nil {
+		t.Fatalf("ListPayments: %v", err)
+	}
+	if len(pay) != 2 || ptot.Count != 2 || ptot.Amount != "800.00" {
+		t.Fatalf("payments: want the two recharges totalling 800.00, got %+v %+v", pay, ptot)
+	}
+	if pay[0].Method != "cash" || pay[1].Method != "razorpay webhook" || pay[1].Reference != "pay_A" {
+		t.Errorf("method/reference mapping: %+v", pay)
+	}
+	byRef := window
+	byRef.Query = "pay_A"
+	if rows, _, err := store.ListPayments(ctx, byRef); err != nil || len(rows) != 1 || rows[0].Amount != "500.00" {
+		t.Errorf("by reference: %+v err=%v", rows, err)
+	}
+
+	if _, _, err := store.ListInvoices(ctx, staffui.MoneyFilter{}); err == nil {
+		t.Error("a missing window must be an error, not an unbounded scan")
+	}
+}

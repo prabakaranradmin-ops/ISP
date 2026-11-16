@@ -20,14 +20,14 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 	}{
 		// Dashboard leads every ISP-wide list because Home redirects to the
 		// first allowed section; that order is part of what is pinned here.
-		{"isp_owner", true, []string{"dashboard", "subscribers", "billing", "tickets", "revenue", "catalogue", "sessions", "nas", "network", "lea", "demo", "accounts", "franchise", "procurement", "ledger", "inventory", "reports", "tasks"}},
+		{"isp_owner", true, []string{"dashboard", "subscribers", "billing", "tickets", "invoices", "revenue", "catalogue", "sessions", "nas", "network", "lea", "demo", "accounts", "franchise", "procurement", "ledger", "inventory", "reports", "tasks"}},
 		{"noc_engineer", true, []string{"dashboard", "subscribers", "sessions", "nas", "network", "lea", "inventory", "tasks"}},
-		{"billing_admin", false, []string{"dashboard", "subscribers", "billing", "catalogue", "sessions", "procurement", "ledger", "inventory", "reports", "tasks"}},
+		{"billing_admin", false, []string{"dashboard", "subscribers", "billing", "invoices", "catalogue", "sessions", "procurement", "ledger", "inventory", "reports", "tasks"}},
 		// Catalogue is deliberately absent for csr and technician: editing a
 		// tariff re-prices every subscriber on it and a GST change alters
 		// every invoice raised afterwards, which is not reach either role
 		// needs to answer a call or fix a line.
-		{"csr", false, []string{"dashboard", "subscribers", "billing", "tickets", "sessions", "tasks"}},
+		{"csr", false, []string{"dashboard", "subscribers", "billing", "tickets", "invoices", "sessions", "tasks"}},
 		{"technician", false, []string{"dashboard", "subscribers", "tickets", "sessions", "inventory", "tasks"}},
 		// Franchise-scoped roles get their own restricted pair, never the
 		// ISP-wide sections above (not even the Dashboard, whose counts span

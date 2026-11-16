@@ -1,0 +1,85 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Invoices &amp; payments</h1>
+{{with $d}}
+<nav class="tabbar" aria-label="Money lists">
+  <a class="tab-link{{if eq .Tab "invoices"}} on{{end}}" href="/staff/invoices?tab=invoices&amp;from={{.From}}&amp;to={{.To}}">Invoices</a>
+  <a class="tab-link{{if eq .Tab "payments"}} on{{end}}" href="/staff/invoices?tab=payments&amp;from={{.From}}&amp;to={{.To}}">Payments</a>
+</nav>
+
+<form class="searchbar" method="get" action="/staff/invoices">
+  <input type="hidden" name="tab" value="{{.Tab}}">
+  <input name="q" value="{{.Query}}" placeholder="{{if eq .Tab "invoices"}}Username, subscriber id or invoice number{{else}}Username, subscriber id or payment reference{{end}}" aria-label="Search">
+  <label class="inline-field">From <input type="date" name="from" value="{{.From}}"></label>
+  <label class="inline-field">To <input type="date" name="to" value="{{.To}}"></label>
+  <button class="primary" type="submit">Show</button>
+  <a class="btn" href="/staff/invoices?{{.CSVQuery}}">Export CSV</a>
+</form>
+
+{{if eq .Tab "invoices"}}
+{{with .InvTotals}}
+<div class="tiles summary-strip">
+  <div class="tile"><span class="tile-label">Invoices</span><span class="tile-num">{{.Count}}</span></div>
+  <div class="tile"><span class="tile-label">Taxable value</span><span class="tile-num">&#8377;{{.Base}}</span></div>
+  <div class="tile"><span class="tile-label">GST</span><span class="tile-num">&#8377;{{.Tax}}</span></div>
+  <div class="tile"><span class="tile-label">Invoiced total</span><span class="tile-num">&#8377;{{.Total}}</span></div>
+  <div class="tile"><span class="tile-label">Credit notes</span><span class="tile-num">&#8377;{{.Credited}}</span></div>
+</div>
+{{end}}
+<p class="muted">{{.From}} to {{.To}}{{if and .InvTotals (gt .InvTotals.Count (len .Invoices))}} &middot; showing the {{len .Invoices}} most recent of {{.InvTotals.Count}}; the totals and the CSV cover all of them{{end}}</p>
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Invoice</th><th>Date</th><th>Subscriber</th>
+      <th class="right">Taxable</th><th class="right">GST</th><th class="right">Total</th><th class="right">Credited</th><th></th>
+    </tr></thead>
+    <tbody>
+    {{range .Invoices}}
+      <tr>
+        <td class="num">INV-{{printf "%06d" .ID}}</td>
+        <td class="num">{{datetime .CreatedAt}}</td>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td class="num right">{{.Base}}</td>
+        <td class="num right">{{.Tax}}</td>
+        <td class="num right">{{.Total}}</td>
+        <td class="num right">{{if ne .Credited "0.00"}}{{.Credited}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="right"><a class="btn" href="/staff/invoices/{{.ID}}/pdf" target="_blank" rel="noopener">PDF</a></td>
+      </tr>
+    {{else}}
+      <tr><td colspan="8" class="empty">No invoices in this period{{if $d.Query}} for that search{{end}}.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{else}}
+{{with .PayTotals}}
+<div class="tiles summary-strip">
+  <div class="tile"><span class="tile-label">Payments</span><span class="tile-num">{{.Count}}</span></div>
+  <div class="tile"><span class="tile-label">Collected</span><span class="tile-num">&#8377;{{.Amount}}</span></div>
+</div>
+{{end}}
+<p class="muted">{{.From}} to {{.To}} &middot; wallet top-ups only; staff adjustments are on each subscriber's ledger{{if and .PayTotals (gt .PayTotals.Count (len .Payments))}} &middot; showing the {{len .Payments}} most recent of {{.PayTotals.Count}}{{end}}</p>
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Date</th><th>Subscriber</th><th class="right">Amount</th><th>Paid via</th><th>Reference</th><th class="right">Balance after</th>
+    </tr></thead>
+    <tbody>
+    {{range .Payments}}
+      <tr>
+        <td class="num">{{datetime .CreatedAt}}</td>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td class="num right">{{.Amount}}</td>
+        <td>{{if .Method}}{{.Method}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="num">{{if .Reference}}{{.Reference}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="num right">{{.BalanceAfter}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">No payments in this period{{if $d.Query}} for that search{{end}}.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}
+{{end}}

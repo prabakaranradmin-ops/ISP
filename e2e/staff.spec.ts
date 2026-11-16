@@ -197,6 +197,50 @@ test.describe('Dashboard and menus', () => {
   });
 });
 
+test.describe('Invoices and payments', () => {
+  test('billing sees this month\'s invoices with totals and a working PDF link', async ({ page }) => {
+    await signIn(page, 'billing');
+    const finance = page.locator('.topbar .navgroup', { hasText: 'Finance' });
+    await finance.locator('summary').click();
+    await finance.getByRole('link', { name: 'Invoices & Payments' }).click();
+    await expect(page).toHaveURL(/\/staff\/invoices/);
+    // seed_local.sql raises one invoice for test_user: 799 + 18% GST.
+    const row = page.locator('tbody tr', { hasText: 'test_user' }).first();
+    await expect(row).toContainText('942.82');
+    await expect(row).toContainText(/INV-\d{6}/);
+    await expect(page.locator('.summary-strip')).toContainText('Invoiced total');
+    await snap(page, 'invoices');
+
+    // The PDF needs a Chromium-based browser on the server. Either it renders
+    // or the console says plainly that it cannot; it must not 500 or blank.
+    const href = await row.getByRole('link', { name: 'PDF' }).getAttribute('href');
+    const res = await page.request.get(href!);
+    expect([200, 503]).toContain(res.status());
+    if (res.status() === 200) {
+      expect(res.headers()['content-type']).toBe('application/pdf');
+      expect((await res.body()).subarray(0, 4).toString()).toBe('%PDF');
+    }
+  });
+
+  test('payments list the seeded top-up and export as CSV', async ({ page }) => {
+    await signIn(page, 'csr');
+    await page.goto('/staff/invoices?tab=payments');
+    await expect(page.locator('tbody tr', { hasText: 'test_user' }).first()).toContainText('799.00');
+    const res = await page.request.get('/staff/invoices?tab=payments&format=csv');
+    expect(res.status()).toBe(200);
+    expect(res.headers()['content-disposition']).toMatch(/^attachment;/);
+    const csv = await res.text();
+    expect(csv.split('\n')[0]).toContain('payment_id,date,subscriber_id,username,amount');
+    expect(csv).toContain('test_user');
+  });
+
+  test('a technician cannot open invoices or their PDFs', async ({ page }) => {
+    await signIn(page, 'tech');
+    expect((await page.request.get('/staff/invoices')).status()).toBe(403);
+    expect((await page.request.get('/staff/invoices/1/pdf')).status()).toBe(403);
+  });
+});
+
 test.describe('Sessions', () => {
   test('a CSR sees who is online, with no way to disconnect them', async ({ page }) => {
     await signIn(page, 'csr');

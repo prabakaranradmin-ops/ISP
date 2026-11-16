@@ -360,6 +360,8 @@ func run(ctx context.Context) error {
 		// The API handler itself: a console disconnect runs the API's own
 		// PoD enqueue and audit entry.
 		Disconnector: apiHandler,
+		// Same instance: the console serves the API's own invoice PDF.
+		InvoicePDF: apiHandler,
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —

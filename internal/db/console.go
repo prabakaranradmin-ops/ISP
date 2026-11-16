@@ -438,3 +438,161 @@ func (s *ConsoleStore) ListTicketAssignees(ctx context.Context) ([]staffui.Assig
 	}
 	return out, rows.Err()
 }
+
+// ── Invoices and payments (FR-CON-006) ──────────────────────────────────────
+
+const defaultMoneyLimit = 500
+
+// moneySearch splits a search box value into the forms ListInvoices and
+// ListPayments match: an id (int4-safe) and an INV-nnnnnn invoice number.
+func moneySearch(query string) (idQuery *int, invoiceNo *int) {
+	if n, err := strconv.ParseInt(query, 10, 32); err == nil && n > 0 {
+		id := int(n)
+		idQuery = &id
+	}
+	upper := strings.ToUpper(query)
+	if strings.HasPrefix(upper, "INV-") {
+		if n, err := strconv.ParseInt(strings.TrimPrefix(upper, "INV-"), 10, 32); err == nil && n > 0 {
+			id := int(n)
+			invoiceNo = &id
+		}
+	}
+	return idQuery, invoiceNo
+}
+
+func checkWindow(f staffui.MoneyFilter) error {
+	if f.From.IsZero() || f.To.IsZero() || !f.To.After(f.From) {
+		return fmt.Errorf("db: money lists need a From before To, got %v..%v", f.From, f.To)
+	}
+	return nil
+}
+
+// ListInvoices returns invoices raised in the window, newest first, and the
+// totals over every matching invoice (not only the rows returned).
+//
+// Sums are computed in SQL on NUMERIC and returned as text, the same rule as
+// the rest of this package: money never passes through float64.
+func (s *ConsoleStore) ListInvoices(ctx context.Context, f staffui.MoneyFilter) ([]staffui.InvoiceRow, *staffui.InvoiceTotals, error) {
+	if err := checkWindow(f); err != nil {
+		return nil, nil, err
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = defaultMoneyLimit
+	}
+	query := strings.TrimSpace(f.Query)
+	idQuery, invNo := moneySearch(query)
+
+	const q = `
+		WITH credited AS (
+		  SELECT invoice_id, sum(total_amount) AS amount FROM credit_notes GROUP BY invoice_id
+		),
+		matched AS (
+		  SELECT i.id, i.subscriber_id, s.username, i.created_at, i.base_amount,
+		         (i.cgst_amount + i.sgst_amount + i.igst_amount) AS tax, i.total_amount,
+		         COALESCE(c.amount, 0) AS credited
+		    FROM invoices i
+		    JOIN subscribers s ON s.id = i.subscriber_id
+		    LEFT JOIN credited c ON c.invoice_id = i.id
+		   WHERE i.created_at >= $1 AND i.created_at < $2
+		     AND ($3::text = ''
+		          OR s.username ILIKE $4 ESCAPE '\'
+		          OR i.id = $5::int OR i.subscriber_id = $5::int
+		          OR i.id = $6::int)
+		)
+		SELECT id, subscriber_id, username, created_at,
+		       base_amount::text, tax::text, total_amount::text, credited::text,
+		       (SELECT count(*) FROM matched),
+		       (SELECT COALESCE(sum(base_amount), 0)::text FROM matched),
+		       (SELECT COALESCE(sum(tax), 0)::text FROM matched),
+		       (SELECT COALESCE(sum(total_amount), 0)::text FROM matched),
+		       (SELECT COALESCE(sum(credited), 0)::text FROM matched)
+		  FROM matched
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT $7`
+	rows, err := s.pool.Query(ctx, q, f.From, f.To, query, "%"+escapeLike(query)+"%", idQuery, invNo, limit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("db: list invoices: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]staffui.InvoiceRow, 0, 32)
+	tot := &staffui.InvoiceTotals{Base: "0.00", Tax: "0.00", Total: "0.00", Credited: "0.00"}
+	for rows.Next() {
+		var r staffui.InvoiceRow
+		if err := rows.Scan(&r.ID, &r.SubscriberID, &r.Username, &r.CreatedAt,
+			&r.Base, &r.Tax, &r.Total, &r.Credited,
+			&tot.Count, &tot.Base, &tot.Tax, &tot.Total, &tot.Credited); err != nil {
+			return nil, nil, fmt.Errorf("db: scan invoice: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("db: iterate invoices: %w", err)
+	}
+	return out, tot, nil
+}
+
+// ListPayments returns wallet top-ups in the window, newest first, with the
+// total over every matching payment.
+//
+// A payment is a credit to the subscriber wallet with no staff actor: the
+// recharge path (gateway webhook, portal, counter recharge) never sets
+// adjusted_by_username, while every staff adjustment and approved credit
+// does (FR-BIL-010, FR-WFL-001). Debits — renewals, refunds — are not
+// payments either.
+func (s *ConsoleStore) ListPayments(ctx context.Context, f staffui.MoneyFilter) ([]staffui.PaymentRow, *staffui.PaymentTotals, error) {
+	if err := checkWindow(f); err != nil {
+		return nil, nil, err
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = defaultMoneyLimit
+	}
+	query := strings.TrimSpace(f.Query)
+	idQuery, _ := moneySearch(query)
+
+	const q = `
+		WITH matched AS (
+		  SELECT w.id, w.subscriber_id, s.username, w.created_at, w.amount, w.balance_after,
+		         regexp_replace(COALESCE(w.description, ''), '^recharge via ', '') AS method,
+		         COALESCE(w.transaction_token, '') AS reference
+		    FROM wallet_ledgers w
+		    JOIN subscribers s ON s.id = w.subscriber_id
+		   WHERE w.account = 'subscriber_wallet'
+		     AND w.entry_type = 'credit'
+		     AND w.adjusted_by_username IS NULL
+		     AND w.created_at >= $1 AND w.created_at < $2
+		     AND ($3::text = ''
+		          OR s.username ILIKE $4 ESCAPE '\'
+		          OR w.subscriber_id = $5::int
+		          OR w.transaction_token = $3)
+		)
+		SELECT id, subscriber_id, username, created_at, amount::text, balance_after::text,
+		       method, reference,
+		       (SELECT count(*) FROM matched),
+		       (SELECT COALESCE(sum(amount), 0)::text FROM matched)
+		  FROM matched
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT $6`
+	rows, err := s.pool.Query(ctx, q, f.From, f.To, query, "%"+escapeLike(query)+"%", idQuery, limit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("db: list payments: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]staffui.PaymentRow, 0, 32)
+	tot := &staffui.PaymentTotals{Amount: "0.00"}
+	for rows.Next() {
+		var r staffui.PaymentRow
+		if err := rows.Scan(&r.ID, &r.SubscriberID, &r.Username, &r.CreatedAt, &r.Amount,
+			&r.BalanceAfter, &r.Method, &r.Reference, &tot.Count, &tot.Amount); err != nil {
+			return nil, nil, fmt.Errorf("db: scan payment: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("db: iterate payments: %w", err)
+	}
+	return out, tot, nil
+}
