@@ -29,6 +29,9 @@ type fakeConsole struct {
 	cpeRows     []CPEDeviceRow
 	gotCPEView  string
 	gotCPEQuery string
+	messages    []MessageLogRow
+	webhooks    []WebhookLogRow
+	gotLog      *LogFilter
 }
 
 func (f *fakeConsole) ListTicketQueue(_ context.Context, filt TicketFilter) ([]QueueTicket, error) {
@@ -73,6 +76,16 @@ func (f *fakeConsole) ListACSDevices(_ context.Context, view, query string, _ in
 
 func (f *fakeConsole) CountAnnouncementAudience(context.Context, *int, *int, *string) (int, error) {
 	return 42, f.err
+}
+
+func (f *fakeConsole) ListMessageLog(_ context.Context, filt LogFilter) ([]MessageLogRow, error) {
+	f.gotLog = &filt
+	return f.messages, f.err
+}
+
+func (f *fakeConsole) ListWebhookDeliveries(_ context.Context, filt LogFilter) ([]WebhookLogRow, error) {
+	f.gotLog = &filt
+	return f.webhooks, f.err
 }
 
 func (f *fakeConsole) ListLiveSessions(_ context.Context, filt SessionFilter) ([]LiveSession, error) {

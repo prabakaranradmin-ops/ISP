@@ -1,0 +1,81 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Message logs</h1>
+{{with $d}}
+{{if .ShowWebhook}}
+<nav class="tabbar" aria-label="Logs">
+  <a class="tab-link{{if eq .Tab "messages"}} on{{end}}" href="/staff/logs">Subscriber messages</a>
+  <a class="tab-link{{if eq .Tab "webhooks"}} on{{end}}" href="/staff/logs?tab=webhooks">Partner webhooks</a>
+</nav>
+{{end}}
+
+<form class="searchbar" method="get" action="/staff/logs">
+  <input type="hidden" name="tab" value="{{.Tab}}">
+  <input name="q" value="{{.Query}}" placeholder="{{if eq .Tab "messages"}}Username or subscriber id{{else}}Partner, URL or event type{{end}}" aria-label="Search the log">
+  {{if eq .Tab "messages"}}
+  <label class="inline-field">Channel
+    <select name="channel">
+      <option value="">Any</option>
+      {{range .Channels}}<option value="{{.}}"{{if eq . $d.Channel}} selected{{end}}>{{channelLabel .}}</option>{{end}}
+    </select>
+  </label>
+  {{end}}
+  <label class="inline-field">Status
+    <select name="status">
+      <option value="">Any</option>
+      {{range .Statuses}}<option value="{{.}}"{{if eq . $d.Status}} selected{{end}}>{{humanize .}}</option>{{end}}
+    </select>
+  </label>
+  <label class="inline-field">From <input type="date" name="from" value="{{.From}}"></label>
+  <label class="inline-field">To <input type="date" name="to" value="{{.To}}"></label>
+  <button class="primary" type="submit">Show</button>
+</form>
+
+{{if eq .Tab "messages"}}
+<p class="muted">{{len .Messages}} message{{if ne (len .Messages) 1}}s{{end}}, {{.From}} to {{.To}}{{if eq (len .Messages) 500}} &middot; showing the 500 most recent{{end}}</p>
+<div class="card table-card">
+  <table>
+    <thead><tr><th>Sent</th><th>Subscriber</th><th>Channel</th><th>Why</th><th>Template</th><th>Status</th><th>Provider id</th></tr></thead>
+    <tbody>
+    {{range .Messages}}
+      <tr>
+        <td class="num">{{datetime .SentAt}}</td>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td>{{channelLabel .Channel}}</td>
+        <td>{{if .Event}}{{humanize .Event}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="num">{{if .TemplateID}}{{.TemplateID}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td><span class="pill {{msgBadge .Status}}">{{humanize .Status}}</span>{{if .FailureReason}}<br><span class="muted small">{{.FailureReason}}</span>{{end}}</td>
+        <td class="num small">{{.ProviderMessageID}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">No messages in this period{{if or $d.Query $d.Channel $d.Status}} for that filter{{end}}.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{else}}
+<p class="muted">{{len .Webhooks}} deliver{{if eq (len .Webhooks) 1}}y{{else}}ies{{end}}, {{.From}} to {{.To}}</p>
+<div class="card table-card">
+  <table>
+    <thead><tr><th>Queued</th><th>Partner</th><th>Endpoint</th><th>Event</th><th>Status</th><th class="right">Attempts</th><th>Response</th><th>Delivered</th></tr></thead>
+    <tbody>
+    {{range .Webhooks}}
+      <tr>
+        <td class="num">{{datetime .CreatedAt}}</td>
+        <td>{{.Partner}}</td>
+        <td class="small">{{.URL}}</td>
+        <td>{{.EventType}}</td>
+        <td><span class="pill {{msgBadge .Status}}">{{.Status}}</span>{{if .LastError}}<br><span class="muted small">{{.LastError}}</span>{{end}}</td>
+        <td class="num right">{{.Attempts}}</td>
+        <td class="num">{{if .ResponseStatus}}{{deref .ResponseStatus}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="num">{{optDatetime .DeliveredAt}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="8" class="empty">No webhook deliveries in this period.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}
+{{end}}

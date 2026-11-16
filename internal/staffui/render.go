@@ -37,6 +37,7 @@ var funcMap = template.FuncMap{
 	"cpeBadge":     cpeBadge,
 	"cpeTaskBadge": cpeTaskBadge,
 	"annBadge":     annBadge,
+	"msgBadge":     msgBadge,
 	"hasString":    inStrings,
 	"channelLabel": func(c string) string {
 		return map[string]string{"whatsapp": "WhatsApp", "sms": "SMS", "email": "Email", "push": "App push"}[c]
@@ -155,7 +156,7 @@ var navGroups = []struct {
 	{"", []string{"dashboard"}},
 	{"Subscribers", []string{"subscribers", "leads", "my-subscribers", "catalogue"}},
 	{"Finance", []string{"invoices", "billing", "revenue", "ledger", "reports", "procurement", "franchise", "my-pnl"}},
-	{"Service", []string{"tickets", "tasks", "announcements", "inventory"}},
+	{"Service", []string{"tickets", "tasks", "announcements", "logs", "inventory"}},
 	{"Network", []string{"sessions", "cpe", "nas", "network", "lea"}},
 	{"Admin", []string{"accounts", "demo"}},
 }
@@ -238,6 +239,20 @@ func badgeClass(status string) string {
 var ticketViewLabels = map[string]string{
 	"open": "Open", "overdue": "Past target", "unassigned": "Unassigned",
 	"mine": "Assigned to me", "closed": "Closed (30 days)", "all": "All",
+}
+
+// msgBadge colours a message or webhook delivery status.
+func msgBadge(status string) string {
+	switch status {
+	case "delivered", "read", "sent":
+		return "ok"
+	case "pending":
+		return "warn"
+	case "failed", "abandoned":
+		return "bad"
+	default:
+		return "neutral" // suppressed_dnd: deliberately not sent
+	}
 }
 
 // annBadge colours an announcement's status.
@@ -356,7 +371,7 @@ var pageNames = []string{
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
 	"inventory", "reports", "tasks", "my_subscribers", "procurement", "ledger", "network",
-	"dashboard", "sessions", "money", "leads", "lead_convert", "cpe", "announcements",
+	"dashboard", "sessions", "money", "leads", "lead_convert", "cpe", "announcements", "logs",
 }
 
 var pages = func() map[string]*template.Template {

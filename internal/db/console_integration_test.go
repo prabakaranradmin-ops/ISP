@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/inventory"
+	"github.com/maaransoft/isp-bss-oss/internal/notifications"
+	"github.com/maaransoft/isp-bss-oss/internal/partner"
 	"github.com/maaransoft/isp-bss-oss/internal/staffui"
 )
 
@@ -622,5 +624,97 @@ func TestConsole_CountAnnouncementAudience(t *testing.T) {
 	}
 	if n := count(&two, &active); n != 1 {
 		t.Errorf("plan 2, active: want 1, got %d", n)
+	}
+}
+
+func TestConsole_MessageAndWebhookLogs(t *testing.T) {
+	ctx := context.Background()
+	database, pool := newTestDB(t)
+	seedPlan(ctx, t, pool, 1, "Home 50M", "50M/50M", 0, "", "499.00")
+	seedSubscriber(ctx, t, pool, 1, seedOpts{Username: "alice", MobileNumber: "+919800000001"})
+	seedSubscriber(ctx, t, pool, 2, seedOpts{Username: "bob", MobileNumber: "+919800000002"})
+
+	notif := database.Notifications()
+	for _, m := range []notifications.NotificationLog{
+		{SubscriberID: 1, Channel: "sms", TriggeredByEvent: "renewal_reminder", DeliveryStatus: "failed", FailureReason: "DLT", ProviderMessageID: "m1"},
+		{SubscriberID: 1, Channel: "whatsapp", TriggeredByEvent: "renewal_reminder", DeliveryStatus: "delivered", ProviderMessageID: "m2"},
+		{SubscriberID: 2, Channel: "sms", TriggeredByEvent: "adhoc", DeliveryStatus: "sent", ProviderMessageID: "m3"},
+		{SubscriberID: 2, Channel: "email", TriggeredByEvent: "adhoc", DeliveryStatus: "sent", ProviderMessageID: "m-old",
+			SentAt: time.Now().Add(-40 * 24 * time.Hour)},
+	} {
+		if err := notif.CreateNotificationLog(ctx, m); err != nil {
+			t.Fatalf("seed message %s: %v", m.ProviderMessageID, err)
+		}
+	}
+
+	store := database.Console()
+	window := staffui.LogFilter{From: time.Now().Add(-24 * time.Hour), To: time.Now().Add(time.Minute)}
+	ids := func(f staffui.LogFilter) []string {
+		t.Helper()
+		rows, err := store.ListMessageLog(ctx, f)
+		if err != nil {
+			t.Fatalf("ListMessageLog(%+v): %v", f, err)
+		}
+		var out []string
+		for _, r := range rows {
+			out = append(out, r.ProviderMessageID)
+		}
+		return out
+	}
+	with := func(mod func(*staffui.LogFilter)) staffui.LogFilter { f := window; mod(&f); return f }
+
+	if got := ids(window); len(got) != 3 {
+		t.Errorf("window excludes the 40-day-old message: want 3, got %v", got)
+	}
+	if got := ids(with(func(f *staffui.LogFilter) { f.Channel = "sms" })); fmt.Sprint(got) != "[m3 m1]" && fmt.Sprint(got) != "[m1 m3]" {
+		t.Errorf("sms only: %v", got)
+	}
+	if got := ids(with(func(f *staffui.LogFilter) { f.Status = "failed" })); fmt.Sprint(got) != "[m1]" {
+		t.Errorf("failed only: %v", got)
+	}
+	if got := ids(with(func(f *staffui.LogFilter) { f.Query = "BOB" })); fmt.Sprint(got) != "[m3]" {
+		t.Errorf("by username: %v", got)
+	}
+	if got := ids(with(func(f *staffui.LogFilter) { f.Query = "1" })); len(got) != 2 {
+		t.Errorf("by subscriber id 1: %v", got)
+	}
+	if rows, _ := store.ListMessageLog(ctx, with(func(f *staffui.LogFilter) { f.Status = "failed" })); len(rows) != 1 || rows[0].FailureReason != "DLT" || rows[0].Username != "alice" {
+		t.Errorf("row mapping: %+v", rows)
+	}
+	if _, err := store.ListMessageLog(ctx, with(func(f *staffui.LogFilter) { f.Channel = "fax" })); err == nil {
+		t.Error("unknown channel must be an error")
+	}
+
+	// Webhooks through the partner store, as production records them.
+	seedEncryptionKey(ctx, t, pool, "v1")
+	ps := database.Partner()
+	gen, _ := partner.GenerateKey(partner.KeyEnvLive)
+	key, err := ps.CreateAPIKey(ctx, "Acme OTT", gen.Prefix, gen.Hash, []string{partner.ScopeManageWebhooks}, nil, "owner")
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	ep, err := ps.CreateWebhookEndpoint(ctx, key.ID, "https://acme.example/hook", "v1:ct", "v1", []string{partner.EventTicketCreated}, "")
+	if err != nil {
+		t.Fatalf("CreateWebhookEndpoint: %v", err)
+	}
+	ev, _ := partner.NewEvent(partner.EventTicketCreated, 7, time.Now())
+	status503 := 503
+	if err := ps.RecordDeliveryAttempt(ctx, ep.ID, ev, partner.StatusFailed, &status503, "busy", "partner returned HTTP 503", nil); err != nil {
+		t.Fatalf("RecordDeliveryAttempt: %v", err)
+	}
+	hooks, err := store.ListWebhookDeliveries(ctx, window)
+	if err != nil || len(hooks) != 1 {
+		t.Fatalf("webhooks: %+v %v", hooks, err)
+	}
+	h := hooks[0]
+	if h.Partner != "Acme OTT" || h.URL != "https://acme.example/hook" || h.Status != "failed" ||
+		h.ResponseStatus == nil || *h.ResponseStatus != 503 || h.LastError == "" {
+		t.Errorf("webhook row: %+v", h)
+	}
+	if rows, _ := store.ListWebhookDeliveries(ctx, with(func(f *staffui.LogFilter) { f.Query = "acme" })); len(rows) != 1 {
+		t.Errorf("by partner name: %d rows", len(rows))
+	}
+	if rows, _ := store.ListWebhookDeliveries(ctx, with(func(f *staffui.LogFilter) { f.Status = "delivered" })); len(rows) != 0 {
+		t.Errorf("status filter: %d rows", len(rows))
 	}
 }

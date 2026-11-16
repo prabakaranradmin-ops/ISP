@@ -454,6 +454,11 @@ var sections = []Section{
 	// /announcements and /send): a broadcast can reach every customer.
 	{"announcements", "Announcements", "/staff/announcements",
 		[]string{"isp_owner", "billing_admin"}, false},
+	// Owner, NOC, billing and CSR: "did the customer get the reminder" is a
+	// front-desk and billing question as much as an operations one. The
+	// partner-webhook tab is narrower and gated inside (canSeeWebhookLog).
+	{"logs", "Message Logs", "/staff/logs",
+		[]string{"isp_owner", "noc_engineer", "billing_admin", "csr"}, false},
 	{"tasks", "Tasks", "/staff/tasks",
 		[]string{"isp_owner", "noc_engineer", "billing_admin", "csr", "technician"}, false},
 }
@@ -559,6 +564,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/announcements", h.authed(h.Announcements))
 	mux.Handle("POST /staff/announcements/new", h.authed(h.requireCSRF(h.ComposeAnnouncementForm)))
 	mux.Handle("POST /staff/announcements/{id}/send", h.authed(h.requireCSRF(h.SendAnnouncementForm)))
+	mux.Handle("GET /staff/logs", h.authed(h.Logs))
 	mux.Handle("GET /staff/tasks", h.authed(h.Tasks))
 	mux.Handle("POST /staff/tasks/field/new", h.authed(h.requireCSRF(h.CreateFieldTaskForm)))
 	mux.Handle("POST /staff/tasks/field/{id}/update", h.authed(h.requireCSRF(h.UpdateFieldTaskForm)))

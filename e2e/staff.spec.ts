@@ -203,6 +203,37 @@ test.describe('Dashboard and menus', () => {
   });
 });
 
+test.describe('Message logs', () => {
+  test('a CSR can search the message log but not see partner webhooks', async ({ page }) => {
+    await signIn(page, 'csr');
+    await page.goto('/staff/logs');
+    await expect(page.getByRole('heading', { name: 'Message logs' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Partner webhooks' })).toHaveCount(0);
+    await page.selectOption('select[name="channel"]', 'sms');
+    await page.selectOption('select[name="status"]', 'failed');
+    await page.getByRole('button', { name: 'Show' }).click();
+    await expect(page).toHaveURL(/channel=sms/);
+    await expect(page).toHaveURL(/status=failed/);
+    // Either rows or the empty state; never an error banner.
+    await expect(page.locator('.alert.bad')).toHaveCount(0);
+    expect((await page.request.get('/staff/logs?tab=webhooks')).status()).toBe(403);
+  });
+
+  test('the owner sees the partner webhook tab', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/logs');
+    await page.getByRole('link', { name: 'Partner webhooks' }).click();
+    await expect(page).toHaveURL(/tab=webhooks/);
+    await expect(page.locator('.alert.bad')).toHaveCount(0);
+    await snap(page, 'logs-webhooks');
+  });
+
+  test('a technician cannot open the logs', async ({ page }) => {
+    await signIn(page, 'tech');
+    expect((await page.request.get('/staff/logs')).status()).toBe(403);
+  });
+});
+
 test.describe('Announcements', () => {
   test('a draft is reviewed with its reach, sent once, and cannot be sent twice', async ({ page }) => {
     const title = `Maintenance E2E ${Date.now()}`;

@@ -27,6 +27,8 @@ type ConsoleStore interface {
 	ListInvoices(ctx context.Context, f MoneyFilter) ([]InvoiceRow, *InvoiceTotals, error)
 	ListPayments(ctx context.Context, f MoneyFilter) ([]PaymentRow, *PaymentTotals, error)
 	ListACSDevices(ctx context.Context, view, query string, limit int) ([]CPEDeviceRow, error)
+	ListMessageLog(ctx context.Context, f LogFilter) ([]MessageLogRow, error)
+	ListWebhookDeliveries(ctx context.Context, f LogFilter) ([]WebhookLogRow, error)
 }
 
 // SubscriberStatuses is every value subscribers.status may hold (migration
@@ -369,4 +371,55 @@ type CPEDeviceRow struct {
 	Username     string
 	PendingTasks int
 	Silent       bool
+}
+
+// ── Message and webhook logs (FR-CON-010) ───────────────────────────────────
+
+// LogFilter narrows the message and webhook logs to a [From, To) window.
+type LogFilter struct {
+	From, To time.Time
+	// Channel is whatsapp, sms, email or push; "" for any. Messages only.
+	Channel string
+	// Status is a delivery status of whichever log is being read; "" for any.
+	Status string
+	// Query matches a username (substring) or subscriber id (exact) for
+	// messages, or a partner name, URL (substring) or event type for
+	// webhooks.
+	Query string
+	Limit int
+}
+
+// MessageChannels and MessageStatuses are the values notification_log allows.
+var (
+	MessageChannels = []string{"whatsapp", "sms", "email", "push"}
+	MessageStatuses = []string{"sent", "delivered", "read", "failed", "suppressed_dnd"}
+	WebhookStatuses = []string{"pending", "delivered", "failed", "abandoned"}
+)
+
+// MessageLogRow is one outbound subscriber message.
+type MessageLogRow struct {
+	ID                int64
+	SubscriberID      int
+	Username          string
+	Channel           string
+	TemplateID        string
+	Event             string
+	SentAt            time.Time
+	Status            string
+	ProviderMessageID string
+	FailureReason     string
+}
+
+// WebhookLogRow is one partner webhook delivery.
+type WebhookLogRow struct {
+	ID             int64
+	Partner        string
+	URL            string
+	EventType      string
+	Status         string
+	Attempts       int
+	ResponseStatus *int
+	LastError      string
+	CreatedAt      time.Time
+	DeliveredAt    *time.Time
 }

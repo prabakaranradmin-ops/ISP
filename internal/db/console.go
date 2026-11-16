@@ -678,3 +678,103 @@ func (s *ConsoleStore) CountAnnouncementAudience(ctx context.Context, franchiseI
 	}
 	return n, nil
 }
+
+// ── Message and webhook logs (FR-CON-010) ───────────────────────────────────
+
+func checkLogWindow(f staffui.LogFilter) error {
+	if f.From.IsZero() || f.To.IsZero() || !f.To.After(f.From) {
+		return fmt.Errorf("db: logs need a From before To, got %v..%v", f.From, f.To)
+	}
+	return nil
+}
+
+// ListMessageLog returns outbound subscriber messages (FR-NOTIF-009's
+// notification_log) in the window, newest first.
+func (s *ConsoleStore) ListMessageLog(ctx context.Context, f staffui.LogFilter) ([]staffui.MessageLogRow, error) {
+	if err := checkLogWindow(f); err != nil {
+		return nil, err
+	}
+	if f.Channel != "" && !inList(staffui.MessageChannels, f.Channel) {
+		return nil, fmt.Errorf("db: unknown channel %q", f.Channel)
+	}
+	if f.Status != "" && !inList(staffui.MessageStatuses, f.Status) {
+		return nil, fmt.Errorf("db: unknown message status %q", f.Status)
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 500
+	}
+	query := strings.TrimSpace(f.Query)
+	idQuery, _ := moneySearch(query)
+	rows, err := s.pool.Query(ctx, `
+		SELECT n.id, n.subscriber_id, s.username, n.channel, COALESCE(n.template_id, ''),
+		       COALESCE(n.triggered_by_event, ''), n.sent_at, n.delivery_status,
+		       COALESCE(n.provider_message_id, ''), COALESCE(n.failure_reason, '')
+		  FROM notification_log n
+		  JOIN subscribers s ON s.id = n.subscriber_id
+		 WHERE n.sent_at >= $1 AND n.sent_at < $2
+		   AND ($3::text = '' OR n.channel = $3)
+		   AND ($4::text = '' OR n.delivery_status = $4)
+		   AND ($5::text = '' OR s.username ILIKE $6 ESCAPE '\' OR n.subscriber_id = $7::int)
+		 ORDER BY n.sent_at DESC, n.id DESC
+		 LIMIT $8`,
+		f.From, f.To, f.Channel, f.Status, query, "%"+escapeLike(query)+"%", idQuery, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list message log: %w", err)
+	}
+	defer rows.Close()
+	var out []staffui.MessageLogRow
+	for rows.Next() {
+		var r staffui.MessageLogRow
+		if err := rows.Scan(&r.ID, &r.SubscriberID, &r.Username, &r.Channel, &r.TemplateID,
+			&r.Event, &r.SentAt, &r.Status, &r.ProviderMessageID, &r.FailureReason); err != nil {
+			return nil, fmt.Errorf("db: scan message log: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListWebhookDeliveries returns partner webhook deliveries in the window,
+// newest first. The payload is deliberately not selected: it can carry
+// subscriber data, and a delivery list needs status, not content.
+func (s *ConsoleStore) ListWebhookDeliveries(ctx context.Context, f staffui.LogFilter) ([]staffui.WebhookLogRow, error) {
+	if err := checkLogWindow(f); err != nil {
+		return nil, err
+	}
+	if f.Status != "" && !inList(staffui.WebhookStatuses, f.Status) {
+		return nil, fmt.Errorf("db: unknown webhook status %q", f.Status)
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 500
+	}
+	query := strings.TrimSpace(f.Query)
+	rows, err := s.pool.Query(ctx, `
+		SELECT d.id, k.partner_name, e.url, d.event_type, d.status, d.attempts,
+		       d.response_status, COALESCE(d.last_error, ''), d.created_at, d.delivered_at
+		  FROM webhook_deliveries d
+		  JOIN webhook_endpoints e ON e.id = d.endpoint_id
+		  JOIN api_keys k ON k.id = e.api_key_id
+		 WHERE d.created_at >= $1 AND d.created_at < $2
+		   AND ($3::text = '' OR d.status = $3)
+		   AND ($4::text = '' OR k.partner_name ILIKE $5 ESCAPE '\' OR e.url ILIKE $5 ESCAPE '\'
+		        OR d.event_type = $4)
+		 ORDER BY d.created_at DESC, d.id DESC
+		 LIMIT $6`,
+		f.From, f.To, f.Status, query, "%"+escapeLike(query)+"%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list webhook deliveries: %w", err)
+	}
+	defer rows.Close()
+	var out []staffui.WebhookLogRow
+	for rows.Next() {
+		var r staffui.WebhookLogRow
+		if err := rows.Scan(&r.ID, &r.Partner, &r.URL, &r.EventType, &r.Status, &r.Attempts,
+			&r.ResponseStatus, &r.LastError, &r.CreatedAt, &r.DeliveredAt); err != nil {
+			return nil, fmt.Errorf("db: scan webhook delivery: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
