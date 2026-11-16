@@ -1,0 +1,43 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Credit note</h1>
+<p class="muted"><a href="/staff/invoices">&larr; Invoices &amp; payments</a></p>
+{{with $d}}
+{{if .Request}}
+<div class="card">
+  <h3>Request filed</h3>
+  <p>Approval request #{{.Request.ID}} asks for a credit of &#8377;{{optMoney .Request.Amount}} taxable value, plus its GST, against INV-{{printf "%06d" (deref .Request.InvoiceID)}}.</p>
+  <p>Nothing has been issued yet. A different staff member must approve it under <a href="/staff/tasks">Tasks</a>. When they do, the credit note is issued, the amount goes back to the subscriber's wallet, and the revenue and GST are reversed in the ledger, all together.</p>
+</div>
+{{else}}
+{{with .Invoice}}
+<div class="card">
+  <h3>INV-{{printf "%06d" .ID}} &middot; {{.Username}}</h3>
+  <dl>
+    <dt>Raised</dt><dd>{{datetime .CreatedAt}}</dd>
+    <dt>Taxable value</dt><dd class="num">&#8377;{{.Base}}</dd>
+    <dt>GST</dt><dd class="num">&#8377;{{.Tax}}</dd>
+    <dt>Total</dt><dd class="num">&#8377;{{.Total}}</dd>
+    <dt>Already credited</dt><dd class="num">{{if ne .Credited "0.00"}}&#8377;{{.Credited}}{{else}}<span class="muted">nothing</span>{{end}}</dd>
+  </dl>
+</div>
+{{end}}
+<div class="card">
+  <form method="post" action="/staff/invoices/{{.Invoice.ID}}/credit-note">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <div class="formgrid">
+      <label>Taxable value to credit (&#8377;)
+        <input name="amount" inputmode="decimal" required value="{{.Amount}}" placeholder="{{.Remains}}">
+        {{if .Remains}}<span class="muted small">Up to {{.Remains}} remains. GST is added at this invoice's own rates.</span>{{end}}
+      </label>
+      <label>Reason (printed on the credit note)
+        <input name="reason" required value="{{.Reason}}" placeholder="Charged for days the line was down">
+      </label>
+    </div>
+    <button class="primary" type="submit">Request credit note</button>
+    <p class="muted small">This files a request. A second staff member approves it before anything is issued or any money moves.</p>
+  </form>
+</div>
+{{end}}
+{{end}}
+{{end}}

@@ -55,26 +55,29 @@ type FieldTaskQuerier interface {
 // never sees money as a float — the same rule SubscriberRecord.WalletBalance
 // follows.
 type approvalResponse struct {
-	ID             int        `json:"id"`
-	ActionType     string     `json:"action_type"`
-	SubscriberID   int        `json:"subscriber_id"`
-	Amount         string     `json:"amount,omitempty"`
-	Reason         string     `json:"reason"`
-	Status         string     `json:"status"`
-	RequestedBy    string     `json:"requested_by"`
-	DecidedBy      string     `json:"decided_by,omitempty"`
-	DecisionReason string     `json:"decision_reason,omitempty"`
-	ExecutionError string     `json:"execution_error,omitempty"`
-	LedgerEntryID  *int       `json:"ledger_entry_id,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	DecidedAt      *time.Time `json:"decided_at,omitempty"`
+	ID             int    `json:"id"`
+	ActionType     string `json:"action_type"`
+	SubscriberID   int    `json:"subscriber_id"`
+	Amount         string `json:"amount,omitempty"`
+	Reason         string `json:"reason"`
+	Status         string `json:"status"`
+	RequestedBy    string `json:"requested_by"`
+	DecidedBy      string `json:"decided_by,omitempty"`
+	DecisionReason string `json:"decision_reason,omitempty"`
+	ExecutionError string `json:"execution_error,omitempty"`
+	LedgerEntryID  *int   `json:"ledger_entry_id,omitempty"`
+	// InvoiceID is the invoice a credit_note request corrects, so whoever
+	// approves it can see what they are approving.
+	InvoiceID *int       `json:"invoice_id,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	DecidedAt *time.Time `json:"decided_at,omitempty"`
 }
 
 func toApprovalResponse(r *workflow.ApprovalRequest) approvalResponse {
 	resp := approvalResponse{
 		ID: r.ID, ActionType: string(r.ActionType), SubscriberID: r.SubscriberID,
 		Reason: r.Reason, Status: string(r.Status), RequestedBy: r.RequestedBy,
-		LedgerEntryID: r.LedgerEntryID, CreatedAt: r.CreatedAt, DecidedAt: r.DecidedAt,
+		LedgerEntryID: r.LedgerEntryID, InvoiceID: r.InvoiceID, CreatedAt: r.CreatedAt, DecidedAt: r.DecidedAt,
 	}
 	if r.Amount != nil {
 		resp.Amount = r.Amount.StringFixed(2)
@@ -339,6 +342,9 @@ func (h *Handler) performGatedAction(ctx context.Context, req *workflow.Approval
 			}
 		}
 		return &tx.ID, nil
+
+	case workflow.ActionCreditNote:
+		return h.executeCreditNote(ctx, req)
 
 	case workflow.ActionTerminate:
 		if h.lifecycle == nil {

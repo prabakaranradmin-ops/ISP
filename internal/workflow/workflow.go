@@ -30,6 +30,10 @@ const (
 	ActionWalletCredit ActionType = "wallet_credit"
 	ActionRefund       ActionType = "refund"
 	ActionTerminate    ActionType = "terminate"
+	// ActionCreditNote issues a GST credit note against an invoice and
+	// returns its value to the wallet (FR-BIL-012, migration 053). Amount is
+	// the taxable value to credit; InvoiceID names the invoice.
+	ActionCreditNote ActionType = "credit_note"
 )
 
 // Status is an approval request's lifecycle stage.
@@ -65,8 +69,10 @@ type ApprovalRequest struct {
 	DecisionReason *string
 	ExecutionError *string
 	LedgerEntryID  *int
-	CreatedAt      time.Time
-	DecidedAt      *time.Time
+	// InvoiceID is set only for ActionCreditNote (chk_approval_invoice_by_type).
+	InvoiceID *int
+	CreatedAt time.Time
+	DecidedAt *time.Time
 }
 
 var (

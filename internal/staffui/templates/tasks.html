@@ -6,16 +6,16 @@
 {{if $d.ShowApprovals}}
 <div class="card">
   <h3>Pending approvals</h3>
-  <p class="muted">Wallet credits, refunds and terminations wait here until a different staff member than the requester decides them.</p>
+  <p class="muted">Wallet credits, refunds, terminations and credit notes wait here until a different staff member than the requester decides them.</p>
   <table>
     <thead><tr><th>ID</th><th>Action</th><th>Subscriber</th><th class="right">Amount</th><th>Reason</th><th>Requested by</th><th>Filed</th><th class="right">Decide</th></tr></thead>
     <tbody>
     {{range $d.Approvals}}
       <tr>
         <td class="num">{{.ID}}</td>
-        <td>{{.ActionType}}</td>
+        <td>{{humanize (printf "%s" .ActionType)}}{{if .InvoiceID}}<br><a class="small" href="/staff/invoices/{{deref .InvoiceID}}/pdf" target="_blank" rel="noopener">INV-{{printf "%06d" (deref .InvoiceID)}}</a>{{end}}</td>
         <td><a href="/staff/subscribers/{{.SubscriberID}}">#{{.SubscriberID}}</a></td>
-        <td class="right num">{{if .Amount}}&#8377;{{end}}{{optMoney .Amount}}</td>
+        <td class="right num">{{if .Amount}}&#8377;{{end}}{{optMoney .Amount}}{{if .InvoiceID}}<br><span class="muted small">taxable value, plus GST</span>{{end}}</td>
         <td>{{.Reason}}</td>
         <td>{{.RequestedBy}}</td>
         <td>{{datetime .CreatedAt}}</td>

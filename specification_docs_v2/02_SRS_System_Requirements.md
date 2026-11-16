@@ -252,7 +252,7 @@ the same data, and a hidden control is never the only protection.
 
 | FR ID | Requirement | CRD Ref | Module |
 |---|---|---|---|
-| FR-BIL-012 | Staff with billing reach can issue a credit note against an invoice from the API and console, bounded by the existing over-credit trigger (migration 049), audit-logged, and included in GSTR-1 Table 9B as today | CRD-EXP-013 | billing |
+| FR-BIL-012 | ✅ Billing staff can request a credit note against an invoice from the API (POST /invoices/{id}/credit-notes) and the console; it is issued only when a different staff member approves it (approval kind credit_note, migration 053). On approval, one transaction writes the GST document in the invoice's own tax heads and rates (crediting what remains takes the remaining heads exactly, so credits sum to the invoice to the paisa), returns the total to the wallet, and reverses revenue and output GST in the general ledger. Bounded by the migration 049 trigger and an invoice row lock; included in GSTR-1 Table 9B as before | CRD-EXP-013 | billing `credit_note.go`, db `credit_notes.go`, api `credit_notes.go` |
 | FR-BIL-013 | Every payment records its method (online, cash, cheque, bank transfer, UPI) as a queryable field; cheque payments also record cheque number, bank and date | CRD-EXP-013 | billing |
 | FR-BIL-014 | A bounced cheque can be marked bounced, which reverses its wallet credit through the double-entry ledger and is audit-logged | CRD-EXP-013 | billing |
 | FR-BIL-015 | TDS deducted by a business customer can be recorded against a payment with certificate number and amount, reported separately from cash collected | CRD-EXP-013 | billing |

@@ -43,7 +43,7 @@
         <td class="num right">{{.Tax}}</td>
         <td class="num right">{{.Total}}</td>
         <td class="num right">{{if ne .Credited "0.00"}}{{.Credited}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
-        <td class="right"><a class="btn" href="/staff/invoices/{{.ID}}/pdf" target="_blank" rel="noopener">PDF</a></td>
+        <td class="right"><a class="btn" href="/staff/invoices/{{.ID}}/pdf" target="_blank" rel="noopener">PDF</a>{{if $d.CanCredit}} <a class="btn" href="/staff/invoices/{{.ID}}/credit-note">Credit note</a>{{end}}</td>
       </tr>
     {{else}}
       <tr><td colspan="8" class="empty">No invoices in this period{{if $d.Query}} for that search{{end}}.</td></tr>

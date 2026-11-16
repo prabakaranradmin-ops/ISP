@@ -36,6 +36,8 @@ type moneyData struct {
 	PayTotals *PaymentTotals
 	Limit     int
 	CSVQuery  string
+	// CanCredit shows the per-invoice "Credit note" link (FR-BIL-012).
+	CanCredit bool
 }
 
 // Money lists invoices or payments across every subscriber for a date range,
@@ -53,7 +55,8 @@ func (h *Handler) Money(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := r.URL.Query()
-	md := moneyData{Tab: q.Get("tab"), Query: strings.TrimSpace(q.Get("q")), Limit: moneyPageLimit}
+	md := moneyData{Tab: q.Get("tab"), Query: strings.TrimSpace(q.Get("q")), Limit: moneyPageLimit,
+		CanCredit: canRequestCreditNote(s.Role) && h.creditNotes != nil}
 	if md.Tab != "payments" {
 		md.Tab = "invoices"
 	}

@@ -23,7 +23,7 @@ var (
 const approvalColumns = `
 	id, action_type, subscriber_id, amount::text, reason, status,
 	requested_by_username, decided_by_username, decision_reason,
-	execution_error, ledger_entry_id, created_at, decided_at`
+	execution_error, ledger_entry_id, created_at, decided_at, invoice_id`
 
 // scanApproval reads one approval_requests row. action_type and status are
 // scanned through plain string locals rather than directly into the named
@@ -38,7 +38,7 @@ func scanApproval(row interface{ Scan(dest ...any) error }) (*workflow.ApprovalR
 	err := row.Scan(
 		&req.ID, &actionType, &req.SubscriberID, &amountStr, &req.Reason, &status,
 		&req.RequestedBy, &req.DecidedBy, &req.DecisionReason,
-		&executionEr, &req.LedgerEntryID, &req.CreatedAt, &req.DecidedAt,
+		&executionEr, &req.LedgerEntryID, &req.CreatedAt, &req.DecidedAt, &req.InvoiceID,
 	)
 	if err != nil {
 		return nil, err
@@ -62,8 +62,8 @@ func scanApproval(row interface{ Scan(dest ...any) error }) (*workflow.ApprovalR
 func (s *WorkflowStore) CreateApprovalRequest(ctx context.Context, req workflow.ApprovalRequest) (*workflow.ApprovalRequest, error) {
 	const q = `
 		WITH ins AS (
-			INSERT INTO approval_requests (action_type, subscriber_id, amount, reason, requested_by_username)
-			VALUES ($1, $2, $3::numeric, $4, $5)
+			INSERT INTO approval_requests (action_type, subscriber_id, amount, reason, requested_by_username, invoice_id)
+			VALUES ($1, $2, $3::numeric, $4, $5, $6)
 			RETURNING *
 		)
 		SELECT ` + approvalColumns + ` FROM ins`
@@ -75,7 +75,7 @@ func (s *WorkflowStore) CreateApprovalRequest(ctx context.Context, req workflow.
 	}
 
 	created, err := scanApproval(s.pool.QueryRow(ctx, q,
-		string(req.ActionType), req.SubscriberID, amountParam, req.Reason, req.RequestedBy))
+		string(req.ActionType), req.SubscriberID, amountParam, req.Reason, req.RequestedBy, req.InvoiceID))
 	if err != nil {
 		return nil, fmt.Errorf("db: create approval request for subscriber %d: %w", req.SubscriberID, err)
 	}

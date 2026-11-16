@@ -210,7 +210,10 @@ func run(ctx context.Context) error {
 		// (it already owns wallet_ledgers, which payment_refunds references).
 		Lifecycle: database.API(),
 		Refunds:   database.Billing(),
-		SubCache:  &subCacheInvalidator{verifiers: database.VerifierCache()},
+		// Credit notes (FR-BIL-012): issued by BillingStore on approval, in
+		// one transaction with the wallet credit and GL reversal.
+		CreditNotes: database.Billing(),
+		SubCache:    &subCacheInvalidator{verifiers: database.VerifierCache()},
 		// Task & approval workflows (FR-WFL-001..002). WorkflowStore
 		// satisfies both queriers — approvals and field tasks share a
 		// migration and a store, but nothing else.
@@ -370,6 +373,8 @@ func run(ctx context.Context) error {
 		// estimate from the console store.
 		Announcer: apiHandler,
 		Audience:  database.Console(),
+		// Credit-note requests go through the API's approval workflow.
+		CreditNotes: apiHandler,
 	})
 
 	// Captive portal (FR-HSP-001 | MDS §4.23). Unauthenticated by necessity —

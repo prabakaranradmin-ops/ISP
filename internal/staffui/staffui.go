@@ -238,6 +238,9 @@ type HandlerDeps struct {
 	// for compose/send, and the console store for the draft reach estimate.
 	Announcer AnnouncementManager
 	Audience  AudienceCounter
+	// CreditNotes files credit-note approval requests from the Invoices
+	// screen. The API handler itself.
+	CreditNotes CreditNoteRequester
 }
 
 // Handler serves the console.
@@ -281,6 +284,7 @@ type Handler struct {
 	cpe                CPEController
 	announcer          AnnouncementManager
 	audience           AudienceCounter
+	creditNotes        CreditNoteRequester
 }
 
 // NewHandler constructs the console handler.
@@ -325,6 +329,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		cpe:                deps.CPE,
 		announcer:          deps.Announcer,
 		audience:           deps.Audience,
+		creditNotes:        deps.CreditNotes,
 	}
 }
 
@@ -536,6 +541,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/tickets/{id}/status", h.authed(h.requireCSRF(h.UpdateTicketStatus)))
 	mux.Handle("GET /staff/invoices", h.authed(h.Money))
 	mux.Handle("GET /staff/invoices/{id}/pdf", h.authed(h.InvoicePDF))
+	mux.Handle("GET /staff/invoices/{id}/credit-note", h.authed(h.CreditNotePage))
+	mux.Handle("POST /staff/invoices/{id}/credit-note", h.authed(h.requireCSRF(h.CreditNoteForm)))
 	mux.Handle("GET /staff/revenue", h.authed(h.Revenue))
 	mux.Handle("GET /staff/lea", h.authed(h.LEAPage))
 	mux.Handle("POST /staff/lea", h.authed(h.requireCSRF(h.LEALookup)))

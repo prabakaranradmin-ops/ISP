@@ -82,6 +82,23 @@ func (s *BillingStore) GetTransactionByToken(ctx context.Context, token string) 
 //
 // FR: FR-BIL-003, FR-BIL-005 | DBD §6.2 wallet_ledgers
 func (s *BillingStore) RecordRecharge(ctx context.Context, p billing.RechargePosting) (*billing.Transaction, error) {
+	var tx *billing.Transaction
+	err := inTx(ctx, s.pool, func(dbTx pgx.Tx) error {
+		var err error
+		tx, err = recordPostingTx(ctx, dbTx, p)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tx, nil
+}
+
+// recordPostingTx writes both wallet legs, the new balance and the GL entry
+// inside the caller's transaction. RecordRecharge wraps it in its own; credit
+// note issuance runs it inside the same transaction that writes the GST
+// document, so the document and the money can never part company.
+func recordPostingTx(ctx context.Context, dbTx pgx.Tx, p billing.RechargePosting) (*billing.Transaction, error) {
 	const insertLeg = `
 		INSERT INTO wallet_ledgers (
 			subscriber_id, franchise_id, account, entry_type,
@@ -91,55 +108,46 @@ func (s *BillingStore) RecordRecharge(ctx context.Context, p billing.RechargePos
 
 	const updateBalance = `UPDATE subscribers SET wallet_balance = $2::numeric WHERE id = $1`
 
-	var tx *billing.Transaction
+	// The counter-leg carries no token: idx_wallet_token is unique over
+	// non-null tokens, so both legs holding it would collide with themselves.
+	if _, err := dbTx.Exec(ctx, insertLeg,
+		p.Debit.SubscriberID, p.Debit.FranchiseID, p.Debit.Account, p.Debit.EntryType,
+		p.Debit.Amount.String(), p.Debit.BalanceAfter.String(), nil, p.Debit.Description,
+		p.Debit.AdjustedBy,
+	); err != nil {
+		return nil, fmt.Errorf("db: insert debit leg: %w", err)
+	}
 
-	err := inTx(ctx, s.pool, func(dbTx pgx.Tx) error {
-		// The counter-leg carries no token: idx_wallet_token is unique over
-		// non-null tokens, so both legs holding it would collide with themselves.
-		if _, err := dbTx.Exec(ctx, insertLeg,
-			p.Debit.SubscriberID, p.Debit.FranchiseID, p.Debit.Account, p.Debit.EntryType,
-			p.Debit.Amount.String(), p.Debit.BalanceAfter.String(), nil, p.Debit.Description,
-			p.Debit.AdjustedBy,
-		); err != nil {
-			return fmt.Errorf("db: insert debit leg: %w", err)
-		}
+	var creditID int
+	if err := dbTx.QueryRow(ctx, insertLeg,
+		p.Credit.SubscriberID, p.Credit.FranchiseID, p.Credit.Account, p.Credit.EntryType,
+		p.Credit.Amount.String(), p.Credit.BalanceAfter.String(), p.Credit.TransactionToken,
+		p.Credit.Description, p.Credit.AdjustedBy,
+	).Scan(&creditID); err != nil {
+		return nil, fmt.Errorf("db: insert credit leg: %w", err)
+	}
 
-		var creditID int
-		if err := dbTx.QueryRow(ctx, insertLeg,
-			p.Credit.SubscriberID, p.Credit.FranchiseID, p.Credit.Account, p.Credit.EntryType,
-			p.Credit.Amount.String(), p.Credit.BalanceAfter.String(), p.Credit.TransactionToken,
-			p.Credit.Description, p.Credit.AdjustedBy,
-		).Scan(&creditID); err != nil {
-			return fmt.Errorf("db: insert credit leg: %w", err)
-		}
+	if _, err := dbTx.Exec(ctx, updateBalance, p.SubscriberID, p.NewBalance.String()); err != nil {
+		return nil, fmt.Errorf("db: update wallet balance: %w", err)
+	}
 
-		if _, err := dbTx.Exec(ctx, updateBalance, p.SubscriberID, p.NewBalance.String()); err != nil {
-			return fmt.Errorf("db: update wallet balance: %w", err)
-		}
-
-		if err := postWalletGLEntry(ctx, dbTx, p, creditID); err != nil {
-			return err
-		}
-
-		token := ""
-		if p.Credit.TransactionToken != nil {
-			token = *p.Credit.TransactionToken
-		}
-		tx = &billing.Transaction{
-			ID:               creditID,
-			SubscriberID:     p.Credit.SubscriberID,
-			EntryType:        p.Credit.EntryType,
-			Amount:           p.Credit.Amount,
-			BalanceAfter:     p.NewBalance,
-			TransactionToken: token,
-			Description:      p.Credit.Description,
-		}
-		return nil
-	})
-	if err != nil {
+	if err := postWalletGLEntry(ctx, dbTx, p, creditID); err != nil {
 		return nil, err
 	}
-	return tx, nil
+
+	token := ""
+	if p.Credit.TransactionToken != nil {
+		token = *p.Credit.TransactionToken
+	}
+	return &billing.Transaction{
+		ID:               creditID,
+		SubscriberID:     p.Credit.SubscriberID,
+		EntryType:        p.Credit.EntryType,
+		Amount:           p.Credit.Amount,
+		BalanceAfter:     p.NewBalance,
+		TransactionToken: token,
+		Description:      p.Credit.Description,
+	}, nil
 }
 
 // postWalletGLEntry posts the general-ledger side of a wallet posting

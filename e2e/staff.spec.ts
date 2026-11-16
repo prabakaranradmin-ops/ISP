@@ -203,6 +203,50 @@ test.describe('Dashboard and menus', () => {
   });
 });
 
+test.describe('Credit notes', () => {
+  test('billing requests a credit note, a second person approves it, and it is issued', async ({ page }) => {
+    const reason = `Line down E2E ${Date.now()}`;
+    await signIn(page, 'billing');
+    await page.goto('/staff/invoices?from=2000-01-01');
+    const invRow = page.locator('tbody tr', { hasText: 'test_user' }).first();
+    const creditedBefore = (await invRow.locator('td').nth(6).innerText()).trim();
+    await invRow.getByRole('link', { name: 'Credit note' }).click();
+    await page.fill('input[name="amount"]', '1.00');
+    await page.fill('input[name="reason"]', reason);
+    await page.getByRole('button', { name: 'Request credit note' }).click();
+    await expect(page.getByText('Nothing has been issued yet')).toBeVisible();
+    await snap(page, 'credit-note-requested');
+
+    // The requester sees it waiting but cannot approve it.
+    await page.goto('/staff/tasks');
+    const pending = page.locator('tr', { hasText: reason });
+    await expect(pending).toContainText('Credit note');
+    page.once('dialog', (d) => d.accept());
+    await pending.getByRole('button', { name: 'Approve' }).click();
+    await expect(page.locator('body')).toContainText(/cannot approve|own request|different staff/i);
+
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    await signIn(page, 'owner');
+    await page.goto('/staff/tasks');
+    page.once('dialog', (d) => d.accept());
+    await page.locator('tr', { hasText: reason }).getByRole('button', { name: 'Approve' }).click();
+    await expect(page.locator('tr', { hasText: reason })).toHaveCount(0); // no longer pending
+
+    // The invoice now shows 1.00 + 18% GST more credited.
+    await page.goto('/staff/invoices?from=2000-01-01');
+    const after = (await page.locator('tbody tr', { hasText: 'test_user' }).first().locator('td').nth(6).innerText()).trim();
+    const num = (s: string) => (s === '—' ? 0 : Number(s));
+    expect(num(after) - num(creditedBefore)).toBeCloseTo(1.18, 2);
+  });
+
+  test('a CSR is not offered credit notes', async ({ page }) => {
+    await signIn(page, 'csr');
+    await page.goto('/staff/invoices?from=2000-01-01');
+    await expect(page.getByRole('link', { name: 'Credit note' })).toHaveCount(0);
+    expect((await page.request.get('/staff/invoices/1/credit-note')).status()).toBe(403);
+  });
+});
+
 test.describe('Message logs', () => {
   test('a CSR can search the message log but not see partner webhooks', async ({ page }) => {
     await signIn(page, 'csr');

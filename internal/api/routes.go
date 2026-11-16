@@ -94,6 +94,7 @@ type Handler struct {
 	franchises      FranchiseQuerier
 	lifecycle       LifecycleQuerier
 	refunds         RefundQuerier
+	creditNotes     CreditNoteIssuer
 	subCache        SubscriberCacheInvalidator
 	approvals       ApprovalQuerier
 	fieldTasks      FieldTaskQuerier
@@ -153,6 +154,7 @@ type HandlerDeps struct {
 	SubscriberLister revenue.SubscriberLister
 	Lifecycle        LifecycleQuerier
 	Refunds          RefundQuerier
+	CreditNotes      CreditNoteIssuer
 	SubCache         SubscriberCacheInvalidator
 	Approvals        ApprovalQuerier
 	FieldTasks       FieldTaskQuerier
@@ -209,6 +211,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		subscriberLister: deps.SubscriberLister,
 		lifecycle:        deps.Lifecycle,
 		refunds:          deps.Refunds,
+		creditNotes:      deps.CreditNotes,
 		subCache:         deps.SubCache,
 		approvals:        deps.Approvals,
 		fieldTasks:       deps.FieldTasks,
@@ -536,6 +539,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 	// Invoices (API-004)
 	mux.Handle("GET /api/v1/invoices/{subscriber_id}",
 		billingOrCSR(http.HandlerFunc(h.ListInvoices)))
+	// Files a credit-note approval request (FR-BIL-012); the admin gate is
+	// who may ask, and a different admin must approve before anything is
+	// issued.
+	mux.Handle("POST /api/v1/invoices/{invoice_id}/credit-notes",
+		admin(http.HandlerFunc(h.CreateCreditNoteRequest)))
 	mux.Handle("GET /api/v1/invoices/{invoice_id}/pdf",
 		billingOrCSR(http.HandlerFunc(h.GetInvoicePDF)))
 
