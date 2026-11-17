@@ -251,6 +251,90 @@ test.describe('Payments with method', () => {
   });
 });
 
+/** A date n days from today, in the browser's own calendar, as YYYY-MM-DD. */
+function daysFromToday(n: number): string {
+  const d = new Date(Date.now() + n * 864e5);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+async function openLapsedBilling(page: Page) {
+  await page.goto('/staff/subscribers');
+  await page.getByPlaceholder('Username, ID, phone, email, CAF or IP').fill('lapsed_user');
+  await page.getByRole('button', { name: 'Search' }).click();
+  await page.locator('tbody tr', { hasText: 'lapsed_user' }).getByRole('link', { name: 'Open' }).click();
+  await page.getByRole('button', { name: 'Billing', exact: true }).click();
+}
+
+test.describe('Grace and dunning schedule', () => {
+  test('billing extends a lapsed subscriber\'s grace with a reason, then ends it', async ({ page }) => {
+    await signIn(page, 'billing');
+    await openLapsedBilling(page);
+    const card = page.locator('#grace');
+    await expect(card).toContainText('Grace extension');
+
+    await card.locator('input[name="until"]').fill(daysFromToday(4));
+    await card.locator('input[name="reason"]').fill('Promised to pay on salary day');
+    page.once('dialog', (d) => d.accept());
+    await card.getByRole('button', { name: 'Extend grace' }).click();
+    await expect(page.getByText(/^Grace extended\./)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Billing', exact: true }).click();
+    await expect(card).toContainText('Held in grace');
+    await expect(card).toContainText('Promised to pay on salary day');
+    await expect(card).toContainText('billing');
+    await snap(page, 'grace-extended');
+
+    page.once('dialog', (d) => d.accept());
+    await card.getByRole('button', { name: 'End extension' }).click();
+    await expect(page.getByText(/^Grace extension ended\./)).toBeVisible();
+    await page.getByRole('button', { name: 'Billing', exact: true }).click();
+    await expect(card.getByRole('button', { name: 'Extend grace' })).toBeVisible();
+  });
+
+  test('a subscriber who has paid is not offered grace', async ({ page }) => {
+    await signIn(page, 'billing');
+    await page.goto('/staff/subscribers/1');
+    await page.getByRole('button', { name: 'Billing', exact: true }).click();
+    await expect(page.locator('#grace')).toContainText('Not needed');
+    await expect(page.getByRole('button', { name: 'Extend grace' })).toHaveCount(0);
+  });
+
+  test('billing changes the schedule, sees it spelled out, and a schedule out of order is refused', async ({ page }) => {
+    await signIn(page, 'billing');
+    await page.goto('/staff/dunning');
+    const save = async (first: string, second: string) => {
+      await page.fill('input[name="remind_first_days"]', first);
+      await page.fill('input[name="remind_second_days"]', second);
+      page.once('dialog', (d) => d.accept());
+      await page.getByRole('button', { name: 'Save schedule' }).click();
+    };
+    try {
+      await save('10', '3');
+      await expect(page.getByText(/^Saved\./)).toBeVisible();
+      await expect(page.locator('tbody')).toContainText('10 days before expiry');
+      await expect(page.getByText(/Last changed by billing/)).toBeVisible();
+      await snap(page, 'dunning-settings');
+
+      await save('2', '5');
+      await expect(page.getByText(/reminders must count down/)).toBeVisible();
+      // The figures typed stay in the form to be corrected.
+      await expect(page.locator('input[name="remind_second_days"]')).toHaveValue('5');
+    } finally {
+      await page.goto('/staff/dunning');
+      await save('7', '3');
+      await expect(page.getByText(/^Saved\./)).toBeVisible();
+    }
+  });
+
+  test('a CSR can neither open the schedule nor extend grace', async ({ page }) => {
+    await signIn(page, 'csr');
+    const resp = await page.goto('/staff/dunning');
+    expect(resp?.status()).toBe(403);
+    await openLapsedBilling(page);
+    await expect(page.locator('#grace')).toHaveCount(0);
+  });
+});
+
 test.describe('Credit notes', () => {
   test('billing requests a credit note, a second person approves it, and it is issued', async ({ page }) => {
     const reason = `Line down E2E ${Date.now()}`;

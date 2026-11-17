@@ -74,7 +74,8 @@ const apiSubscriberColumns = `
 	s.plan_id, s.franchise_id, s.status, s.dunning_state,
 	s.wallet_balance::text, s.registered_state, s.kyc_status,
 	s.plan_expiry, s.created_at,
-	COALESCE(s.speed_override_rate_limit, ''), s.speed_override_expires_at`
+	COALESCE(s.speed_override_rate_limit, ''), s.speed_override_expires_at,
+	s.grace_until, COALESCE(s.grace_reason, ''), COALESCE(s.grace_set_by, '')`
 
 func scanAPISubscriber(row interface {
 	Scan(dest ...any) error
@@ -89,6 +90,7 @@ func scanAPISubscriber(row interface {
 		&balance, &rec.RegisteredState, &rec.KYCStatus,
 		&rec.PlanExpiry, &rec.CreatedAt,
 		&rec.SpeedOverrideRateLimit, &rec.SpeedOverrideExpiresAt,
+		&rec.GraceUntil, &rec.GraceReason, &rec.GraceSetBy,
 	)
 	if err != nil {
 		return nil, err

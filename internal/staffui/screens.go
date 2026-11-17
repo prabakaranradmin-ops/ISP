@@ -213,6 +213,10 @@ type subscriberDetailData struct {
 	// POST /wallets/recharge (FR-BIL-013).
 	ShowRecordPayment bool
 	PaymentMethods    []string
+	// ShowGrace: the same roles, when grace extensions are wired
+	// (FR-BIL-016).
+	ShowGrace         bool
+	Grace             graceView
 	ShowTickets       bool
 	ShowSpeedOverride bool
 
@@ -262,9 +266,13 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 	if paid, err := decimal.NewFromString(r.URL.Query().Get("paid")); err == nil && paid.IsPositive() {
 		d.Message = "Payment of ₹" + paid.StringFixed(2) + " recorded and credited to the wallet."
 	}
+	if m, ok := graceMessages[r.URL.Query().Get("grace")]; ok {
+		d.Message = m
+	}
 	detail := subscriberDetailData{
 		ShowBilling:       canAccess("billing", s.Role, s.LeaAccess),
 		ShowRecordPayment: canRecordPayment(s.Role) && h.payments != nil,
+		ShowGrace:         canRecordPayment(s.Role) && h.dunning != nil,
 		PaymentMethods:    billing.PaymentMethods,
 		ShowTickets:       canAccess("tickets", s.Role, s.LeaAccess),
 		ShowSpeedOverride: s.Role == "isp_owner",
@@ -297,6 +305,7 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		detail.Subscriber = sub
+		detail.Grace = newGraceView(sub.GraceUntil, sub.GraceReason, sub.GraceSetBy, sub.PlanExpiry, sub.Status, time.Now())
 	}
 
 	// Each panel degrades on its own. A failing diagnostic must not take the

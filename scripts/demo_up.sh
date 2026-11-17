@@ -252,9 +252,10 @@ cat <<EOF
   RADIUS        localhost:1812/udp (secret: ${RADIUS_SECRET})
   PostgreSQL    localhost:5432 (postgres / ${DB_SECURE_PASSWORD})
 
-  Seeded subscribers (password for both: testpassword):
+  Seeded subscribers (password for all: testpassword):
     test_user        — active,          wallet ₹799.00, plan TN_Super_100M
     suspended_user    — hard_suspended,  wallet ₹0.00,   plan TN_Basic_50M
+    lapsed_user       — hard_suspended,  expired 20 days ago (try a grace extension)
 
   ── Portal (subscriber-facing) ──────────────────────────────────────────────
   curl -sk -X POST https://localhost/portal/login \\

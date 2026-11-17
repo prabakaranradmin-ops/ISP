@@ -345,17 +345,20 @@ func (s *BillingStore) GetSubscriberDunningState(ctx context.Context, subscriber
 //
 // Terminated subscribers are excluded: they have left, and re-suspending them
 // every hour would be noise.
-func (s *BillingStore) ListDunningCandidates(ctx context.Context) ([]billing.DunningCandidate, error) {
+func (s *BillingStore) ListDunningCandidates(ctx context.Context, windowDays int) ([]billing.DunningCandidate, error) {
+	// windowDays is the configured first reminder's lead time (FR-BIL-017);
+	// a fixed 7 here would silently drop reminders set further out.
 	const q = `
-		SELECT id, username, COALESCE(mobile_number, ''), dunning_state, plan_expiry
+		SELECT id, username, COALESCE(mobile_number, ''), dunning_state, plan_expiry, grace_until
 		  FROM subscribers
 		 WHERE plan_expiry IS NOT NULL
 		   AND status <> 'terminated'
-		   AND (plan_expiry <= NOW() + INTERVAL '7 days'
-		        OR dunning_state <> 'active')
+		   AND (plan_expiry <= NOW() + ($1 * INTERVAL '1 day')
+		        OR dunning_state <> 'active'
+		        OR grace_until IS NOT NULL)
 		 ORDER BY plan_expiry DESC`
 
-	rows, err := s.pool.Query(ctx, q)
+	rows, err := s.pool.Query(ctx, q, windowDays)
 	if err != nil {
 		return nil, fmt.Errorf("db: list dunning candidates: %w", err)
 	}
@@ -367,7 +370,7 @@ func (s *BillingStore) ListDunningCandidates(ctx context.Context) ([]billing.Dun
 			c     billing.DunningCandidate
 			state string
 		)
-		if err := rows.Scan(&c.SubscriberID, &c.Username, &c.MobileNumber, &state, &c.PlanExpiry); err != nil {
+		if err := rows.Scan(&c.SubscriberID, &c.Username, &c.MobileNumber, &state, &c.PlanExpiry, &c.GraceUntil); err != nil {
 			return nil, fmt.Errorf("db: scan dunning candidate: %w", err)
 		}
 		c.State = billing.DunningState(state)

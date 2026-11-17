@@ -55,16 +55,13 @@ const (
 	// transition a day-granular rule had not already found.
 	dunningScanInterval = time.Hour
 
-	// GracePeriodDays is how long service continues after expiry before soft
-	// suspension, and SoftSuspendDays how long soft suspension lasts before it
-	// hardens. Both are measured from plan_expiry rather than from when the
-	// previous transition happened, which is what lets the whole ladder be
-	// derived from one timestamp with no extra column to keep in step.
+	// GracePeriodDays and SoftSuspendDays are the shipped defaults, kept for
+	// callers that describe the ladder (the demo seeder). The live values are
+	// DunningPolicy, read from billing_settings on every scan (FR-BIL-017).
+	// Every stage is measured from plan_expiry rather than from the previous
+	// transition, which is what lets the ladder be derived from one timestamp.
 	GracePeriodDays = 3
 	SoftSuspendDays = 3
-	remind7dDays    = 7
-	remind3dDays    = 3
-	remind1dDays    = 1
 )
 
 var (
@@ -85,12 +82,20 @@ type DunningCandidate struct {
 	MobileNumber string
 	State        DunningState
 	PlanExpiry   time.Time
+	// GraceUntil is a per-subscriber grace extension, nil when none is set
+	// (FR-BIL-016).
+	GraceUntil *time.Time
 }
 
 // DunningScanQuerier is the database surface the scanner needs.
 type DunningScanQuerier interface {
 	DunningQuerier
-	ListDunningCandidates(ctx context.Context) ([]DunningCandidate, error)
+	// ListDunningCandidates returns subscribers expiring within windowDays
+	// (the first reminder's lead time) or already mid-dunning, or holding a
+	// grace extension.
+	ListDunningCandidates(ctx context.Context, windowDays int) ([]DunningCandidate, error)
+	// DunningPolicy reads the configured ladder timing (FR-BIL-017).
+	DunningPolicy(ctx context.Context) (DunningPolicy, error)
 }
 
 // DunningNoticePayload is the task payload for a dunning notification.
@@ -113,32 +118,7 @@ type DunningNoticePayload struct {
 // event that should undo any amount of dunning, and expressing that here keeps
 // the restore path from needing its own copy of the ladder.
 func NextDunningState(current DunningState, planExpiry time.Time, now time.Time) DunningState {
-	// A future expiry means they have paid. Restore, or stay put if already active.
-	if planExpiry.After(now) {
-		switch current {
-		case DunningGracePeriod, DunningSoftSuspended, DunningHardSuspended:
-			return DunningActive
-		}
-	}
-
-	daysUntilExpiry := planExpiry.Sub(now).Hours() / 24
-
-	switch {
-	case daysUntilExpiry <= -(GracePeriodDays + SoftSuspendDays):
-		return DunningHardSuspended
-	case daysUntilExpiry <= -GracePeriodDays:
-		return DunningSoftSuspended
-	case daysUntilExpiry <= 0:
-		return DunningGracePeriod
-	case daysUntilExpiry <= remind1dDays:
-		return DunningRemind1d
-	case daysUntilExpiry <= remind3dDays:
-		return DunningRemind3d
-	case daysUntilExpiry <= remind7dDays:
-		return DunningRemind7d
-	default:
-		return DunningActive
-	}
+	return NextDunningStateWith(DefaultDunningPolicy(), current, planExpiry, now, nil)
 }
 
 // TemplateForDunningState returns the notification template for a stage, and
@@ -204,14 +184,23 @@ func (s *DunningScanner) Scan(ctx context.Context) error {
 	// suspended for non-payment from ones a person acted on.
 	ctx = middleware.WithSubject(ctx, "system:dunning-scanner")
 
-	candidates, err := s.db.ListDunningCandidates(ctx)
+	// The policy is read each pass, so a change on the settings screen
+	// applies from the next hourly run without a restart. If it cannot be
+	// read, the shipped default is used rather than skipping the pass.
+	policy, err := s.db.DunningPolicy(ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("billing: dunning policy unreadable; using the default ladder")
+		policy = DefaultDunningPolicy()
+	}
+
+	candidates, err := s.db.ListDunningCandidates(ctx, policy.RemindFirstDays)
 	if err != nil {
 		return fmt.Errorf("dunning scan: list candidates: %w", err)
 	}
 
 	now := s.now()
 	for _, c := range candidates {
-		target := NextDunningState(c.State, c.PlanExpiry, now)
+		target := NextDunningStateWith(policy, c.State, c.PlanExpiry, now, c.GraceUntil)
 		if target == c.State {
 			continue
 		}
@@ -300,6 +289,10 @@ func stepToward(current, target DunningState) (DunningState, bool) {
 	// Restoring is one hop from wherever they are.
 	if target == DunningActive {
 		return DunningActive, true
+	}
+	// So is a grace extension lifting a suspension (FR-BIL-016).
+	if target == DunningGracePeriod && (current == DunningSoftSuspended || current == DunningHardSuspended) {
+		return DunningGracePeriod, true
 	}
 	ladder := []DunningState{
 		DunningActive, DunningRemind7d, DunningRemind3d, DunningRemind1d,

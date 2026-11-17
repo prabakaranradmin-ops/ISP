@@ -46,6 +46,11 @@ var validTransitions = []DunningTransition{
 	{DunningRemind7d, DunningActive, "payment received"},
 	{DunningRemind3d, DunningActive, "payment received"},
 	{DunningRemind1d, DunningActive, "payment received"},
+	// FR-BIL-016: a grace extension granted to a suspended subscriber puts
+	// their service back on until it expires. It is a restore edge in the
+	// same sense payment is, so it skips the stages in between.
+	{DunningSoftSuspended, DunningGracePeriod, "grace extended by staff"},
+	{DunningHardSuspended, DunningGracePeriod, "grace extended by staff"},
 }
 
 // DunningQuerier is the DB interface needed by the dunning state machine.

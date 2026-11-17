@@ -243,6 +243,9 @@ type HandlerDeps struct {
 	CreditNotes CreditNoteRequester
 	// Payments records counter payments and cheque bounces. The API handler.
 	Payments PaymentManager
+	// Dunning sets grace extensions and the dunning schedule
+	// (FR-BIL-016/017). The API handler.
+	Dunning DunningManager
 }
 
 // Handler serves the console.
@@ -288,6 +291,7 @@ type Handler struct {
 	audience           AudienceCounter
 	creditNotes        CreditNoteRequester
 	payments           PaymentManager
+	dunning            DunningManager
 }
 
 // NewHandler constructs the console handler.
@@ -334,6 +338,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		audience:           deps.Audience,
 		creditNotes:        deps.CreditNotes,
 		payments:           deps.Payments,
+		dunning:            deps.Dunning,
 	}
 }
 
@@ -440,6 +445,10 @@ var sections = []Section{
 	// internal/staffui/ledger.go's own doc comment on what that excludes.
 	{"ledger", "General Ledger", "/staff/ledger",
 		[]string{"isp_owner", "billing_admin"}, false},
+	// The dunning schedule changes when every subscriber is reminded and
+	// suspended: a billing decision, same reach as the ledger.
+	{"dunning", "Dunning Settings", "/staff/dunning",
+		[]string{"isp_owner", "billing_admin"}, false},
 	// Technicians handle hardware day to day (issue/return); NOC engineers
 	// track it against the network estate; purchases and device-type
 	// changes are procurement, gated inside the screen itself to
@@ -522,6 +531,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/subscribers/{id}/password/reveal", h.authed(h.requireCSRF(h.RevealPassword)))
 	mux.Handle("POST /staff/subscribers/{id}/password", h.authed(h.requireCSRF(h.ResetPassword)))
 	mux.Handle("POST /staff/subscribers/{id}/payment", h.authed(h.requireCSRF(h.RecordPaymentForm)))
+	mux.Handle("POST /staff/subscribers/{id}/grace", h.authed(h.requireCSRF(h.ExtendGraceForm)))
+	mux.Handle("POST /staff/subscribers/{id}/grace/end", h.authed(h.requireCSRF(h.EndGraceForm)))
+	mux.Handle("GET /staff/dunning", h.authed(h.DunningSettings))
+	mux.Handle("POST /staff/dunning", h.authed(h.requireCSRF(h.SaveDunningForm)))
 	mux.Handle("POST /staff/subscribers/{id}/plan-change", h.authed(h.requireCSRF(h.ChangeSubscriberPlan)))
 	mux.Handle("GET /staff/leads", h.authed(h.Leads))
 	mux.Handle("POST /staff/leads/new", h.authed(h.requireCSRF(h.CreateLeadForm)))

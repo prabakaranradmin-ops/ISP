@@ -88,6 +88,33 @@
       </form>
     </div>
     {{end}}
+    {{if and $d.ShowGrace $d.Subscriber}}
+    <div class="card" id="grace">
+      <h3>Grace extension</h3>
+      {{with $d.Grace}}
+      {{if .Active}}
+        <p>Held in grace &mdash; service on &mdash; until <strong>{{datetime .Until}}</strong>.</p>
+        <dl><dt>Reason</dt><dd>{{.Reason}}</dd><dt>Set by</dt><dd>{{.SetBy}}</dd></dl>
+        <form method="post" action="/staff/subscribers/{{$d.Subscriber.ID}}/grace/end" data-confirm="End this grace extension? The ordinary schedule applies again, which may suspend them within the hour.">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <button type="submit">End extension</button>
+        </form>
+      {{else if .PastExpiry}}
+        <p class="muted small">Keeps this subscriber connected past the usual suspension, up to 30 days, while they arrange payment. Lifts a suspension already in place.</p>
+        <form method="post" action="/staff/subscribers/{{$d.Subscriber.ID}}/grace" data-confirm="Keep this subscriber connected without payment until the date chosen?">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <div class="formgrid">
+            <label>Until (end of day) <input name="until" type="date" required min="{{.MinDate}}" max="{{.MaxDate}}"></label>
+            <label>Reason <input name="reason" required placeholder="Promised to pay on salary day"></label>
+          </div>
+          <button class="primary" type="submit">Extend grace</button>
+        </form>
+      {{else}}
+        <p class="muted">Not needed: the plan {{if .Expiry}}runs until {{datetime .Expiry}}{{else}}has not started{{end}}. Grace can be extended once it has expired.</p>
+      {{end}}
+      {{end}}
+    </div>
+    {{end}}
   </section>
   {{end}}
 

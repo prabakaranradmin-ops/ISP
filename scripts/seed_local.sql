@@ -42,14 +42,23 @@ VALUES
     ('CAF-0001', 'test_user',
      '$2a$12$gn685/ch8wxn9XO33DI4lei.c/vdxKTXTg1VV0Cty2qHQLnnfnHbq',
      '+919876543210',
-     (SELECT id FROM plans WHERE name = 'TN_Super_100M'),
+     (SELECT min(id) FROM plans WHERE name = 'TN_Super_100M'),
      'active', 799.00, 'TN', 'active', NOW() + INTERVAL '30 days'),
 
     ('CAF-0002', 'suspended_user',
      '$2a$12$gn685/ch8wxn9XO33DI4lei.c/vdxKTXTg1VV0Cty2qHQLnnfnHbq',
      '+919876543211',
-     (SELECT id FROM plans WHERE name = 'TN_Basic_50M'),
-     'hard_suspended', 0.00, 'TN', 'active', NULL)
+     (SELECT min(id) FROM plans WHERE name = 'TN_Basic_50M'),
+     'hard_suspended', 0.00, 'TN', 'active', NULL),
+
+    -- lapsed_user went through the whole dunning ladder: plan expired twenty
+    -- days ago, now disconnected. The account a grace extension (FR-BIL-016)
+    -- is tried on, so suspended_user stays cut off for everything else.
+    ('CAF-0003', 'lapsed_user',
+     '$2a$12$gn685/ch8wxn9XO33DI4lei.c/vdxKTXTg1VV0Cty2qHQLnnfnHbq',
+     '+919876543212',
+     (SELECT min(id) FROM plans WHERE name = 'TN_Basic_50M'),
+     'hard_suspended', 0.00, 'TN', 'hard_suspended', NOW() - INTERVAL '20 days')
 ON CONFLICT (username) DO NOTHING;
 
 -- ── Wallet Ledger (initial credit for test_user) ─────────────────────────────

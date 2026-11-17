@@ -124,13 +124,27 @@ type scanDB struct {
 	states     map[int]billing.DunningState
 	setCalls   []dunningSetCall
 	listErr    error
+	policy     *billing.DunningPolicy
+	policyErr  error
+	gotWindow  int
 }
 
-func (d *scanDB) ListDunningCandidates(context.Context) ([]billing.DunningCandidate, error) {
+func (d *scanDB) ListDunningCandidates(_ context.Context, windowDays int) ([]billing.DunningCandidate, error) {
+	d.gotWindow = windowDays
 	if d.listErr != nil {
 		return nil, d.listErr
 	}
 	return d.candidates, nil
+}
+
+func (d *scanDB) DunningPolicy(context.Context) (billing.DunningPolicy, error) {
+	if d.policyErr != nil {
+		return billing.DunningPolicy{}, d.policyErr
+	}
+	if d.policy != nil {
+		return *d.policy, nil
+	}
+	return billing.DefaultDunningPolicy(), nil
 }
 
 func (d *scanDB) GetSubscriberDunningState(_ context.Context, id int) (billing.DunningState, time.Time, error) {

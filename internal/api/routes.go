@@ -47,6 +47,11 @@ type SubscriberRecord struct {
 	// SessionController.SetSpeedOverride. Empty/nil means none is active.
 	SpeedOverrideRateLimit string     `json:"speed_override_rate_limit,omitempty"`
 	SpeedOverrideExpiresAt *time.Time `json:"speed_override_expires_at,omitempty"`
+	// GraceUntil, GraceReason and GraceSetBy describe a per-subscriber grace
+	// extension (FR-BIL-016); all empty when none is set.
+	GraceUntil  *time.Time `json:"grace_until,omitempty"`
+	GraceReason string     `json:"grace_reason,omitempty"`
+	GraceSetBy  string     `json:"grace_set_by,omitempty"`
 }
 
 // CreateSubscriberRequest is the POST /api/v1/subscribers body.
@@ -96,6 +101,7 @@ type Handler struct {
 	refunds         RefundQuerier
 	creditNotes     CreditNoteIssuer
 	cheques         ChequeBouncer
+	dunning         DunningSettingsStore
 	subCache        SubscriberCacheInvalidator
 	approvals       ApprovalQuerier
 	fieldTasks      FieldTaskQuerier
@@ -157,6 +163,7 @@ type HandlerDeps struct {
 	Refunds          RefundQuerier
 	CreditNotes      CreditNoteIssuer
 	Cheques          ChequeBouncer
+	Dunning          DunningSettingsStore
 	SubCache         SubscriberCacheInvalidator
 	Approvals        ApprovalQuerier
 	FieldTasks       FieldTaskQuerier
@@ -215,6 +222,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		refunds:          deps.Refunds,
 		creditNotes:      deps.CreditNotes,
 		cheques:          deps.Cheques,
+		dunning:          deps.Dunning,
 		subCache:         deps.SubCache,
 		approvals:        deps.Approvals,
 		fieldTasks:       deps.FieldTasks,
@@ -522,6 +530,16 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 	// Wallets (API-003)
 	// A bounced cheque reverses its wallet credit (FR-BIL-014). Same tier as
 	// recording the payment in the first place.
+	// Per-subscriber grace and dunning timing (FR-BIL-016/017): billing
+	// decisions, the same admin tier as recording a payment.
+	mux.Handle("POST /api/v1/subscribers/{id}/grace",
+		admin(http.HandlerFunc(h.ExtendGraceHTTP)))
+	mux.Handle("DELETE /api/v1/subscribers/{id}/grace",
+		admin(http.HandlerFunc(h.EndGraceHTTP)))
+	mux.Handle("GET /api/v1/billing/dunning-policy",
+		admin(http.HandlerFunc(h.GetDunningPolicyHTTP)))
+	mux.Handle("PUT /api/v1/billing/dunning-policy",
+		admin(http.HandlerFunc(h.PutDunningPolicyHTTP)))
 	mux.Handle("POST /api/v1/payments/{id}/bounce",
 		admin(http.HandlerFunc(h.BounceCheque)))
 	mux.Handle("POST /api/v1/wallets/recharge",

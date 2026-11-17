@@ -1,0 +1,44 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Dunning settings</h1>
+<p class="muted">When reminders go out before a plan expires, and how long a subscriber who has not paid keeps service afterwards. These apply to everyone; to give one subscriber more time, extend their grace from their Billing tab instead.</p>
+
+<div class="grid3">
+  <div class="card">
+    <h3>Schedule</h3>
+    <form method="post" action="/staff/dunning" data-confirm="Change the dunning schedule for every subscriber?">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <fieldset class="plain" {{if not $d.CanEdit}}disabled{{end}}>
+        <div class="formgrid">
+          <label>First reminder (days before expiry)
+            <input name="remind_first_days" type="number" min="0" max="30" required value="{{$d.Policy.RemindFirstDays}}"></label>
+          <label>Second reminder (days before expiry)
+            <input name="remind_second_days" type="number" min="0" max="30" required value="{{$d.Policy.RemindSecondDays}}"></label>
+          <label>Last reminder (days before expiry)
+            <input name="remind_last_days" type="number" min="0" max="30" required value="{{$d.Policy.RemindLastDays}}"></label>
+          <label>Grace (days after expiry, service on)
+            <input name="grace_days" type="number" min="0" max="30" required value="{{$d.Policy.GraceDays}}"></label>
+          <label>Soft suspension (days, before disconnection)
+            <input name="soft_suspend_days" type="number" min="0" max="60" required value="{{$d.Policy.SoftSuspendDays}}"></label>
+        </div>
+        {{if $d.CanEdit}}<button class="primary" type="submit">Save schedule</button>{{end}}
+      </fieldset>
+    </form>
+    {{if $d.Policy.UpdatedBy}}<p class="muted small">Last changed by {{$d.Policy.UpdatedBy}} on {{datetime $d.Policy.UpdatedAt}}.</p>
+    {{else}}<p class="muted small">The schedule this system shipped with; not changed yet.</p>{{end}}
+  </div>
+
+  <div class="card">
+    <h3>What a subscriber who does not pay sees</h3>
+    <table>
+      <thead><tr><th>When</th><th>Stage</th><th>What happens</th></tr></thead>
+      <tbody>
+      {{range $d.Ladder}}
+        <tr><td>{{.When}}</td><td><span class="pill {{badge .State}}">{{.Label}}</span></td><td>{{.What}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    <p class="muted small">Paying at any stage restores service on the next pass. Changes apply within the hour.</p>
+  </div>
+</div>
+{{end}}
