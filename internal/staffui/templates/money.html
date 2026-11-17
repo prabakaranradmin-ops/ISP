@@ -65,7 +65,7 @@
 <div class="card table-card">
   <table>
     <thead><tr>
-      <th>Date</th><th>Subscriber</th><th class="right">Amount</th><th>Paid via</th><th>Reference</th><th class="right">Balance after</th>{{if .CanBounce}}<th></th>{{end}}
+      <th>Date</th><th>Subscriber</th><th class="right">Amount</th><th>Paid via</th><th>Reference</th><th class="right">Balance after</th><th></th>
     </tr></thead>
     <tbody>
     {{range .Payments}}
@@ -79,15 +79,16 @@
           {{if .TDSCertificate}}<br><span class="muted small">Certificate {{.TDSCertificate}}</span>{{end}}</td>
         <td class="num">{{if .Reference}}{{.Reference}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
         <td class="num right">{{.BalanceAfter}}</td>
-        {{if $d.CanBounce}}<td class="right">{{if and (eq .Method "cheque") (eq .Status "cleared")}}
+        <td class="right"><a class="btn" href="/staff/invoices/payments/{{.ID}}/receipt" target="_blank" rel="noopener">Receipt</a>
+        {{if $d.CanBounce}}{{if and (eq .Method "cheque") (eq .Status "cleared")}}
           <form method="post" action="/staff/invoices/payments/{{.ID}}/bounce" class="inline" data-confirm="Mark cheque {{.ChequeNumber}} bounced? Its value is taken back out of the wallet.">
             <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
             <input name="reason" required placeholder="Bank's reason" aria-label="Bounce reason">
             <button type="submit" class="btn-danger">Bounced</button>
-          </form>{{end}}</td>{{end}}
+          </form>{{end}}{{end}}</td>
       </tr>
     {{else}}
-      <tr><td colspan="{{if $d.CanBounce}}7{{else}}6{{end}}" class="empty">No payments in this period{{if $d.Query}} for that search{{end}}.</td></tr>
+      <tr><td colspan="7" class="empty">No payments in this period{{if $d.Query}} for that search{{end}}.</td></tr>
     {{end}}
     </tbody>
   </table>

@@ -255,6 +255,8 @@ type HandlerDeps struct {
 	// BillingRuns reads the recurring-billing run history (FR-BIL-020). The
 	// API handler.
 	BillingRuns BillingRunReader
+	// Receipts prints payment receipts (FR-BIL-021). The API handler.
+	Receipts ReceiptRenderer
 }
 
 // Handler serves the console.
@@ -304,6 +306,7 @@ type Handler struct {
 	proformas          ProformaManager
 	diagnostics        DiagnosticsRunner
 	billingRuns        BillingRunReader
+	receipts           ReceiptRenderer
 }
 
 // NewHandler constructs the console handler.
@@ -354,6 +357,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		proformas:          deps.Proformas,
 		diagnostics:        deps.Diagnostics,
 		billingRuns:        deps.BillingRuns,
+		receipts:           deps.Receipts,
 	}
 }
 
@@ -591,6 +595,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/invoices/proformas/{id}/cancel", h.authed(h.requireCSRF(h.CancelProformaForm)))
 	mux.Handle("GET /staff/invoices/{id}/pdf", h.authed(h.InvoicePDF))
 	mux.Handle("GET /staff/invoices/{id}/credit-note", h.authed(h.CreditNotePage))
+	mux.Handle("GET /staff/invoices/payments/{id}/receipt", h.authed(h.ReceiptPDF))
 	mux.Handle("POST /staff/invoices/payments/{id}/bounce", h.authed(h.requireCSRF(h.BounceChequeForm)))
 	mux.Handle("POST /staff/invoices/{id}/credit-note", h.authed(h.requireCSRF(h.CreditNoteForm)))
 	mux.Handle("GET /staff/revenue", h.authed(h.Revenue))

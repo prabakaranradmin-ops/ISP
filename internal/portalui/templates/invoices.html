@@ -20,5 +20,27 @@
   {{else}}
   <div class="empty-state">No invoices yet.</div>
   {{end}}
+
+  <h3>Payments</h3>
+  {{if .Payments}}
+  <table>
+    <thead>
+      <tr><th>Receipt</th><th>Date</th><th>Amount</th><th>Paid by</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range .Payments}}
+      <tr>
+        <td>RCPT-{{printf "%06d" .PaymentID}}</td>
+        <td>{{datetime .ReceivedAt}}</td>
+        <td>₹{{.Amount.StringFixed 2}}{{if .Bounced}} <span class="badge badge-failed">cheque returned</span>{{end}}</td>
+        <td>{{methodLabel .Method}}</td>
+        <td><a class="btn btn-secondary" href="/ui/payments/{{.PaymentID}}/receipt" target="_blank" rel="noopener">Download receipt</a></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <div class="empty-state">No payments yet.</div>
+  {{end}}
 </div>
 {{end}}

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 )
@@ -32,6 +33,7 @@ var funcMap = template.FuncMap{
 	"datetime":    formatDateTime,
 	"statusBadge": statusBadgeClass,
 	"pctWidth":    pctWidth,
+	"methodLabel": billing.MethodLabel,
 }
 
 // pageNames lists every full page template (layout + content). Extended as

@@ -142,6 +142,31 @@ test.describe('Invoices', () => {
   });
 });
 
+test.describe('Payment receipts', () => {
+  test('payments are listed with a receipt that downloads as a real PDF', async ({ page }) => {
+    await signIn(page);
+    await page.goto('/ui/invoices');
+    // seed_local.sql credits test_user 799.00 at setup.
+    await expect(page.getByText(/RCPT-\d{6}/).first()).toBeVisible();
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByRole('link', { name: /Download receipt/i }).first().click(),
+    ]);
+    const stream = await download.createReadStream();
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    const body = Buffer.concat(chunks);
+    expect(body.subarray(0, 5).toString()).toBe('%PDF-');
+    expect(body.length).toBeGreaterThan(1000);
+  });
+
+  test("a guessed payment id that is not theirs is refused", async ({ page }) => {
+    await signIn(page);
+    const res = await page.request.get('/ui/payments/99999/receipt');
+    expect([403, 404]).toContain(res.status());
+  });
+});
+
 test.describe('Support tickets', () => {
   test('a filed ticket appears in the list', async ({ page }) => {
     await signIn(page);

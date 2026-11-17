@@ -99,7 +99,12 @@ func (c *InvoicePDFClient) GeneratePDF(ctx context.Context, data InvoiceData) ([
 	if err != nil {
 		return nil, fmt.Errorf("billing: render invoice HTML: %w", err)
 	}
+	return c.printHTML(ctx, html)
+}
 
+// printHTML prints one HTML document to PDF. Shared by invoices and
+// receipts (FR-BIL-021), which differ only in their HTML.
+func (c *InvoicePDFClient) printHTML(ctx context.Context, html string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, invoicePDFTimeout)
 	defer cancel()
 

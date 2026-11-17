@@ -105,6 +105,9 @@ type Handler struct {
 	proformas       ProformaStore
 	diagnostics     DiagnosticsStore
 	billingRuns     BillingRunStore
+	receipts        ReceiptStore
+	receiptPDF      ReceiptPDFGenerator
+	gstSupplier     billing.Supplier
 	gstHomeState    string
 	subCache        SubscriberCacheInvalidator
 	approvals       ApprovalQuerier
@@ -174,6 +177,11 @@ type HandlerDeps struct {
 	Diagnostics DiagnosticsStore
 	// BillingRuns reads the recurring-billing run history (FR-BIL-020).
 	BillingRuns BillingRunStore
+	// Receipts and ReceiptPDF produce payment receipts (FR-BIL-021);
+	// GSTSupplier names the issuer on them.
+	Receipts    ReceiptStore
+	ReceiptPDF  ReceiptPDFGenerator
+	GSTSupplier billing.Supplier
 	// GSTHomeState is the supplier's own state, which decides CGST/SGST
 	// against IGST. Empty means billing.DefaultHomeState.
 	GSTHomeState    string
@@ -239,6 +247,9 @@ func NewHandler(deps HandlerDeps) *Handler {
 		proformas:        deps.Proformas,
 		diagnostics:      deps.Diagnostics,
 		billingRuns:      deps.BillingRuns,
+		receipts:         deps.Receipts,
+		receiptPDF:       deps.ReceiptPDF,
+		gstSupplier:      deps.GSTSupplier,
 		gstHomeState:     deps.GSTHomeState,
 		subCache:         deps.SubCache,
 		approvals:        deps.Approvals,
@@ -597,6 +608,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		admin(http.HandlerFunc(h.CreateCreditNoteRequest)))
 	mux.Handle("GET /api/v1/invoices/{invoice_id}/pdf",
 		billingOrCSR(http.HandlerFunc(h.GetInvoicePDF)))
+	// Payment receipts (FR-BIL-021): the same reach as an invoice PDF.
+	mux.Handle("GET /api/v1/payments/{id}/receipt",
+		billingOrCSR(http.HandlerFunc(h.GetReceiptPDFHTTP)))
 
 	// Proforma invoices (FR-BIL-018). Reading has the same reach as an
 	// invoice; issuing, converting (which charges the wallet) and

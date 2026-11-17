@@ -456,6 +456,22 @@ test.describe('Billing diagnostics', () => {
   });
 });
 
+test.describe('Payment receipts', () => {
+  test('the front desk opens a payment receipt as a real PDF', async ({ page }) => {
+    await signIn(page, 'csr');
+    await page.goto('/staff/invoices?tab=payments&from=2000-01-01');
+    const row = page.locator('tbody tr', { hasText: 'test_user' }).filter({ hasText: '799.00' }).first();
+    const href = await row.getByRole('link', { name: 'Receipt' }).getAttribute('href');
+    expect(href).toMatch(/^\/staff\/invoices\/payments\/\d+\/receipt$/);
+    const res = await page.request.get(href!);
+    expect(res.status()).toBe(200);
+    expect(res.headers()['content-type']).toContain('application/pdf');
+    const pdf = await res.body();
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+    fs.writeFileSync(path.join(SHOTS, 'receipt.pdf'), pdf); // for the report
+  });
+});
+
 test.describe('Billing runs', () => {
   // Runs are written by the auto-renewal scanner in radiusd, every 15
   // minutes. A fresh stack may have recorded only passes that found nobody,

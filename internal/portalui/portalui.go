@@ -14,6 +14,7 @@ import (
 	"net/http"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
+	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
 )
@@ -32,10 +33,15 @@ type Deps struct {
 	SessionHistory portal.PortalSessionHistoryQuerier
 	Invoices       api.InvoiceQuerier
 	PDF            api.PDFGenerator
-	Razorpay       portal.RazorpayOrderCreator
-	Tickets        portal.PortalTicketQuerier
-	Notifications  portal.PortalNotificationQuerier
-	JWTSecret      string
+	// Payments, ReceiptPDF and Supplier give subscribers their own payment
+	// receipts (FR-BIL-021).
+	Payments      PaymentLister
+	ReceiptPDF    api.ReceiptPDFGenerator
+	Supplier      billing.Supplier
+	Razorpay      portal.RazorpayOrderCreator
+	Tickets       portal.PortalTicketQuerier
+	Notifications portal.PortalNotificationQuerier
+	JWTSecret     string
 }
 
 // Handler is the portal UI's HTTP handler.
@@ -45,6 +51,9 @@ type Handler struct {
 	sessionHistory portal.PortalSessionHistoryQuerier
 	invoices       api.InvoiceQuerier
 	pdfGen         api.PDFGenerator
+	payments       PaymentLister
+	receiptPDF     api.ReceiptPDFGenerator
+	supplier       billing.Supplier
 	razorpay       portal.RazorpayOrderCreator
 	tickets        portal.PortalTicketQuerier
 	notifications  portal.PortalNotificationQuerier
@@ -59,6 +68,9 @@ func NewHandler(deps Deps) *Handler {
 		sessionHistory: deps.SessionHistory,
 		invoices:       deps.Invoices,
 		pdfGen:         deps.PDF,
+		payments:       deps.Payments,
+		receiptPDF:     deps.ReceiptPDF,
+		supplier:       deps.Supplier,
 		razorpay:       deps.Razorpay,
 		tickets:        deps.Tickets,
 		notifications:  deps.Notifications,
@@ -84,6 +96,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /ui/usage", redirectToLoginOn401(self(h.Usage)))
 	mux.Handle("GET /ui/invoices", redirectToLoginOn401(self(h.Invoices)))
 	mux.Handle("GET /ui/invoices/{id}/pdf", self(h.InvoicePDF))
+	mux.Handle("GET /ui/payments/{id}/receipt", self(h.ReceiptPDF))
 	mux.Handle("GET /ui/renew", redirectToLoginOn401(self(h.RenewPage)))
 	mux.Handle("POST /ui/renew", self(h.requireCSRF(h.Renew)))
 	mux.Handle("GET /ui/tickets", redirectToLoginOn401(self(h.Tickets)))

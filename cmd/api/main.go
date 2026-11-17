@@ -145,11 +145,15 @@ func run(ctx context.Context) error {
 	// when no browser is found. pkg/chromium.Locate auto-detects Microsoft
 	// Edge or Google Chrome when CHROMIUM_PATH is unset — invoice PDFs no
 	// longer go to a Gotenberg container, there is nowhere left to run one.
-	var pdfGen api.PDFGenerator
+	var (
+		pdfGen     api.PDFGenerator
+		receiptPDF api.ReceiptPDFGenerator // FR-BIL-021, same browser
+	)
 	if chromiumPath, err := chromium.Locate(cfg.ChromiumPath); err != nil {
 		log.Warn().Err(err).Msg("api: no Chromium-based browser found — invoice PDF downloads will return 503")
 	} else {
-		pdfGen = billing.NewInvoicePDFClient(chromiumPath)
+		client := billing.NewInvoicePDFClient(chromiumPath)
+		pdfGen, receiptPDF = client, client
 		log.Info().Str("path", chromiumPath).Msg("api: invoice PDF renderer configured")
 	}
 
@@ -216,9 +220,15 @@ func run(ctx context.Context) error {
 		// Grace extensions and dunning timing (FR-BIL-016/017).
 		Dunning: database.Billing(),
 		// Proforma invoices (FR-BIL-018), taxed against the supplier's state.
-		Proformas:    database.Billing(),
-		Diagnostics:  database.Billing(),
-		BillingRuns:  database.Billing(),
+		Proformas:   database.Billing(),
+		Diagnostics: database.Billing(),
+		BillingRuns: database.Billing(),
+		// Payment receipts (FR-BIL-021), headed with the supplier's name.
+		Receipts:   database.Billing(),
+		ReceiptPDF: receiptPDF,
+		GSTSupplier: billing.Supplier{
+			GSTIN: cfg.GSTSupplierGSTIN, State: cfg.GSTHomeState, Name: cfg.GSTSupplierName,
+		},
 		GSTHomeState: cfg.GSTHomeState,
 		SubCache:     &subCacheInvalidator{verifiers: database.VerifierCache()},
 		// Task & approval workflows (FR-WFL-001..002). WorkflowStore
@@ -287,10 +297,16 @@ func run(ctx context.Context) error {
 		SessionHistory: database.Portal(),
 		Invoices:       database.Billing(),
 		PDF:            pdfGen,
-		Razorpay:       razorpayClient,
-		Tickets:        database.Portal(),
-		Notifications:  database.Portal(),
-		JWTSecret:      cfg.PortalJWTSecret,
+		// Subscribers' own payment receipts (FR-BIL-021).
+		Payments:   database.Billing(),
+		ReceiptPDF: receiptPDF,
+		Supplier: billing.Supplier{
+			GSTIN: cfg.GSTSupplierGSTIN, State: cfg.GSTHomeState, Name: cfg.GSTSupplierName,
+		},
+		Razorpay:      razorpayClient,
+		Tickets:       database.Portal(),
+		Notifications: database.Portal(),
+		JWTSecret:     cfg.PortalJWTSecret,
 	})
 
 	// Operations console. It signs sessions with the API JWT secret, not the
@@ -380,6 +396,7 @@ func run(ctx context.Context) error {
 		Proformas:   apiHandler,
 		Diagnostics: apiHandler,
 		BillingRuns: apiHandler,
+		Receipts:    apiHandler,
 		// Counter payments and cheque bounces through the API's own path.
 		Payments: apiHandler,
 	})
