@@ -24,7 +24,7 @@ const sessionCookieName = "portal_session"
 //
 // Deliberately NOT implemented by adding cookie support to JWTMiddleware
 // itself: that middleware is the same one internal/portal's JSON routes use
-// to gate POST /portal/renew, /portal/renew/callback, and /portal/tickets.
+// to gate POST /portal/renew, and /portal/tickets.
 // Baking cookie support into it would make a subscriber's browser cookie
 // valid credentials for those JSON routes too, silently removing the
 // Bearer-only, CSRF-immune guarantee they currently have. Keeping the

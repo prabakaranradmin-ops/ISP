@@ -36,14 +36,12 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/partner"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
 	"github.com/maaransoft/isp-bss-oss/internal/portalui"
-	"github.com/maaransoft/isp-bss-oss/internal/revenue"
 	"github.com/maaransoft/isp-bss-oss/internal/staffui"
 	"github.com/maaransoft/isp-bss-oss/internal/svclog"
 	"github.com/maaransoft/isp-bss-oss/internal/tr069"
 	"github.com/maaransoft/isp-bss-oss/pkg/chromium"
 	"github.com/maaransoft/isp-bss-oss/pkg/crypto"
 	"github.com/maaransoft/isp-bss-oss/pkg/tlscert"
-	"github.com/shopspring/decimal"
 )
 
 const (
@@ -281,12 +279,6 @@ func run(ctx context.Context) error {
 		razorpayClient,
 		cfg.PortalJWTSecret,
 	)
-	portalHandler.SetRenewalProcessor(&renewalProcessor{
-		wallet:     walletSvc,
-		planExpiry: database.Portal(),
-		invoicing:  database.Billing(),
-		franchises: database.Revenue(),
-	})
 
 	portalUIHandler := portalui.NewHandler(portalui.Deps{
 		Subscribers:    database.Portal(),
@@ -501,86 +493,6 @@ func run(ctx context.Context) error {
 	return nil
 }
 
-// renewalInvoicer is the subset of *db.BillingStore ApplyRenewal needs to
-// generate the GST invoice for a completed renewal (FR-BIL-008).
-type renewalInvoicer interface {
-	GetInvoiceInputs(ctx context.Context, subscriberID int) (registeredState string, planVolumeGB int, err error)
-	CreateInvoice(ctx context.Context, inv billing.Invoice) (int, error)
-	GetActiveGstRate(ctx context.Context) (billing.GstRate, error)
-}
-
-// renewalProcessor credits a completed portal renewal through the wallet
-// service, which supplies the idempotency the gateway callback needs,
-// extends the subscriber's plan_expiry to match, and invoices the cycle.
-type renewalProcessor struct {
-	wallet     *billing.WalletService
-	planExpiry portal.PlanExpiryStore
-	invoicing  renewalInvoicer
-	franchises revenue.FranchiseQuerier
-}
-
-func (p *renewalProcessor) ApplyRenewal(ctx context.Context, subscriberID int, amount decimal.Decimal, paymentID string) (*portal.RenewalPayment, error) {
-	tx, err := p.wallet.Recharge(ctx, billing.RechargeRequest{
-		SubscriberID:     subscriberID,
-		Amount:           amount,
-		TransactionToken: paymentID,
-		Description:      "portal one-tap renewal",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("apply renewal: %w", err)
-	}
-
-	// The wallet credit above already committed and must not be undone just
-	// because the expiry extension fails below — log and let ops reconcile,
-	// rather than leaving a paid subscriber uncredited on a retry.
-	if p.planExpiry != nil {
-		if err := extendPlanExpiry(ctx, p.planExpiry, subscriberID, time.Now); err != nil {
-			log.Error().Err(err).Int("subscriber_id", subscriberID).Msg("renewal: plan expiry extension failed")
-		}
-	}
-
-	// Same reasoning: the payment already landed, so a failure here is
-	// logged for reconciliation rather than treated as the renewal failing.
-	if p.invoicing != nil {
-		if err := createRenewalInvoice(ctx, p.invoicing, subscriberID, amount); err != nil {
-			log.Error().Err(err).Int("subscriber_id", subscriberID).Msg("renewal: invoice creation failed")
-		}
-	}
-
-	if p.franchises != nil {
-		revenue.SettleCommissionForRecharge(ctx, p.franchises, subscriberID, amount, paymentID)
-	}
-
-	return &portal.RenewalPayment{TransactionID: tx.ID, Balance: tx.BalanceAfter}, nil
-}
-
-// createRenewalInvoice builds and persists the GST invoice for one renewal
-// cycle. base_amount is the amount actually charged (what the subscriber
-// paid via the Razorpay payment link), not the plan's list price — those can
-// differ, and the invoice must reflect the real transaction.
-//
-// FR: FR-BIL-008 | MDS §4.14
-func createRenewalInvoice(ctx context.Context, inv renewalInvoicer, subscriberID int, amount decimal.Decimal) error {
-	registeredState, planVolumeGB, err := inv.GetInvoiceInputs(ctx, subscriberID)
-	if err != nil {
-		return fmt.Errorf("get invoice inputs: %w", err)
-	}
-	rate, err := inv.GetActiveGstRate(ctx)
-	if err != nil {
-		return fmt.Errorf("get active gst rate: %w", err)
-	}
-
-	invoice := billing.CalculateGstInvoice(amount, registeredState, rate)
-	invoice.SubscriberID = subscriberID
-	invoice.GbIncluded = planVolumeGB
-	invoice.GbUsed = decimal.Zero
-
-	if _, err := inv.CreateInvoice(ctx, invoice); err != nil {
-		return fmt.Errorf("create invoice: %w", err)
-	}
-	return nil
-}
-
 // subCacheInvalidator used to delete a subscriber's RADIUS auth-cache entry
 // from Redis after a lifecycle action (plan change, termination), so radiusd
 // would reload it on the next Access-Request.
@@ -624,33 +536,6 @@ func (s *subCacheInvalidator) InvalidateSubscriber(ctx context.Context, username
 	// committed by this point and must not be failed or rolled back because
 	// a cache entry outlived it by up to its TTL.
 	return s.verifiers.DeleteByUsername(ctx, username)
-}
-
-// extendPlanExpiry computes and applies the new plan_expiry for a renewal:
-// max(now, currentExpiry) + validityDays. Extending from now unconditionally
-// would silently discard remaining days for a subscriber who renews early;
-// extending from a stale (already-lapsed) currentExpiry would grant days
-// retroactively. max(now, currentExpiry) is the only rule that never loses
-// paid-for days and never backdates the extension.
-//
-// now is injected (rather than calling time.Now directly) so the date math
-// is unit-testable without a real clock.
-func extendPlanExpiry(ctx context.Context, store portal.PlanExpiryStore, subscriberID int, now func() time.Time) error {
-	validityDays, currentExpiry, err := store.GetPlanRenewalInfo(ctx, subscriberID)
-	if err != nil {
-		return fmt.Errorf("get plan renewal info: %w", err)
-	}
-
-	base := now()
-	if currentExpiry != nil && currentExpiry.After(base) {
-		base = *currentExpiry
-	}
-	newExpiry := base.AddDate(0, 0, validityDays)
-
-	if err := store.SetPlanExpiry(ctx, subscriberID, newExpiry); err != nil {
-		return fmt.Errorf("set plan expiry: %w", err)
-	}
-	return nil
 }
 
 // readinessHandler reports whether the backing store is reachable, so an

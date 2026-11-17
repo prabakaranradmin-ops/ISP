@@ -597,6 +597,18 @@ check a box.
 
 **Module ID:** MOD-BILLC | **SAD Ref:** SAD-COMP-004 (extends MOD-BIL) | **FR:** FR-BIL-008..011, FR-LC-001..003
 
+> **Portal renewal, revised 2026-11-17.** The `portal.RenewalProcessor` path
+> described below has been removed. `POST /portal/renew/callback` credited the
+> amount and payment id the subscriber's own client sent, extended the plan and
+> raised an invoice, with nothing checked against the gateway, so any logged-in
+> subscriber could credit themselves any sum; and it renewed without debiting
+> the wallet, so a genuine payment bought two cycles. There is now one renewal
+> path: `POST /portal/renew` creates the Razorpay payment link, the signed
+> `payment.captured` webhook (`api.RazorpayWebhook`) credits the captured
+> amount, and the recurring-billing scanner debits the plan price, extends
+> `plan_expiry` and invoices. The callback route remains for mobile clients
+> that have it compiled in (FR-MOB-002) and answers 202 without moving money.
+
 ### What exists today, and the gaps
 
 Three pieces of infrastructure this module depends on were already built and

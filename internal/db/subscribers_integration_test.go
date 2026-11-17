@@ -462,59 +462,6 @@ func TestFR_SUB_001_PortalStore_ScopingAndProfile(t *testing.T) {
 	})
 }
 
-// TestFR_SUB_003_PortalStore_GetPlanRenewalInfo verifies the join that
-// renewalProcessor.ApplyRenewal (cmd/api/main.go) uses to compute where a
-// renewal should extend plan_expiry to.
-//
-// FR-SUB-003 | MDS §4.9 — portal one-tap renewal
-func TestFR_SUB_003_PortalStore_GetPlanRenewalInfo(t *testing.T) {
-	database, pool := newTestDB(t)
-	ctx := context.Background()
-
-	// seedPlan hardcodes validity_days = 30.
-	seedPlan(ctx, t, pool, 1, "P", "100M/100M", 0, "", "799.00")
-	store := database.Portal()
-
-	t.Run("returns the plan's validity_days and the subscriber's current plan_expiry", func(t *testing.T) {
-		expiry := time.Now().Add(15 * 24 * time.Hour).UTC()
-		seedSubscriber(ctx, t, pool, 1, seedOpts{Username: "renewal-info-1@isp", PlanExpiry: &expiry})
-
-		validityDays, currentExpiry, err := store.GetPlanRenewalInfo(ctx, 1)
-		if err != nil {
-			t.Fatalf("GetPlanRenewalInfo: %v", err)
-		}
-		if validityDays != 30 {
-			t.Errorf("validity_days: want 30, got %d", validityDays)
-		}
-		if currentExpiry == nil {
-			t.Fatal("want a non-nil current expiry")
-		}
-		if !currentExpiry.Truncate(time.Second).Equal(expiry.Truncate(time.Second)) {
-			t.Errorf("current_expiry: want %v, got %v", expiry, *currentExpiry)
-		}
-	})
-
-	t.Run("a subscriber with no plan_expiry set yet returns a nil pointer", func(t *testing.T) {
-		// pending_payment is the only state that legitimately has no
-		// plan_expiry (migration 048); an active one now always has one.
-		seedSubscriber(ctx, t, pool, 2, seedOpts{Username: "renewal-info-2@isp", Status: "pending_payment"})
-
-		_, currentExpiry, err := store.GetPlanRenewalInfo(ctx, 2)
-		if err != nil {
-			t.Fatalf("GetPlanRenewalInfo: %v", err)
-		}
-		if currentExpiry != nil {
-			t.Errorf("want a nil current_expiry, got %v", *currentExpiry)
-		}
-	})
-
-	t.Run("an unknown subscriber id returns an error", func(t *testing.T) {
-		if _, _, err := store.GetPlanRenewalInfo(ctx, 999); err == nil {
-			t.Error("expected an error for an unknown subscriber id")
-		}
-	})
-}
-
 // ── Lifecycle (FR-LC-001..002) ──────────────────────────────────────────────
 
 // TestFR_LC_001_APIStore_GetPlanChangeInfo verifies the two plans' price and

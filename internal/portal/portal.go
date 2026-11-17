@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -60,30 +61,6 @@ type PortalTicketQuerier interface {
 // RazorpayOrderCreator creates a Razorpay order and returns a payment link.
 type RazorpayOrderCreator interface {
 	CreateOrder(ctx context.Context, subscriberID int, amount decimal.Decimal) (string, string, error)
-}
-
-// PlanExpiryStore extends a subscriber's plan validity after a renewal is
-// credited. Satisfied by *db.PortalStore.
-type PlanExpiryStore interface {
-	// GetPlanRenewalInfo returns the validity window (in days) of the
-	// subscriber's current plan and their current plan_expiry (nil if never
-	// set), for computing where a renewal extends to.
-	GetPlanRenewalInfo(ctx context.Context, subscriberID int) (validityDays int, currentExpiry *time.Time, err error)
-	SetPlanExpiry(ctx context.Context, subscriberID int, expiry time.Time) error
-}
-
-// RenewalPayment is the outcome of applying a completed renewal payment.
-type RenewalPayment struct {
-	TransactionID int             `json:"transaction_id"`
-	Balance       decimal.Decimal `json:"wallet_balance"`
-}
-
-// RenewalProcessor credits a completed renewal payment to the subscriber's
-// wallet. Implementations must be idempotent on paymentID: the gateway may
-// deliver the same callback more than once, and a subscriber must never be
-// charged — or credited — twice for one payment.
-type RenewalProcessor interface {
-	ApplyRenewal(ctx context.Context, subscriberID int, amount decimal.Decimal, paymentID string) (*RenewalPayment, error)
 }
 
 // â”€â”€ Domain types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -191,7 +168,6 @@ type Handler struct {
 	notifications PortalNotificationQuerier
 	tickets       PortalTicketQuerier
 	razorpay      RazorpayOrderCreator
-	renewals      RenewalProcessor
 	jwtSecret     string
 }
 
@@ -212,11 +188,6 @@ func NewHandler(
 		razorpay:      razorpay,
 		jwtSecret:     jwtSecret,
 	}
-}
-
-// SetRenewalProcessor wires the component that credits completed renewals.
-func (h *Handler) SetRenewalProcessor(p RenewalProcessor) {
-	h.renewals = p
 }
 
 // RegisterRoutes wires all portal routes onto mux.
@@ -395,47 +366,40 @@ func (h *Handler) Renew(w http.ResponseWriter, r *http.Request) {
 
 // â”€â”€ POR-004: Notification history + tickets â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// RenewalCallback handles POST /portal/renew/callback.
-// The payment gateway may deliver the same callback more than once, so crediting
-// is keyed on payment_id and a replay returns the original transaction.
+// RenewalCallback handles POST /portal/renew/callback. It moves no money.
+//
+// It used to credit the wallet with whatever amount and payment id the
+// subscriber's own client sent, then extend their plan and raise an
+// invoice, with nothing checked against the payment gateway: any logged-in
+// subscriber could credit themselves any sum. Even for a genuine payment it
+// renewed without debiting the wallet, so the next auto-renewal spent the
+// same money again — two cycles for one payment.
+//
+// Money now arrives one way only: Razorpay's signed payment.captured
+// webhook (api.RazorpayWebhook) credits the captured amount, and the
+// recurring-billing scanner charges the plan from the wallet, extends the
+// expiry and invoices, as it does for every renewal. The route stays
+// because shipped mobile clients have it compiled in (FR-MOB-002); it now
+// tells them the payment is awaiting the gateway's confirmation.
 func (h *Handler) RenewalCallback(w http.ResponseWriter, r *http.Request) {
 	subID := subscriberIDFromCtx(r)
 	if subID == 0 {
 		writeJSON(w, http.StatusUnauthorized, errBody("ERR_UNAUTHORIZED", "missing subscriber context"))
 		return
 	}
-
 	var req struct {
 		PaymentID string `json:"payment_id"`
-		Amount    string `json:"amount"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errBody("ERR_BAD_REQUEST", "invalid request body"))
-		return
-	}
-	if req.PaymentID == "" {
-		writeJSON(w, http.StatusUnprocessableEntity, errBody("ERR_VALIDATION", "payment_id is required"))
-		return
-	}
-	amount, err := decimal.NewFromString(req.Amount)
-	if err != nil || amount.LessThanOrEqual(decimal.Zero) {
-		writeJSON(w, http.StatusUnprocessableEntity, errBody("ERR_VALIDATION", "invalid amount"))
-		return
-	}
-
-	if h.renewals == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errBody("ERR_UNAVAILABLE", "renewal processing not configured"))
-		return
-	}
-
-	payment, err := h.renewals.ApplyRenewal(r.Context(), subID, amount, req.PaymentID)
-	if err != nil {
-		log.Error().Err(err).Int("subscriber_id", subID).Msg("portal: renewal credit failed")
-		writeJSON(w, http.StatusInternalServerError, errBody("ERR_INTERNAL", "renewal could not be applied"))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, payment)
+	_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req) //nolint:errcheck // informational only
+	// Logged so a support query ("I paid, where is it?") can be matched to
+	// the gateway's record. Nothing from the body is trusted beyond that.
+	log.Info().Int("subscriber_id", subID).Str("payment_id", req.PaymentID).
+		Msg("portal: renewal callback received; awaiting gateway confirmation")
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status": "awaiting_gateway_confirmation",
+		"message": "Payment received by the app. Your wallet is credited when the payment gateway confirms it, " +
+			"and your plan renews automatically within a few minutes of that.",
+	})
 }
 
 // ListNotifications handles GET /portal/notifications.

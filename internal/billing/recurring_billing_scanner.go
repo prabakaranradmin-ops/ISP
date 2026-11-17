@@ -255,10 +255,10 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 		return fmt.Errorf("debit subscriber %d: %w", c.SubscriberID, err)
 	}
 
-	// max(now, currentExpiry): identical rule to cmd/api/main.go's
-	// extendPlanExpiry for portal renewal, so early and auto renewal never
-	// disagree about how a renewal extends. Candidates are already past
-	// their expiry by construction, so this is normally just now +
+	// max(now, currentExpiry): a renewal never shortens a cycle already
+	// paid for. This scanner is the only path that renews: portal payments
+	// credit the wallet through the gateway webhook and are renewed here.
+	// Candidates are already past their expiry by construction, so this is normally just now +
 	// validity_days, but the max() guards the same race the debit above
 	// does — the expiry could have moved between the candidate query and here.
 	base := now

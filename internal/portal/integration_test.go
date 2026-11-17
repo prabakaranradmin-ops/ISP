@@ -6,9 +6,9 @@
 // (listed there under ./web/portal/; the handlers live in this package).
 //
 // Every request goes through the real login -> JWT -> route chain, so a test can
-// only reach subscriber data by authenticating as that subscriber. The renewal
-// callback is backed by the real billing.WalletService, so INT-SUB-002 exercises
-// genuine wallet idempotency rather than a stub's.
+// only reach subscriber data by authenticating as that subscriber. INT-SUB-002
+// checks the renewal callback moves no money: payments are credited only by
+// the gateway's signed webhook (internal/api), never on a client's word.
 //
 // Run: ./scripts/run_tests.ps1 -Pkg ./internal/portal -Tags integration
 package portal_test
@@ -24,7 +24,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
 	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/bcrypt"
@@ -148,111 +147,22 @@ func (s *itPortalStore) CreateTicket(_ context.Context, req portal.TicketCreateR
 	return &ticket, nil
 }
 
-// ── Renewal processing backed by the real wallet service ────────────────────
-
-// itWalletLedger is the minimal billing.WalletQuerier the renewal path needs.
-type itWalletLedger struct {
-	mu        sync.Mutex
-	balances  map[int]decimal.Decimal
-	txByToken map[string]billing.Transaction
-	rows      int
-	nextID    int
-}
-
-func newITWalletLedger() *itWalletLedger {
-	return &itWalletLedger{
-		balances:  map[int]decimal.Decimal{},
-		txByToken: map[string]billing.Transaction{},
-		nextID:    1,
-	}
-}
-
-func (l *itWalletLedger) GetSubscriberBalance(_ context.Context, subscriberID int) (decimal.Decimal, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.balances[subscriberID], nil
-}
-
-func (l *itWalletLedger) GetTransactionByToken(_ context.Context, token string) (*billing.Transaction, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	tx, ok := l.txByToken[token]
-	if !ok {
-		return nil, nil
-	}
-	return &tx, nil
-}
-
-func (l *itWalletLedger) RecordRecharge(_ context.Context, p billing.RechargePosting) (*billing.Transaction, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	token := ""
-	if p.Credit.TransactionToken != nil {
-		token = *p.Credit.TransactionToken
-		if _, exists := l.txByToken[token]; exists {
-			return nil, fmt.Errorf("duplicate transaction_token %q", token)
-		}
-	}
-	l.rows += 2
-	l.balances[p.SubscriberID] = p.NewBalance
-	tx := billing.Transaction{
-		ID:               l.nextID,
-		SubscriberID:     p.Credit.SubscriberID,
-		EntryType:        p.Credit.EntryType,
-		Amount:           p.Credit.Amount,
-		BalanceAfter:     p.NewBalance,
-		TransactionToken: token,
-	}
-	l.nextID++
-	if token != "" {
-		l.txByToken[token] = tx
-	}
-	return &tx, nil
-}
-
-func (l *itWalletLedger) ledgerRowCount() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.rows
-}
-
-// itRenewalProcessor adapts billing.WalletService to portal.RenewalProcessor.
-type itRenewalProcessor struct {
-	wallet *billing.WalletService
-}
-
-func (p *itRenewalProcessor) ApplyRenewal(ctx context.Context, subscriberID int, amount decimal.Decimal, paymentID string) (*portal.RenewalPayment, error) {
-	tx, err := p.wallet.Recharge(ctx, billing.RechargeRequest{
-		SubscriberID:     subscriberID,
-		Amount:           amount,
-		TransactionToken: paymentID,
-		Description:      "portal one-tap renewal",
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &portal.RenewalPayment{TransactionID: tx.ID, Balance: tx.BalanceAfter}, nil
-}
-
 // ── Harness ─────────────────────────────────────────────────────────────────
 
 type itPortal struct {
-	mux    *http.ServeMux
-	store  *itPortalStore
-	ledger *itWalletLedger
+	mux   *http.ServeMux
+	store *itPortalStore
 }
 
 func itNewPortal(t *testing.T, seeds ...*itSubscriberSeed) *itPortal {
 	t.Helper()
 	store := newITPortalStore(seeds...)
-	ledger := newITWalletLedger()
 
 	h := portal.NewHandler(store, store, store, store, nil, itPortalSecret)
-	h.SetRenewalProcessor(&itRenewalProcessor{wallet: billing.NewWalletService(ledger)})
 
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
-	return &itPortal{mux: mux, store: store, ledger: ledger}
+	return &itPortal{mux: mux, store: store}
 }
 
 // login authenticates and returns the subscriber's bearer token.
@@ -400,135 +310,72 @@ func TestFR_SUB_001_Dashboard_RequiresSubscriberToken(t *testing.T) {
 
 // ── INT-SUB-002 ─────────────────────────────────────────────────────────────
 
-// TestFR_SUB_003_Renewal_IdempotentCallback verifies a replayed renewal callback credits
-// the wallet once: the balance stays at a single plan price and the second call
-// returns the original transaction.
+// TestFR_SUB_003_RenewalCallback_MovesNoMoney is the regression test for the
+// callback that credited whatever a subscriber's client sent. A logged-in
+// subscriber naming any payment and any amount gets an acknowledgement and
+// nothing else: the handler no longer has a wallet to credit, and the reply
+// claims no transaction and no balance.
 //
-// INT-SUB-002 | FR-SUB-003
-func TestFR_SUB_003_Renewal_IdempotentCallback(t *testing.T) {
-	const planPrice = "799.00"
-
+// INT-SUB-002 | FR-SUB-003, FR-SEC-004
+func TestFR_SUB_003_RenewalCallback_MovesNoMoney(t *testing.T) {
 	p := itNewPortal(t, &itSubscriberSeed{
 		ID: 1, Username: "renew@isp", Password: "pw-renew",
 		PlanName: "100 Mbps Unlimited", Balance: decimal.Zero, Status: "active",
 	})
 	token := p.login(t, "renew@isp", "pw-renew")
 
-	callback := fmt.Sprintf(`{"payment_id":"pay_renewal_001","amount":%q}`, planPrice)
-
-	first := p.do(t, http.MethodPost, "/portal/renew/callback", token, callback)
-	if first.Code != http.StatusOK {
-		t.Fatalf("first callback: want 200, got %d — %s", first.Code, first.Body.String())
-	}
-	second := p.do(t, http.MethodPost, "/portal/renew/callback", token, callback)
-	if second.Code != http.StatusOK {
-		t.Fatalf("replayed callback: want 200, got %d — %s", second.Code, second.Body.String())
-	}
-
-	var tx1, tx2 portal.RenewalPayment
-	if err := json.Unmarshal(first.Body.Bytes(), &tx1); err != nil {
-		t.Fatalf("decode first: %v", err)
-	}
-	if err := json.Unmarshal(second.Body.Bytes(), &tx2); err != nil {
-		t.Fatalf("decode second: %v", err)
-	}
-
-	if tx1.TransactionID != tx2.TransactionID {
-		t.Errorf("replay must return the original transaction: tx1=%d tx2=%d", tx1.TransactionID, tx2.TransactionID)
-	}
-	want := decimal.RequireFromString(planPrice)
-	if !tx2.Balance.Equal(want) {
-		t.Errorf("balance after replay: want a single plan price %s, got %s", want, tx2.Balance)
-	}
-
-	balance, _ := p.ledger.GetSubscriberBalance(context.Background(), 1)
-	if !balance.Equal(want) {
-		t.Errorf("stored wallet balance: want %s, got %s", want, balance)
-	}
-	if rows := p.ledger.ledgerRowCount(); rows != 2 {
-		t.Errorf("replay must not add ledger rows: want 2, got %d", rows)
-	}
-}
-
-// TestFR_SUB_003_Renewal_DistinctPaymentsBothCredit guards against the idempotency key
-// swallowing a genuine second renewal.
-//
-// INT-SUB-002 (supporting) | FR-SUB-003
-func TestFR_SUB_003_Renewal_DistinctPaymentsBothCredit(t *testing.T) {
-	p := itNewPortal(t, &itSubscriberSeed{
-		ID: 1, Username: "renew2@isp", Password: "pw", Balance: decimal.Zero, Status: "active",
-	})
-	token := p.login(t, "renew2@isp", "pw")
-
-	for _, paymentID := range []string{"pay_month_1", "pay_month_2"} {
-		body := fmt.Sprintf(`{"payment_id":%q,"amount":"799.00"}`, paymentID)
-		rec := p.do(t, http.MethodPost, "/portal/renew/callback", token, body)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s: want 200, got %d — %s", paymentID, rec.Code, rec.Body.String())
-		}
-	}
-
-	balance, _ := p.ledger.GetSubscriberBalance(context.Background(), 1)
-	if want := decimal.RequireFromString("1598.00"); !balance.Equal(want) {
-		t.Errorf("two distinct renewals: want %s, got %s", want, balance)
-	}
-}
-
-// TestFR_SUB_003_Renewal_CallbackValidation verifies malformed callbacks are refused before
-// any money moves.
-//
-// INT-SUB-002 (supporting) | FR-SUB-003
-func TestFR_SUB_003_Renewal_CallbackValidation(t *testing.T) {
-	p := itNewPortal(t, &itSubscriberSeed{
-		ID: 1, Username: "renew3@isp", Password: "pw", Balance: decimal.Zero, Status: "active",
-	})
-	token := p.login(t, "renew3@isp", "pw")
-
-	cases := []struct {
-		name string
-		body string
-		want int
-	}{
-		{"missing payment_id", `{"amount":"799.00"}`, http.StatusUnprocessableEntity},
-		{"zero amount", `{"payment_id":"pay_x","amount":"0.00"}`, http.StatusUnprocessableEntity},
-		{"negative amount", `{"payment_id":"pay_x","amount":"-799.00"}`, http.StatusUnprocessableEntity},
-		{"non-numeric amount", `{"payment_id":"pay_x","amount":"free"}`, http.StatusUnprocessableEntity},
-		{"malformed json", `{"payment_id":`, http.StatusBadRequest},
-	}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			rec := p.do(t, http.MethodPost, "/portal/renew/callback", token, c.body)
-			if rec.Code != c.want {
-				t.Errorf("want %d, got %d — %s", c.want, rec.Code, rec.Body.String())
+	for name, body := range map[string]string{
+		"an invented payment for a large sum": `{"payment_id":"pay_made_up","amount":"99999.00"}`,
+		"no payment at all":                   `{}`,
+		"malformed":                           `{"payment_id":`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := p.do(t, http.MethodPost, "/portal/renew/callback", token, body)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("want 202, got %d — %s", rec.Code, rec.Body.String())
+			}
+			var got map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got["status"] != "awaiting_gateway_confirmation" {
+				t.Errorf("status: %v", got["status"])
+			}
+			for _, claim := range []string{"transaction_id", "wallet_balance"} {
+				if _, ok := got[claim]; ok {
+					t.Errorf("the reply must not claim a %s", claim)
+				}
 			}
 		})
 	}
 
-	balance, _ := p.ledger.GetSubscriberBalance(context.Background(), 1)
-	if !balance.IsZero() {
-		t.Errorf("no credit may result from rejected callbacks, got %s", balance)
+	// The subscriber's balance, as the portal itself reports it, is untouched.
+	rec := p.do(t, http.MethodGet, "/portal/dashboard", token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard: %d", rec.Code)
+	}
+	var dash struct {
+		WalletBalance decimal.Decimal `json:"wallet_balance"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &dash); err != nil {
+		t.Fatal(err)
+	}
+	if !dash.WalletBalance.IsZero() {
+		t.Errorf("balance after callbacks: want 0, got %s", dash.WalletBalance)
 	}
 }
 
-// TestFR_SUB_003_Renewal_CallbackRequiresAuth verifies an anonymous caller cannot credit a
-// wallet.
+// TestFR_SUB_003_RenewalCallback_RequiresAuth: anonymous callers are still
+// refused before anything is logged against a subscriber.
 //
 // INT-SUB-002 (supporting) | FR-SUB-003
-func TestFR_SUB_003_Renewal_CallbackRequiresAuth(t *testing.T) {
+func TestFR_SUB_003_RenewalCallback_RequiresAuth(t *testing.T) {
 	p := itNewPortal(t, &itSubscriberSeed{
 		ID: 1, Username: "renew4@isp", Password: "pw", Balance: decimal.Zero, Status: "active",
 	})
-
-	rec := p.do(t, http.MethodPost, "/portal/renew/callback", "",
-		`{"payment_id":"pay_anon","amount":"799.00"}`)
-
+	rec := p.do(t, http.MethodPost, "/portal/renew/callback", "", `{"payment_id":"pay_anon","amount":"799.00"}`)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("want 401 without a token, got %d", rec.Code)
-	}
-	balance, _ := p.ledger.GetSubscriberBalance(context.Background(), 1)
-	if !balance.IsZero() {
-		t.Errorf("anonymous callback must not credit a wallet, got %s", balance)
 	}
 }
 

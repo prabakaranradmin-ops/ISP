@@ -499,7 +499,6 @@ var (
 	_ portal.PortalNotificationQuerier   = (*PortalStore)(nil)
 	_ portal.PortalTicketQuerier         = (*PortalStore)(nil)
 	_ portal.PortalSessionHistoryQuerier = (*PortalStore)(nil)
-	_ portal.PlanExpiryStore             = (*PortalStore)(nil)
 )
 
 // GetSubscriberByUsername loads the credentials for portal login.
@@ -655,37 +654,6 @@ func (s *PortalStore) CreateTicket(ctx context.Context, req portal.TicketCreateR
 		return nil, fmt.Errorf("db: create ticket for subscriber %d: %w", req.SubscriberID, err)
 	}
 	return &t, nil
-}
-
-// SetPlanExpiry extends a subscriber's plan validity after a successful renewal.
-func (s *PortalStore) SetPlanExpiry(ctx context.Context, subscriberID int, expiry time.Time) error {
-	const q = `UPDATE subscribers SET plan_expiry = $2 WHERE id = $1`
-	if _, err := s.pool.Exec(ctx, q, subscriberID, expiry); err != nil {
-		return fmt.Errorf("db: set plan expiry for subscriber %d: %w", subscriberID, err)
-	}
-	return nil
-}
-
-// GetPlanRenewalInfo returns the validity window (in days) of the
-// subscriber's current plan, and their current plan_expiry (nil if never
-// set) — the two inputs a renewal needs to compute where the plan should
-// extend to.
-func (s *PortalStore) GetPlanRenewalInfo(ctx context.Context, subscriberID int) (int, *time.Time, error) {
-	const q = `
-		SELECT p.validity_days, s.plan_expiry
-		FROM subscribers s
-		JOIN plans p ON p.id = s.plan_id
-		WHERE s.id = $1`
-
-	var (
-		validityDays  int
-		currentExpiry *time.Time
-	)
-	err := s.pool.QueryRow(ctx, q, subscriberID).Scan(&validityDays, &currentExpiry)
-	if err != nil {
-		return 0, nil, fmt.Errorf("db: get plan renewal info for subscriber %d: %w", subscriberID, err)
-	}
-	return validityDays, currentExpiry, nil
 }
 
 // bytesPerGB matches the divisor internal/cache.SessionStore.PortalSession
