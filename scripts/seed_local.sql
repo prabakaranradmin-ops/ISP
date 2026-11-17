@@ -58,7 +58,16 @@ VALUES
      '$2a$12$gn685/ch8wxn9XO33DI4lei.c/vdxKTXTg1VV0Cty2qHQLnnfnHbq',
      '+919876543212',
      (SELECT min(id) FROM plans WHERE name = 'TN_Basic_50M'),
-     'hard_suspended', 0.00, 'TN', 'hard_suspended', NOW() - INTERVAL '20 days')
+     'hard_suspended', 0.00, 'TN', 'hard_suspended', NOW() - INTERVAL '20 days'),
+
+    -- uninvoiced_user is online and paid up with no invoice for it — the
+    -- record a plan change or a hand-edited expiry leaves behind. Seeded so
+    -- Billing Diagnostics (FR-BIL-019) has a real finding to show.
+    ('CAF-0004', 'uninvoiced_user',
+     '$2a$12$gn685/ch8wxn9XO33DI4lei.c/vdxKTXTg1VV0Cty2qHQLnnfnHbq',
+     '+919876543213',
+     (SELECT min(id) FROM plans WHERE name = 'TN_Basic_50M'),
+     'active', 0.00, 'TN', 'active', NOW() + INTERVAL '20 days')
 ON CONFLICT (username) DO NOTHING;
 
 -- ── Wallet Ledger (initial credit for test_user) ─────────────────────────────

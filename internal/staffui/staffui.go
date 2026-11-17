@@ -249,6 +249,9 @@ type HandlerDeps struct {
 	// Proformas issues, converts and cancels proforma invoices
 	// (FR-BIL-018). The API handler.
 	Proformas ProformaManager
+	// Diagnostics runs the billing consistency checks (FR-BIL-019). The
+	// API handler.
+	Diagnostics DiagnosticsRunner
 }
 
 // Handler serves the console.
@@ -296,6 +299,7 @@ type Handler struct {
 	payments           PaymentManager
 	dunning            DunningManager
 	proformas          ProformaManager
+	diagnostics        DiagnosticsRunner
 }
 
 // NewHandler constructs the console handler.
@@ -344,6 +348,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		payments:           deps.Payments,
 		dunning:            deps.Dunning,
 		proformas:          deps.Proformas,
+		diagnostics:        deps.Diagnostics,
 	}
 }
 
@@ -454,6 +459,10 @@ var sections = []Section{
 	// suspended: a billing decision, same reach as the ledger.
 	{"dunning", "Dunning Settings", "/staff/dunning",
 		[]string{"isp_owner", "billing_admin"}, false},
+	// Every row is a subscriber's money and how it was billed: the same
+	// reach as the ledger.
+	{"diagnostics", "Billing Diagnostics", "/staff/diagnostics",
+		[]string{"isp_owner", "billing_admin"}, false},
 	// Technicians handle hardware day to day (issue/return); NOC engineers
 	// track it against the network estate; purchases and device-type
 	// changes are procurement, gated inside the screen itself to
@@ -539,6 +548,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/subscribers/{id}/grace", h.authed(h.requireCSRF(h.ExtendGraceForm)))
 	mux.Handle("POST /staff/subscribers/{id}/grace/end", h.authed(h.requireCSRF(h.EndGraceForm)))
 	mux.Handle("GET /staff/dunning", h.authed(h.DunningSettings))
+	mux.Handle("GET /staff/diagnostics", h.authed(h.BillingDiagnostics))
 	mux.Handle("POST /staff/dunning", h.authed(h.requireCSRF(h.SaveDunningForm)))
 	mux.Handle("POST /staff/subscribers/{id}/proforma", h.authed(h.requireCSRF(h.IssueProformaForm)))
 	mux.Handle("POST /staff/subscribers/{id}/plan-change", h.authed(h.requireCSRF(h.ChangeSubscriberPlan)))

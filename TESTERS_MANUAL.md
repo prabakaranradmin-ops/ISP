@@ -33,7 +33,7 @@ To stop: `./scripts/demo_up.sh down` keeps the data, `down -v` wipes it.
 
 | | |
 |---|---|
-| Subscribers | `test_user` (active), `suspended_user` (hard_suspended), `lapsed_user` (hard_suspended, plan expired 20 days ago — try a grace extension) |
+| Subscribers | `test_user` (active), `suspended_user` (hard_suspended), `lapsed_user` (hard_suspended, plan expired 20 days ago — try a grace extension), `uninvoiced_user` (active and paid up with no invoice — appears in Billing Diagnostics) |
 | Password | `testpassword` for both |
 | Plans | TN_Basic_50M, TN_Super_100M, TN_Ultra_200M |
 | Invoices | 1 on `test_user` (₹942.82 = ₹799 + 18% GST) |

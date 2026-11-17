@@ -426,6 +426,36 @@ test.describe('Proforma invoices', () => {
   });
 });
 
+test.describe('Billing diagnostics', () => {
+  test('billing finds the seeded uninvoiced subscriber from the Finance menu and opens their record', async ({ page }) => {
+    await signIn(page, 'billing');
+    const finance = page.locator('.topbar .navgroup', { hasText: 'Finance' });
+    await finance.locator('summary').click();
+    await finance.getByRole('link', { name: 'Billing Diagnostics' }).click();
+    await expect(page).toHaveURL(/\/staff\/diagnostics$/);
+
+    const tile = page.locator('a.tile', { hasText: 'Served without an invoice' });
+    expect(Number(await tile.locator('.tile-num').textContent())).toBeGreaterThanOrEqual(1);
+    const row = page.locator('#uninvoiced tbody tr', { hasText: 'uninvoiced_user' });
+    await expect(row).toContainText('never');
+    await expect(row).toContainText('TN_Basic_50M');
+    // The three checks are all on the page, each with its explanation.
+    await expect(page.locator('#balances h3')).toContainText('disagrees with the ledger');
+    await expect(page.locator('#prices h3')).toContainText('catalogue');
+    await snap(page, 'billing-diagnostics');
+
+    await row.getByRole('link', { name: 'uninvoiced_user' }).click();
+    await expect(page).toHaveURL(/\/staff\/subscribers\/\d+$/);
+    await expect(page.getByRole('heading', { name: /uninvoiced_user/ })).toBeVisible();
+  });
+
+  test('a CSR cannot open billing diagnostics', async ({ page }) => {
+    await signIn(page, 'csr');
+    const resp = await page.goto('/staff/diagnostics');
+    expect(resp?.status()).toBe(403);
+  });
+});
+
 test.describe('Credit notes', () => {
   test('billing requests a credit note, a second person approves it, and it is issued', async ({ page }) => {
     const reason = `Line down E2E ${Date.now()}`;

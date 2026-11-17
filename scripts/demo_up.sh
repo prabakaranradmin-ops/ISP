@@ -256,6 +256,7 @@ cat <<EOF
     test_user        — active,          wallet ₹799.00, plan TN_Super_100M
     suspended_user    — hard_suspended,  wallet ₹0.00,   plan TN_Basic_50M
     lapsed_user       — hard_suspended,  expired 20 days ago (try a grace extension)
+    uninvoiced_user   — active, paid up with no invoice (shows in Billing Diagnostics)
 
   ── Portal (subscriber-facing) ──────────────────────────────────────────────
   curl -sk -X POST https://localhost/portal/login \\

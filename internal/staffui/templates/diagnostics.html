@@ -1,0 +1,63 @@
+{{define "content"}}
+<h1>Billing diagnostics</h1>
+<p class="muted">Records that disagree with each other. Nothing here is changed automatically: each entry needs someone to decide what is right. Checked afresh every time this page loads.</p>
+{{with .Data}}
+<div class="tiles summary-strip">
+  <a class="tile{{if .UninvoicedCount}} tile-alert{{end}}" href="#uninvoiced"><span class="tile-label">Served without an invoice</span><span class="tile-num">{{.UninvoicedCount}}</span></a>
+  <a class="tile{{if .MismatchCount}} tile-alert{{end}}" href="#balances"><span class="tile-label">Wallet ≠ ledger</span><span class="tile-num">{{.MismatchCount}}</span></a>
+  <a class="tile{{if .DriftCount}} tile-alert{{end}}" href="#prices"><span class="tile-label">Billed off-catalogue</span><span class="tile-num">{{.DriftCount}}</span></a>
+</div>
+{{if .Clean}}<p class="empty">Nothing to look at: every check came back clean at {{datetime .RanAt}}.</p>{{else}}<p class="muted small">Checked {{datetime .RanAt}}. Each list shows up to 200 entries; the counts above cover everything found.</p>{{end}}
+
+<div class="card table-card" id="uninvoiced">
+  <h3>Served this cycle without an invoice</h3>
+  <p class="muted small">Active, inside a paid-up cycle on a plan that costs something, with no invoice since the cycle began (or two since the previous one began, which covers renewing early from the portal).
+    Usual causes: a plan change, which grants the new plan's validity without charging; an expiry date edited by hand; or a renewal whose invoice failed to save.</p>
+  <table>
+    <thead><tr><th>Subscriber</th><th>Plan</th><th>Cycle began</th><th>Paid up to</th><th>Last invoice</th></tr></thead>
+    <tbody>
+    {{range .Uninvoiced}}
+      <tr><td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+          <td>{{.PlanName}} <span class="muted small">&#8377;{{money .PlanPrice}}</span></td>
+          <td class="num">{{date .CycleStart}}</td><td class="num">{{date .PlanExpiry}}</td>
+          <td class="num">{{if .LastInvoice}}{{optDate .LastInvoice}}{{else}}<span class="pill bad">never</span>{{end}}</td></tr>
+    {{else}}<tr><td colspan="5" class="empty">None.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card table-card" id="balances">
+  <h3>Wallet balance that disagrees with the ledger</h3>
+  <p class="muted small">The stored balance should equal every wallet credit less every debit, and the balance the newest ledger entry left.
+    A difference means the balance was changed without a ledger entry — by hand, by an import, or by a failed posting — and the customer may be owed money or owe it.</p>
+  <table>
+    <thead><tr><th>Subscriber</th><th class="right">Stored balance</th><th class="right">Ledger adds up to</th><th class="right">Newest entry left</th><th class="right">Difference</th><th class="right">Entries</th></tr></thead>
+    <tbody>
+    {{range .Mismatches}}
+      <tr><td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+          <td class="num right">{{money .Stored}}</td><td class="num right">{{money .LedgerSum}}</td>
+          <td class="num right">{{if .LastAfter}}{{.LastAfter.StringFixed 2}}{{else}}<span class="muted">no entries</span>{{end}}</td>
+          <td class="num right"><strong>{{money .Difference}}</strong></td><td class="num right">{{.Entries}}</td></tr>
+    {{else}}<tr><td colspan="6" class="empty">None.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card table-card" id="prices">
+  <h3>Last billed at a price other than the catalogue's</h3>
+  <p class="muted small">The newest plan invoice's taxable amount against the plan's price today. One-off charges are left out.
+    Usual causes: the catalogue price changed since (the next renewal charges the new price), the plan was changed after the last invoice, or the customer paid a different amount through the portal.</p>
+  <table>
+    <thead><tr><th>Subscriber</th><th>Plan</th><th class="right">Catalogue price</th><th class="right">Last billed</th><th class="right">Difference</th><th>Invoice</th></tr></thead>
+    <tbody>
+    {{range .Drifts}}
+      <tr><td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td><td>{{.PlanName}}</td>
+          <td class="num right">{{money .CataloguePrice}}</td><td class="num right">{{money .BilledBase}}</td>
+          <td class="num right"><strong>{{money .Difference}}</strong></td>
+          <td class="num"><a href="/staff/invoices/{{.InvoiceID}}/pdf" target="_blank" rel="noopener">INV-{{printf "%06d" .InvoiceID}}</a> <span class="muted small">{{date .InvoicedAt}}</span></td></tr>
+    {{else}}<tr><td colspan="6" class="empty">None.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}
