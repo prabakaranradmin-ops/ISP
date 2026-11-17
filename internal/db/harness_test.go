@@ -72,6 +72,10 @@ var truncateOrder = []string{
 	"cpe_purchases",
 	"cpe_devices",
 	"cpe_device_types",
+	// billing_runs has no foreign key to anything truncated here, so
+	// CASCADE would never reach it (migration 057).
+	"billing_run_failures",
+	"billing_runs",
 	"wallet_ledgers",
 	// Before invoices and gst_rates, which it references (migration 056).
 	"proforma_invoices",

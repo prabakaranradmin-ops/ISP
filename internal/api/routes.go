@@ -104,6 +104,7 @@ type Handler struct {
 	dunning         DunningSettingsStore
 	proformas       ProformaStore
 	diagnostics     DiagnosticsStore
+	billingRuns     BillingRunStore
 	gstHomeState    string
 	subCache        SubscriberCacheInvalidator
 	approvals       ApprovalQuerier
@@ -171,6 +172,8 @@ type HandlerDeps struct {
 	Proformas ProformaStore
 	// Diagnostics runs the billing consistency checks (FR-BIL-019).
 	Diagnostics DiagnosticsStore
+	// BillingRuns reads the recurring-billing run history (FR-BIL-020).
+	BillingRuns BillingRunStore
 	// GSTHomeState is the supplier's own state, which decides CGST/SGST
 	// against IGST. Empty means billing.DefaultHomeState.
 	GSTHomeState    string
@@ -235,6 +238,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		dunning:          deps.Dunning,
 		proformas:        deps.Proformas,
 		diagnostics:      deps.Diagnostics,
+		billingRuns:      deps.BillingRuns,
 		gstHomeState:     deps.GSTHomeState,
 		subCache:         deps.SubCache,
 		approvals:        deps.Approvals,
@@ -551,6 +555,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		admin(http.HandlerFunc(h.EndGraceHTTP)))
 	// Billing diagnostics (FR-BIL-019): read-only, but every row is a
 	// subscriber's money, so the same tier as the ledger.
+	// Recurring-billing run history (FR-BIL-020): billing staff.
+	mux.Handle("GET /api/v1/billing/runs",
+		admin(http.HandlerFunc(h.ListBillingRunsHTTP)))
+	mux.Handle("GET /api/v1/billing/runs/{id}",
+		admin(http.HandlerFunc(h.GetBillingRunHTTP)))
 	mux.Handle("GET /api/v1/billing/diagnostics",
 		admin(http.HandlerFunc(h.GetBillingDiagnosticsHTTP)))
 	mux.Handle("GET /api/v1/billing/dunning-policy",

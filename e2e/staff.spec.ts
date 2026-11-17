@@ -456,6 +456,40 @@ test.describe('Billing diagnostics', () => {
   });
 });
 
+test.describe('Billing runs', () => {
+  // Runs are written by the auto-renewal scanner in radiusd, every 15
+  // minutes. A fresh stack may have recorded only passes that found nobody,
+  // which the default view hides; "Every pass" shows them.
+  test('billing reads the run history from the Finance menu and opens a run', async ({ page }) => {
+    await signIn(page, 'billing');
+    const finance = page.locator('.topbar .navgroup', { hasText: 'Finance' });
+    await finance.locator('summary').click();
+    await finance.getByRole('link', { name: 'Billing Runs' }).click();
+    await expect(page).toHaveURL(/\/staff\/billing-runs$/);
+    await expect(page.getByRole('heading', { name: 'Billing runs' })).toBeVisible();
+
+    await page.getByRole('navigation', { name: 'Which runs' }).getByRole('link', { name: 'Every pass' }).click();
+    await expect(page).toHaveURL(/idle=1/);
+    const runs = page.locator('tbody tr a[href^="/staff/billing-runs/"]');
+    if (await runs.count() === 0) {
+      await expect(page.getByText('No runs recorded yet.')).toBeVisible();
+      return;
+    }
+    await snap(page, 'billing-runs');
+    await runs.first().click();
+    await expect(page).toHaveURL(/\/staff\/billing-runs\/\d+$/);
+    await expect(page.getByRole('heading', { name: /Billing run #\d+/ })).toBeVisible();
+    await expect(page.getByText('Subscribers this run could not finish')).toBeVisible();
+    await snap(page, 'billing-run');
+  });
+
+  test('a CSR cannot read billing runs', async ({ page }) => {
+    await signIn(page, 'csr');
+    expect((await page.goto('/staff/billing-runs'))?.status()).toBe(403);
+    expect((await page.goto('/staff/billing-runs/1'))?.status()).toBe(403);
+  });
+});
+
 test.describe('Credit notes', () => {
   test('billing requests a credit note, a second person approves it, and it is issued', async ({ page }) => {
     const reason = `Line down E2E ${Date.now()}`;

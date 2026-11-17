@@ -218,6 +218,7 @@ func run(ctx context.Context) error {
 		// Proforma invoices (FR-BIL-018), taxed against the supplier's state.
 		Proformas:    database.Billing(),
 		Diagnostics:  database.Billing(),
+		BillingRuns:  database.Billing(),
 		GSTHomeState: cfg.GSTHomeState,
 		SubCache:     &subCacheInvalidator{verifiers: database.VerifierCache()},
 		// Task & approval workflows (FR-WFL-001..002). WorkflowStore
@@ -378,6 +379,7 @@ func run(ctx context.Context) error {
 		Dunning:     apiHandler,
 		Proformas:   apiHandler,
 		Diagnostics: apiHandler,
+		BillingRuns: apiHandler,
 		// Counter payments and cheque bounces through the API's own path.
 		Payments: apiHandler,
 	})

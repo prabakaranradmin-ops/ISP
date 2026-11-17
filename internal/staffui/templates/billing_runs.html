@@ -1,0 +1,42 @@
+{{define "content"}}
+<h1>Billing runs</h1>
+<p class="muted">Every pass of automatic renewal, which charges funded subscribers whose plan has expired. It runs every 15 minutes.
+  Most passes find nobody due; they are recorded too, and hidden here unless asked for.</p>
+{{with .Data}}
+<nav class="filterbar" aria-label="Which runs">
+  <a class="chip{{if and (not .IncludeIdle) (not .ProblemsOnly)}} on{{end}}" href="/staff/billing-runs">Runs that did something</a>
+  <a class="chip{{if .ProblemsOnly}} on{{end}}" href="/staff/billing-runs?problems=1&amp;idle=1">With problems</a>
+  <a class="chip{{if and .IncludeIdle (not .ProblemsOnly)}} on{{end}}" href="/staff/billing-runs?idle=1">Every pass</a>
+</nav>
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Run</th><th>Started</th><th class="right">Took</th><th>Status</th>
+      <th class="right">Due</th><th class="right">Renewed</th><th class="right">Activated</th><th class="right">Short of funds</th>
+      <th class="right">Failed</th><th class="right">Invoices</th><th class="right">Charged (&#8377;)</th>
+    </tr></thead>
+    <tbody>
+    {{range .Runs}}
+      <tr>
+        <td class="num"><a href="/staff/billing-runs/{{.ID}}">#{{.ID}}</a></td>
+        <td class="num">{{datetime .StartedAt}}</td>
+        <td class="num right">{{if .FinishedAt}}{{printf "%.1f" .Duration.Seconds}}s{{else}}&mdash;{{end}}</td>
+        <td>{{if eq .Status "completed"}}{{if or .Failed .InvoiceFailures}}<span class="pill warn">completed with failures</span>{{else}}<span class="pill ok">completed</span>{{end}}
+            {{else if eq .Status "running"}}<span class="pill neutral">running</span>
+            {{else}}<span class="pill bad">{{.Status}}</span>{{end}}</td>
+        <td class="num right">{{.Candidates}}</td>
+        <td class="num right">{{.Renewed}}</td>
+        <td class="num right">{{.Activated}}</td>
+        <td class="num right">{{.InsufficientBalance}}</td>
+        <td class="num right">{{if .Failed}}<strong>{{.Failed}}</strong>{{else}}0{{end}}</td>
+        <td class="num right">{{.InvoicesRaised}}{{if .InvoiceFailures}} <span class="pill bad">{{.InvoiceFailures}} missing</span>{{end}}</td>
+        <td class="num right">{{money .AmountCharged}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="11" class="empty">{{if .ProblemsOnly}}No runs with problems.{{else if .IncludeIdle}}No runs recorded yet.{{else}}No run has renewed anyone yet. <a href="/staff/billing-runs?idle=1">Show every pass</a>.{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}

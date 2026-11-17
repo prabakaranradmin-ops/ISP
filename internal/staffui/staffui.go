@@ -252,6 +252,9 @@ type HandlerDeps struct {
 	// Diagnostics runs the billing consistency checks (FR-BIL-019). The
 	// API handler.
 	Diagnostics DiagnosticsRunner
+	// BillingRuns reads the recurring-billing run history (FR-BIL-020). The
+	// API handler.
+	BillingRuns BillingRunReader
 }
 
 // Handler serves the console.
@@ -300,6 +303,7 @@ type Handler struct {
 	dunning            DunningManager
 	proformas          ProformaManager
 	diagnostics        DiagnosticsRunner
+	billingRuns        BillingRunReader
 }
 
 // NewHandler constructs the console handler.
@@ -349,6 +353,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		dunning:            deps.Dunning,
 		proformas:          deps.Proformas,
 		diagnostics:        deps.Diagnostics,
+		billingRuns:        deps.BillingRuns,
 	}
 }
 
@@ -463,6 +468,10 @@ var sections = []Section{
 	// reach as the ledger.
 	{"diagnostics", "Billing Diagnostics", "/staff/diagnostics",
 		[]string{"isp_owner", "billing_admin"}, false},
+	// Whether last night's renewals went through, and who was charged
+	// without being renewed: billing staff, same reach as the ledger.
+	{"billing-runs", "Billing Runs", "/staff/billing-runs",
+		[]string{"isp_owner", "billing_admin"}, false},
 	// Technicians handle hardware day to day (issue/return); NOC engineers
 	// track it against the network estate; purchases and device-type
 	// changes are procurement, gated inside the screen itself to
@@ -549,6 +558,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/subscribers/{id}/grace/end", h.authed(h.requireCSRF(h.EndGraceForm)))
 	mux.Handle("GET /staff/dunning", h.authed(h.DunningSettings))
 	mux.Handle("GET /staff/diagnostics", h.authed(h.BillingDiagnostics))
+	mux.Handle("GET /staff/billing-runs", h.authed(h.BillingRuns))
+	mux.Handle("GET /staff/billing-runs/{id}", h.authed(h.BillingRun))
 	mux.Handle("POST /staff/dunning", h.authed(h.requireCSRF(h.SaveDunningForm)))
 	mux.Handle("POST /staff/subscribers/{id}/proforma", h.authed(h.requireCSRF(h.IssueProformaForm)))
 	mux.Handle("POST /staff/subscribers/{id}/plan-change", h.authed(h.requireCSRF(h.ChangeSubscriberPlan)))

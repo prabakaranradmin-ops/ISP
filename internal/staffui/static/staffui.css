@@ -324,3 +324,6 @@ details.card[open] > summary { margin-bottom: 14px; }
 
 /* A fieldset used only to disable a form as a whole, not to group it visibly. */
 fieldset.plain { border: 0; padding: 0; margin: 0; min-width: 0; }
+
+/* A tile carrying a date or a word rather than a count. */
+.tile-num.tile-text { font-size: 16px; }

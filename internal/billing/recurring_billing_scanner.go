@@ -107,7 +107,12 @@ type RecurringBillingScanner struct {
 	now    func() time.Time // injectable for tests
 	events EventEmitter
 	tasks  TaskEnqueuer
+	runs   RunRecorder
 }
+
+// SetRunRecorder records each pass for billing staff (FR-BIL-020). Optional,
+// like the emitter and the queue: renewals never depend on it.
+func (s *RecurringBillingScanner) SetRunRecorder(r RunRecorder) { s.runs = r }
 
 // TaskEnqueuer is the queue surface the scanner needs to send a restoration
 // notice. Satisfied by *jobqueue.Client; nil in a deployment with no queue,
@@ -188,19 +193,91 @@ func (s *RecurringBillingScanner) Scan(ctx context.Context) error {
 	// who cut them off but not who turned them back on.
 	ctx = middleware.WithSubject(ctx, "system:auto-renewal-scanner")
 
+	runID := s.startRun(ctx)
+	sum := RunSummary{AmountCharged: decimal.Zero}
+
 	candidates, err := s.db.ListRenewalCandidates(ctx)
 	if err != nil {
+		sum.Error = err.Error()
+		s.finishRun(ctx, runID, RunFailed, sum)
 		return fmt.Errorf("auto-renewal scan: list candidates: %w", err)
 	}
+	sum.Candidates = len(candidates)
 
 	for _, c := range candidates {
-		if err := s.renew(ctx, c); err != nil {
+		res := s.renew(ctx, c)
+		switch res.outcome {
+		case outcomeRenewed:
+			sum.Renewed++
+		case outcomeActivated:
+			sum.Activated++
+		case outcomeInsufficient:
+			sum.InsufficientBalance++
+		case outcomeFailed:
 			// One subscriber's failure must not stop the rest of the batch.
-			log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Msg("billing: auto-renewal failed")
+			sum.Failed++
+			log.Error().Err(res.err).Int("subscriber_id", c.SubscriberID).Msg("billing: auto-renewal failed")
 			autorenewalTotal.WithLabelValues("error").Inc()
 		}
+		sum.AmountCharged = sum.AmountCharged.Add(res.charged)
+		if res.invoiced {
+			sum.InvoicesRaised++
+		}
+		for _, f := range res.problems {
+			if f.Stage == StageInvoice {
+				sum.InvoiceFailures++
+			}
+			sum.Failures = append(sum.Failures, f)
+		}
 	}
+	s.finishRun(ctx, runID, RunCompleted, sum)
 	return nil
+}
+
+func (s *RecurringBillingScanner) startRun(ctx context.Context) int {
+	if s.runs == nil {
+		return 0
+	}
+	id, err := s.runs.StartRun(ctx, RunKindRecurringBilling)
+	if err != nil {
+		log.Warn().Err(err).Msg("billing: could not record the start of an auto-renewal run")
+		return 0
+	}
+	return id
+}
+
+func (s *RecurringBillingScanner) finishRun(ctx context.Context, runID int, status string, sum RunSummary) {
+	if s.runs == nil || runID == 0 {
+		return
+	}
+	if err := s.runs.FinishRun(ctx, runID, status, sum); err != nil {
+		log.Warn().Err(err).Int("run_id", runID).Msg("billing: could not record the end of an auto-renewal run")
+	}
+}
+
+type renewOutcome int
+
+const (
+	outcomeFailed renewOutcome = iota
+	outcomeRenewed
+	outcomeActivated
+	outcomeInsufficient
+)
+
+// renewResult is what one renewal did, for the run record.
+type renewResult struct {
+	outcome  renewOutcome
+	err      error           // set when outcome is outcomeFailed
+	charged  decimal.Decimal // what the wallet was debited, zero if nothing
+	invoiced bool
+	problems []RunFailure // every step that failed, including after the charge
+}
+
+func (r *renewResult) fail(c RenewalCandidate, stage string, err error) {
+	r.problems = append(r.problems, RunFailure{
+		SubscriberID: c.SubscriberID, Username: c.Username, Stage: stage,
+		Message: err.Error(), Charged: StageCharged(stage),
+	})
 }
 
 // renew charges one subscriber for their current plan out of their existing
@@ -208,7 +285,13 @@ func (s *RecurringBillingScanner) Scan(ctx context.Context) error {
 // subscriber had already been escalated by dunning before this scanner
 // caught them — restores dunning_state to active immediately rather than
 // waiting up to an hour for the next dunning tick to notice.
-func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate) error {
+func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate) (res renewResult) {
+	res.charged = decimal.Zero
+	failed := func(stage string, err error) renewResult {
+		res.outcome, res.err = outcomeFailed, err
+		res.fail(c, stage, err)
+		return res
+	}
 	now := s.now()
 
 	// The invoice is computed BEFORE the debit, because its total is what the
@@ -228,7 +311,7 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 	// record behind it.
 	inv, err := s.buildInvoice(ctx, c)
 	if err != nil {
-		return fmt.Errorf("price renewal for subscriber %d: %w", c.SubscriberID, err)
+		return failed(StagePrice, fmt.Errorf("price renewal for subscriber %d: %w", c.SubscriberID, err))
 	}
 
 	// The tax is handed over rather than re-derived, so the GL's 2200 GST
@@ -250,10 +333,12 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 			// for instance) — losing that race is an expected outcome, not
 			// a failure: the subscriber is simply left for dunning.
 			autorenewalTotal.WithLabelValues("insufficient_balance").Inc()
-			return nil
+			res.outcome = outcomeInsufficient
+			return res
 		}
-		return fmt.Errorf("debit subscriber %d: %w", c.SubscriberID, err)
+		return failed(StageDebit, fmt.Errorf("debit subscriber %d: %w", c.SubscriberID, err))
 	}
+	res.charged = inv.TotalAmount
 
 	// max(now, currentExpiry): a renewal never shortens a cycle already
 	// paid for. This scanner is the only path that renews: portal payments
@@ -272,10 +357,10 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 		// dated but still unauthorised, or authorised with no expiry — which
 		// is the exact state migration 048 exists to eliminate.
 		if err := s.db.ActivateSubscriber(ctx, c.SubscriberID, newExpiry); err != nil {
-			return fmt.Errorf("activate subscriber %d: %w", c.SubscriberID, err)
+			return failed(StageActivation, fmt.Errorf("activate subscriber %d: %w", c.SubscriberID, err))
 		}
 	} else if err := s.db.SetPlanExpiry(ctx, c.SubscriberID, newExpiry); err != nil {
-		return fmt.Errorf("extend plan_expiry for subscriber %d: %w", c.SubscriberID, err)
+		return failed(StageExpiry, fmt.Errorf("extend plan_expiry for subscriber %d: %w", c.SubscriberID, err))
 	}
 
 	if err := s.persistInvoice(ctx, inv); err != nil {
@@ -284,11 +369,15 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 		// than leaving a charged subscriber un-invoiced on a retry.
 		autorenewalInvoiceFailures.Inc()
 		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Msg("billing: auto-renewal invoice failed")
+		res.fail(c, StageInvoice, err)
+	} else {
+		res.invoiced = true
 	}
 
 	if c.DunningState != DunningActive {
 		if err := TransitionDunning(ctx, s.db, c.SubscriberID, DunningActive); err != nil {
 			log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Msg("billing: auto-renewal dunning restore failed")
+			res.fail(c, StageDunning, err)
 		} else if wasCutOff(c.DunningState) {
 			// FR-NOTIF-006, sent from here because here is where service is
 			// actually restored.
@@ -309,7 +398,11 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 	}
 
 	autorenewalTotal.WithLabelValues("renewed").Inc()
-	return nil
+	res.outcome = outcomeRenewed
+	if c.Status == StatusPendingPayment {
+		res.outcome = outcomeActivated
+	}
+	return res
 }
 
 // wasCutOff reports whether a dunning stage means service had actually been

@@ -1,0 +1,34 @@
+{{define "content"}}
+{{$d := .Data}}
+{{with $d.Run}}
+<p><a href="/staff/billing-runs">&larr; Billing runs</a></p>
+<h1>Billing run #{{.ID}}</h1>
+<div class="tiles summary-strip">
+  <div class="tile"><span class="tile-label">Started</span><span class="tile-num tile-text">{{datetime .StartedAt}}</span></div>
+  <div class="tile"><span class="tile-label">Status</span><span class="tile-num tile-text">{{.Status}}{{if .FinishedAt}} in {{printf "%.1f" .Duration.Seconds}}s{{end}}</span></div>
+  <div class="tile"><span class="tile-label">Renewed / activated</span><span class="tile-num">{{.Renewed}} / {{.Activated}}</span></div>
+  <div class="tile"><span class="tile-label">Charged</span><span class="tile-num">&#8377;{{money .AmountCharged}}</span></div>
+  <div class="tile{{if .Failures}} tile-alert{{end}}"><span class="tile-label">Problems</span><span class="tile-num">{{len .Failures}}</span></div>
+</div>
+<p class="muted small">{{.Candidates}} due &middot; {{.InsufficientBalance}} no longer had the funds when charged (left to the reminder and suspension schedule) &middot; {{.InvoicesRaised}} invoices raised</p>
+{{if .Error}}<div class="alert bad">The pass could not run: {{.Error}}</div>{{end}}
+
+<div class="card table-card">
+  <h3>Subscribers this run could not finish</h3>
+  <table>
+    <thead><tr><th>Subscriber</th><th>Step</th><th>Charged?</th><th>What it means</th><th>Detail</th></tr></thead>
+    <tbody>
+    {{range .Failures}}
+      <tr>
+        <td>{{if .SubscriberID}}<a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a>{{else}}{{.Username}}{{end}}</td>
+        <td>{{.Stage}}</td>
+        <td>{{if .Charged}}<span class="pill bad">charged</span>{{else}}<span class="pill neutral">not charged</span>{{end}}</td>
+        <td class="small">{{index $d.Advice .Stage}}</td>
+        <td class="muted small">{{.Message}}</td>
+      </tr>
+    {{else}}<tr><td colspan="5" class="empty">None: every subscriber due was dealt with.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}

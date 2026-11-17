@@ -156,7 +156,7 @@ var navGroups = []struct {
 }{
 	{"", []string{"dashboard"}},
 	{"Subscribers", []string{"subscribers", "leads", "my-subscribers", "catalogue"}},
-	{"Finance", []string{"invoices", "billing", "revenue", "ledger", "dunning", "diagnostics", "reports", "procurement", "franchise", "my-pnl"}},
+	{"Finance", []string{"invoices", "billing", "revenue", "ledger", "dunning", "diagnostics", "billing-runs", "reports", "procurement", "franchise", "my-pnl"}},
 	{"Service", []string{"tickets", "tasks", "announcements", "logs", "inventory"}},
 	{"Network", []string{"sessions", "cpe", "nas", "network", "lea"}},
 	{"Admin", []string{"accounts", "demo"}},
@@ -372,7 +372,7 @@ var pageNames = []string{
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
 	"inventory", "reports", "tasks", "my_subscribers", "procurement", "ledger", "network",
-	"dashboard", "sessions", "money", "leads", "lead_convert", "cpe", "announcements", "logs", "credit_note", "dunning", "proformas", "diagnostics",
+	"dashboard", "sessions", "money", "leads", "lead_convert", "cpe", "announcements", "logs", "credit_note", "dunning", "proformas", "diagnostics", "billing_runs", "billing_run",
 }
 
 var pages = func() map[string]*template.Template {

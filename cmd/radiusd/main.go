@@ -354,6 +354,9 @@ func run(ctx context.Context) error {
 	autoRenewalScanner.SetEventEmitter(partner.NewEmitter(database.Partner(), taskClient))
 	// FR-NOTIF-006: the scanner announces a restoration where it performs one.
 	autoRenewalScanner.SetTaskEnqueuer(taskClient)
+	// FR-BIL-020: each pass is recorded for billing staff. Renewals never
+	// wait on it; a recording failure is logged and the pass goes on.
+	autoRenewalScanner.SetRunRecorder(database.Billing())
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
