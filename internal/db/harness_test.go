@@ -73,6 +73,8 @@ var truncateOrder = []string{
 	"cpe_devices",
 	"cpe_device_types",
 	"wallet_ledgers",
+	// Before invoices and gst_rates, which it references (migration 056).
+	"proforma_invoices",
 	"invoices",
 	"gst_rates",
 	"kyc_verifications",

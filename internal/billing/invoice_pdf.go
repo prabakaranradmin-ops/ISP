@@ -53,6 +53,16 @@ type InvoiceData struct {
 	GBIncluded  decimal.Decimal
 	SpeedActive string // e.g. "100 Mbps / 100 Mbps"
 	FUPApplied  bool
+
+	// LineDescription replaces the plan line for a one-off charge (a
+	// converted proforma, FR-BIL-018). Empty for a plan renewal. A one-off
+	// charge has no usage to summarise, so the usage block is left out.
+	LineDescription string
+	// Proforma prints the document as a proforma rather than a tax
+	// invoice: its own title and number, a valid-until date instead of a
+	// due date, and a statement that it is not a tax invoice.
+	Proforma   bool
+	ValidUntil time.Time
 }
 
 // invoicePDFTimeout bounds one GeneratePDF call: launching the browser,
@@ -243,34 +253,47 @@ var invoiceHTMLTemplate = template.Must(template.New("invoice").Parse(`<!DOCTYPE
   .usage-box h3 { margin: 0 0 8px; font-size: 13px; color: #1565c0; }
   .usage-row { display: flex; justify-content: space-between; margin: 4px 0; }
   .footer { margin-top: 24px; font-size: 10px; color: #666; }
+  .notice { border: 1px solid #f0c36d; background: #fff8e1; padding: 8px 12px; }
 </style>
 </head>
 <body>
+  {{if .Proforma}}
+  <h1>Proforma Invoice</h1>
+  <p><strong>Proforma Number:</strong> {{.InvoiceNumber}} &nbsp;&nbsp;
+     <strong>Date:</strong> {{.InvoiceDate.Format "02 Jan 2006"}} &nbsp;&nbsp;
+     <strong>Valid until:</strong> {{.ValidUntil.Format "02 Jan 2006"}}</p>
+  <p class="notice">This is a quotation, not a tax invoice, and no input tax credit can be claimed on it.
+     A GST tax invoice is issued when payment is received, with tax at the rate in force on that date.</p>
+  {{else}}
   <h1>GST Tax Invoice</h1>
   <p><strong>Invoice Number:</strong> {{.InvoiceNumber}} &nbsp;&nbsp;
      <strong>Date:</strong> {{.InvoiceDate.Format "02 Jan 2006"}} &nbsp;&nbsp;
      <strong>Due Date:</strong> {{.DueDate.Format "02 Jan 2006"}}</p>
+  {{end}}
 
   <table style="margin-bottom:16px">
     <tr><th>Subscriber Name</th><td>{{.SubscriberName}}</td>
         <th>Mobile</th><td>{{.MobileNumber}}</td></tr>
+    {{if not .LineDescription}}
     <tr><th>Plan</th><td>{{.PlanName}}</td>
         <th>Period</th><td>{{.PlanPeriod}}</td></tr>
+    {{end}}
     <tr><th>State (for GST)</th><td colspan="3">{{.RegisteredState}}</td></tr>
   </table>
 
   <table>
     <tr><th>Description</th><th>Amount (₹)</th></tr>
-    <tr><td>Internet Plan — {{.PlanName}}</td><td>{{.BaseAmount.StringFixed 2}}</td></tr>
-    {{if gt .CGSTRate.Sign 0}}
-    <tr><td>CGST @ {{.CGSTRate}}%</td><td>{{.CGSTAmount.StringFixed 2}}</td></tr>
-    <tr><td>SGST @ {{.SGSTRate}}%</td><td>{{.SGSTAmount.StringFixed 2}}</td></tr>
+    <tr><td>{{if .LineDescription}}{{.LineDescription}}{{else}}Internet Plan — {{.PlanName}}{{end}}</td><td>{{.BaseAmount.StringFixed 2}}</td></tr>
+    {{if gt .IGSTAmount.Sign 0}}
+    <tr><td>IGST @ {{.IGSTRate}}%{{if .Proforma}} (estimated){{end}}</td><td>{{.IGSTAmount.StringFixed 2}}</td></tr>
     {{else}}
-    <tr><td>IGST @ {{.IGSTRate}}%</td><td>{{.IGSTAmount.StringFixed 2}}</td></tr>
+    <tr><td>CGST @ {{.CGSTRate}}%{{if .Proforma}} (estimated){{end}}</td><td>{{.CGSTAmount.StringFixed 2}}</td></tr>
+    <tr><td>SGST @ {{.SGSTRate}}%{{if .Proforma}} (estimated){{end}}</td><td>{{.SGSTAmount.StringFixed 2}}</td></tr>
     {{end}}
     <tr class="total"><td>Total</td><td>₹{{.TotalAmount.StringFixed 2}}</td></tr>
   </table>
 
+  {{if not .LineDescription}}
   <!-- Usage Summary Block — FR-BIL-007 plain-language requirement -->
   <div class="usage-box">
     <h3>Data Usage Summary</h3>
@@ -287,9 +310,10 @@ var invoiceHTMLTemplate = template.Must(template.New("invoice").Parse(`<!DOCTYPE
       {{end}}
     </div>
   </div>
+  {{end}}
 
   <p class="footer">
-    This is a computer-generated invoice. For queries, contact support.<br>
+    This is a computer-generated {{if .Proforma}}proforma{{else}}invoice{{end}}. For queries, contact support.<br>
     HSN/SAC: 998432 (Internet Telecommunication Services) | GST applies under the reverse-charge mechanism for B2B.
   </p>
 </body>

@@ -372,7 +372,7 @@ var pageNames = []string{
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
 	"inventory", "reports", "tasks", "my_subscribers", "procurement", "ledger", "network",
-	"dashboard", "sessions", "money", "leads", "lead_convert", "cpe", "announcements", "logs", "credit_note", "dunning",
+	"dashboard", "sessions", "money", "leads", "lead_convert", "cpe", "announcements", "logs", "credit_note", "dunning", "proformas",
 }
 
 var pages = func() map[string]*template.Template {

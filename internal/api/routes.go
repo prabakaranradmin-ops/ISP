@@ -102,6 +102,8 @@ type Handler struct {
 	creditNotes     CreditNoteIssuer
 	cheques         ChequeBouncer
 	dunning         DunningSettingsStore
+	proformas       ProformaStore
+	gstHomeState    string
 	subCache        SubscriberCacheInvalidator
 	approvals       ApprovalQuerier
 	fieldTasks      FieldTaskQuerier
@@ -164,26 +166,31 @@ type HandlerDeps struct {
 	CreditNotes      CreditNoteIssuer
 	Cheques          ChequeBouncer
 	Dunning          DunningSettingsStore
-	SubCache         SubscriberCacheInvalidator
-	Approvals        ApprovalQuerier
-	FieldTasks       FieldTaskQuerier
-	Leads            LeadQuerier
-	Inventory        InventoryQuerier
-	Announcements    AnnouncementQuerier
-	PushTokens       PushTokenQuerier
-	EAPEnrolment     EAPEnrolmentQuerier
-	Credentials      CredentialQuerier
-	CPEControl       CPEControlQuerier
-	Partners         PartnerQuerier
-	SecretEncryptor  SecretEncryptor
-	PartnerAuth      middleware.APIKeyAuthenticator
-	Events           EventEmitter
-	Hotspot          HotspotQuerier
-	NAS              NASQuerier
-	Reports          ReportQuerier
-	Archives         ArchiveLookup
-	Procurement      ProcurementQuerier
-	GeneralLedger    GeneralLedgerQuerier
+	// Proformas issues and converts proforma invoices (FR-BIL-018).
+	Proformas ProformaStore
+	// GSTHomeState is the supplier's own state, which decides CGST/SGST
+	// against IGST. Empty means billing.DefaultHomeState.
+	GSTHomeState    string
+	SubCache        SubscriberCacheInvalidator
+	Approvals       ApprovalQuerier
+	FieldTasks      FieldTaskQuerier
+	Leads           LeadQuerier
+	Inventory       InventoryQuerier
+	Announcements   AnnouncementQuerier
+	PushTokens      PushTokenQuerier
+	EAPEnrolment    EAPEnrolmentQuerier
+	Credentials     CredentialQuerier
+	CPEControl      CPEControlQuerier
+	Partners        PartnerQuerier
+	SecretEncryptor SecretEncryptor
+	PartnerAuth     middleware.APIKeyAuthenticator
+	Events          EventEmitter
+	Hotspot         HotspotQuerier
+	NAS             NASQuerier
+	Reports         ReportQuerier
+	Archives        ArchiveLookup
+	Procurement     ProcurementQuerier
+	GeneralLedger   GeneralLedgerQuerier
 
 	// Health serves GET /api/v1/subscribers/{id}/health (FR-OBS-004). The
 	// implementation lives in internal/health, which cannot be imported here
@@ -223,6 +230,8 @@ func NewHandler(deps HandlerDeps) *Handler {
 		creditNotes:      deps.CreditNotes,
 		cheques:          deps.Cheques,
 		dunning:          deps.Dunning,
+		proformas:        deps.Proformas,
+		gstHomeState:     deps.GSTHomeState,
 		subCache:         deps.SubCache,
 		approvals:        deps.Approvals,
 		fieldTasks:       deps.FieldTasks,
@@ -571,6 +580,22 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		admin(http.HandlerFunc(h.CreateCreditNoteRequest)))
 	mux.Handle("GET /api/v1/invoices/{invoice_id}/pdf",
 		billingOrCSR(http.HandlerFunc(h.GetInvoicePDF)))
+
+	// Proforma invoices (FR-BIL-018). Reading has the same reach as an
+	// invoice; issuing, converting (which charges the wallet) and
+	// cancelling are billing decisions.
+	mux.Handle("POST /api/v1/subscribers/{id}/proformas",
+		admin(http.HandlerFunc(h.IssueProformaHTTP)))
+	mux.Handle("GET /api/v1/proformas",
+		billingOrCSR(http.HandlerFunc(h.ListProformasHTTP)))
+	mux.Handle("GET /api/v1/proformas/{id}",
+		billingOrCSR(http.HandlerFunc(h.GetProformaHTTP)))
+	mux.Handle("GET /api/v1/proformas/{id}/pdf",
+		billingOrCSR(http.HandlerFunc(h.GetProformaPDFHTTP)))
+	mux.Handle("POST /api/v1/proformas/{id}/convert",
+		admin(http.HandlerFunc(h.ConvertProformaHTTP)))
+	mux.Handle("POST /api/v1/proformas/{id}/cancel",
+		admin(http.HandlerFunc(h.CancelProformaHTTP)))
 
 	// Tickets (API-004)
 	mux.Handle("POST /api/v1/tickets",

@@ -335,6 +335,97 @@ test.describe('Grace and dunning schedule', () => {
   });
 });
 
+test.describe('Proforma invoices', () => {
+  /** Issue a proforma from a subscriber's Billing tab; returns its row on the list it lands on. */
+  async function issueProforma(page: Page, subscriberPath: string, what: string, amount: string) {
+    await page.goto(subscriberPath);
+    await page.getByRole('button', { name: 'Billing', exact: true }).click();
+    const card = page.locator('#proforma');
+    await card.locator('input[name="description"]').fill(what);
+    await card.locator('input[name="amount"]').fill(amount);
+    await card.getByRole('button', { name: 'Issue proforma' }).click();
+    await expect(page.getByText(/^Proforma issued\./)).toBeVisible();
+    return page.locator('tbody tr', { hasText: what });
+  }
+
+  test('billing issues a proforma, the customer pays, and converting it issues the tax invoice', async ({ page }) => {
+    const what = `Installation ${Date.now()}`;
+    await signIn(page, 'billing');
+    let row = await issueProforma(page, '/staff/subscribers/1', what, '100.00');
+    await expect(row).toContainText('PF-');
+    await expect(row).toContainText('118.00'); // 100 + 9% + 9%, Tamil Nadu subscriber
+    await expect(row).toContainText('open');
+
+    // The document itself: a real PDF that calls itself a proforma.
+    const pdfHref = await row.getByRole('link', { name: 'PDF' }).getAttribute('href');
+    const pdf = await page.request.get(pdfHref!);
+    expect(pdf.status()).toBe(200);
+    expect(pdf.headers()['content-type']).toContain('application/pdf');
+    const pdfBytes = await pdf.body();
+    expect(pdfBytes.subarray(0, 5).toString()).toBe('%PDF-');
+    fs.writeFileSync(path.join(SHOTS, 'proforma.pdf'), pdfBytes); // for the report, like the screenshots
+    await snap(page, 'proformas-open');
+
+    // The customer pays first: the tax invoice follows the payment.
+    await page.goto('/staff/subscribers/1');
+    await page.getByRole('button', { name: 'Billing', exact: true }).click();
+    await page.fill('input[name="amount"]', '118.00');
+    await page.selectOption('select[name="method"]', 'cash');
+    page.once('dialog', (d) => d.accept());
+    await page.getByRole('button', { name: 'Record payment' }).click();
+    await expect(page.getByText(/Payment of .118\.00 recorded/)).toBeVisible();
+
+    await page.goto('/staff/invoices/proformas?subscriber=1');
+    row = page.locator('tbody tr', { hasText: what });
+    page.once('dialog', (d) => d.accept());
+    await row.getByRole('button', { name: 'Convert' }).click();
+    await expect(page.getByText(/^Converted\./)).toBeVisible();
+    // It leaves the Open list and shows on Converted with its invoice number.
+    await expect(page.locator('tbody tr', { hasText: what })).toHaveCount(0);
+    await page.getByRole('navigation', { name: 'Filter by status' }).getByRole('link', { name: 'Converted' }).click();
+    row = page.locator('tbody tr', { hasText: what });
+    await expect(row).toContainText('converted');
+    const invoiceNo = (await row.getByRole('link', { name: /^INV-/ }).textContent())!.trim();
+
+    // And the tax invoice is on the Invoices list, at 118.00.
+    await page.goto('/staff/invoices?tab=invoices');
+    await expect(page.locator('tbody tr', { hasText: invoiceNo })).toContainText('118.00');
+  });
+
+  test('converting before the customer has paid is refused, and a proforma can be cancelled', async ({ page }) => {
+    const what = `Router ${Date.now()}`;
+    await signIn(page, 'billing');
+    await page.goto('/staff/subscribers');
+    await page.getByPlaceholder('Username, ID, phone, email, CAF or IP').fill('lapsed_user');
+    await page.getByRole('button', { name: 'Search' }).click();
+    const subscriberPath = await page.locator('tbody tr', { hasText: 'lapsed_user' }).getByRole('link', { name: 'Open' }).getAttribute('href');
+
+    let row = await issueProforma(page, subscriberPath!, what, '2500.00');
+    page.once('dialog', (d) => d.accept());
+    await row.getByRole('button', { name: 'Convert' }).click();
+    await expect(page.getByText(/does not cover the invoice total/)).toBeVisible();
+    row = page.locator('tbody tr', { hasText: what });
+    await expect(row).toContainText('open');
+
+    await row.locator('input[name="reason"]').fill('Customer chose another provider');
+    page.once('dialog', (d) => d.accept());
+    await row.getByRole('button', { name: 'Cancel' }).click();
+    await expect(page.getByText(/^Proforma cancelled\./)).toBeVisible();
+    await page.getByRole('navigation', { name: 'Filter by status' }).getByRole('link', { name: 'Cancelled' }).click();
+    await expect(page.locator('tbody tr', { hasText: what })).toContainText('Customer chose another provider');
+  });
+
+  test('a CSR can see proformas but not issue, convert or cancel them', async ({ page }) => {
+    await signIn(page, 'csr');
+    await page.goto('/staff/invoices/proformas?status=all');
+    await expect(page.getByRole('heading', { name: 'Invoices & payments' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Convert' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Cancel' })).toHaveCount(0);
+    await page.goto('/staff/subscribers/1');
+    await expect(page.locator('#proforma')).toHaveCount(0);
+  });
+});
+
 test.describe('Credit notes', () => {
   test('billing requests a credit note, a second person approves it, and it is issued', async ({ page }) => {
     const reason = `Line down E2E ${Date.now()}`;
@@ -554,9 +645,10 @@ test.describe('Invoices and payments', () => {
     await finance.locator('summary').click();
     await finance.getByRole('link', { name: 'Invoices & Payments' }).click();
     await expect(page).toHaveURL(/\/staff\/invoices/);
-    // seed_local.sql raises one invoice for test_user: 799 + 18% GST.
-    const row = page.locator('tbody tr', { hasText: 'test_user' }).first();
-    await expect(row).toContainText('942.82');
+    // seed_local.sql raises one invoice for test_user: 799 + 18% GST. Other
+    // tests add newer ones (a converted proforma), so find it by its total.
+    const row = page.locator('tbody tr', { hasText: 'test_user' }).filter({ hasText: '942.82' }).first();
+    await expect(row).toBeVisible();
     await expect(row).toContainText(/INV-\d{6}/);
     await expect(page.locator('.summary-strip')).toContainText('Invoiced total');
     await snap(page, 'invoices');
@@ -752,7 +844,12 @@ test.describe('Billing', () => {
     await page.getByRole('button', { name: 'Look up' }).click();
 
     await expect(page.getByText('Wallet balance')).toBeVisible();
-    await expect(page.getByText('₹799.00').first()).toBeVisible();
+    // Other tests keep adding payments and charges, so the seed's ₹799.00
+    // credit scrolls out of the recent ledger. What must always hold: the
+    // balance shown is the newest ledger row's balance-after.
+    const shown = (await page.locator('p.big').textContent())!.replace(/[₹,\s]/g, '');
+    const newest = page.locator('tbody tr').first();
+    await expect(newest.locator('td').last()).toHaveText(new RegExp(`${shown.replace('.', '\\.')}$`));
     await snap(page, 'billing');
   });
 

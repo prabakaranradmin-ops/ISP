@@ -88,6 +88,23 @@
       </form>
     </div>
     {{end}}
+    {{if and $d.ShowProforma $d.Subscriber}}
+    <div class="card" id="proforma">
+      <h3>Issue a proforma</h3>
+      <p class="muted small">A quotation for a one-off charge &mdash; installation, equipment, a static IP &mdash; with GST estimated.
+        Once they have paid, convert it from <a href="/staff/invoices/proformas?subscriber={{$d.Subscriber.ID}}&amp;status=all">their proformas</a> to charge the wallet and issue the tax invoice.
+        For a plan prepayment, record the payment instead: renewals invoice themselves.</p>
+      <form method="post" action="/staff/subscribers/{{$d.Subscriber.ID}}/proforma">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <div class="formgrid">
+          <label>For <input name="description" required maxlength="200" placeholder="Installation and router"></label>
+          <label>Amount before GST (&#8377;) <input name="amount" inputmode="decimal" required placeholder="1500.00"></label>
+          <label>Valid for (days) <input name="valid_days" type="number" min="1" max="90" value="{{$d.ProformaDefaultValid}}"></label>
+        </div>
+        <button class="primary" type="submit">Issue proforma</button>
+      </form>
+    </div>
+    {{end}}
     {{if and $d.ShowGrace $d.Subscriber}}
     <div class="card" id="grace">
       <h3>Grace extension</h3>

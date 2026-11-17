@@ -141,6 +141,9 @@ type InvoiceDetail struct {
 	// the plain-language usage summary FR-BIL-007 asks for; not an audit trail.
 	SpeedActive string `json:"speed_active"`
 	FUPApplied  bool   `json:"fup_applied"`
+	// LineDescription is set on a one-off charge's invoice (a converted
+	// proforma, FR-BIL-018) and printed instead of the plan line.
+	LineDescription string `json:"description,omitempty"`
 }
 
 // InvoiceQuerier lists and loads invoices. Satisfied by *db.BillingStore.
@@ -299,5 +302,6 @@ func BuildInvoiceData(d *InvoiceDetail) billing.InvoiceData {
 		GBIncluded:      decimal.NewFromInt(int64(d.GBIncluded)),
 		SpeedActive:     d.SpeedActive,
 		FUPApplied:      d.FUPApplied,
+		LineDescription: d.LineDescription,
 	}
 }

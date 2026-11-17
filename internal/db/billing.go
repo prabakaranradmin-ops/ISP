@@ -718,7 +718,8 @@ func (s *BillingStore) GetInvoiceDetail(ctx context.Context, invoiceID int) (*ap
 		       i.igst_amount::text, i.total_amount::text, i.gb_included, i.gb_used::text, i.created_at,
 		       s.username, s.mobile_number, s.registered_state,
 		       p.name, g.cgst_rate::text, g.sgst_rate::text, g.igst_rate::text,
-		       p.rate_limit_string, COALESCE(p.fup_throttle_string, ''), s.fup_active
+		       p.rate_limit_string, COALESCE(p.fup_throttle_string, ''), s.fup_active,
+		       COALESCE(i.description, '')
 		FROM invoices i
 		JOIN subscribers s ON s.id = i.subscriber_id
 		JOIN plans p       ON p.id = s.plan_id
@@ -735,7 +736,7 @@ func (s *BillingStore) GetInvoiceDetail(ctx context.Context, invoiceID int) (*ap
 		&d.IGSTAmount, &d.TotalAmount, &d.GBIncluded, &d.GBUsed, &d.CreatedAt,
 		&d.SubscriberName, &d.MobileNumber, &d.RegisteredState,
 		&d.PlanName, &d.CGSTRate, &d.SGSTRate, &d.IGSTRate,
-		&rateLimit, &fupThrottle, &fupActive,
+		&rateLimit, &fupThrottle, &fupActive, &d.LineDescription,
 	)
 	if isNoRows(err) {
 		return nil, nil

@@ -215,10 +215,13 @@ type subscriberDetailData struct {
 	PaymentMethods    []string
 	// ShowGrace: the same roles, when grace extensions are wired
 	// (FR-BIL-016).
-	ShowGrace         bool
-	Grace             graceView
-	ShowTickets       bool
-	ShowSpeedOverride bool
+	ShowGrace bool
+	Grace     graceView
+	// ShowProforma: the same roles, when proformas are wired (FR-BIL-018).
+	ShowProforma         bool
+	ProformaDefaultValid int
+	ShowTickets          bool
+	ShowSpeedOverride    bool
 
 	// Credentials card (view/reset password) and plan change.
 	ShowCredentials   bool // can see the card and reveal the password
@@ -270,15 +273,17 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 		d.Message = m
 	}
 	detail := subscriberDetailData{
-		ShowBilling:       canAccess("billing", s.Role, s.LeaAccess),
-		ShowRecordPayment: canRecordPayment(s.Role) && h.payments != nil,
-		ShowGrace:         canRecordPayment(s.Role) && h.dunning != nil,
-		PaymentMethods:    billing.PaymentMethods,
-		ShowTickets:       canAccess("tickets", s.Role, s.LeaAccess),
-		ShowSpeedOverride: s.Role == "isp_owner",
-		ShowCredentials:   canRevealPassword(s.Role),
-		ShowResetPassword: canManageCredentials(s.Role),
-		ShowChangePlan:    canManageCredentials(s.Role),
+		ShowBilling:          canAccess("billing", s.Role, s.LeaAccess),
+		ShowRecordPayment:    canRecordPayment(s.Role) && h.payments != nil,
+		ShowGrace:            canRecordPayment(s.Role) && h.dunning != nil,
+		ShowProforma:         canRecordPayment(s.Role) && h.proformas != nil,
+		ProformaDefaultValid: billing.ProformaDefaultValid,
+		PaymentMethods:       billing.PaymentMethods,
+		ShowTickets:          canAccess("tickets", s.Role, s.LeaAccess),
+		ShowSpeedOverride:    s.Role == "isp_owner",
+		ShowCredentials:      canRevealPassword(s.Role),
+		ShowResetPassword:    canManageCredentials(s.Role),
+		ShowChangePlan:       canManageCredentials(s.Role),
 	}
 	// The plan dropdown for the change-plan form.
 	if detail.ShowChangePlan && h.catalogue != nil {

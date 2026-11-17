@@ -246,6 +246,9 @@ type HandlerDeps struct {
 	// Dunning sets grace extensions and the dunning schedule
 	// (FR-BIL-016/017). The API handler.
 	Dunning DunningManager
+	// Proformas issues, converts and cancels proforma invoices
+	// (FR-BIL-018). The API handler.
+	Proformas ProformaManager
 }
 
 // Handler serves the console.
@@ -292,6 +295,7 @@ type Handler struct {
 	creditNotes        CreditNoteRequester
 	payments           PaymentManager
 	dunning            DunningManager
+	proformas          ProformaManager
 }
 
 // NewHandler constructs the console handler.
@@ -339,6 +343,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		creditNotes:        deps.CreditNotes,
 		payments:           deps.Payments,
 		dunning:            deps.Dunning,
+		proformas:          deps.Proformas,
 	}
 }
 
@@ -535,6 +540,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/subscribers/{id}/grace/end", h.authed(h.requireCSRF(h.EndGraceForm)))
 	mux.Handle("GET /staff/dunning", h.authed(h.DunningSettings))
 	mux.Handle("POST /staff/dunning", h.authed(h.requireCSRF(h.SaveDunningForm)))
+	mux.Handle("POST /staff/subscribers/{id}/proforma", h.authed(h.requireCSRF(h.IssueProformaForm)))
 	mux.Handle("POST /staff/subscribers/{id}/plan-change", h.authed(h.requireCSRF(h.ChangeSubscriberPlan)))
 	mux.Handle("GET /staff/leads", h.authed(h.Leads))
 	mux.Handle("POST /staff/leads/new", h.authed(h.requireCSRF(h.CreateLeadForm)))
@@ -558,6 +564,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/tickets", h.authed(h.Tickets))
 	mux.Handle("POST /staff/tickets/{id}/status", h.authed(h.requireCSRF(h.UpdateTicketStatus)))
 	mux.Handle("GET /staff/invoices", h.authed(h.Money))
+	mux.Handle("GET /staff/invoices/proformas", h.authed(h.Proformas))
+	mux.Handle("GET /staff/invoices/proformas/{id}/pdf", h.authed(h.ProformaPDF))
+	mux.Handle("POST /staff/invoices/proformas/{id}/convert", h.authed(h.requireCSRF(h.ConvertProformaForm)))
+	mux.Handle("POST /staff/invoices/proformas/{id}/cancel", h.authed(h.requireCSRF(h.CancelProformaForm)))
 	mux.Handle("GET /staff/invoices/{id}/pdf", h.authed(h.InvoicePDF))
 	mux.Handle("GET /staff/invoices/{id}/credit-note", h.authed(h.CreditNotePage))
 	mux.Handle("POST /staff/invoices/payments/{id}/bounce", h.authed(h.requireCSRF(h.BounceChequeForm)))

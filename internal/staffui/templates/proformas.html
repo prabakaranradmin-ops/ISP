@@ -1,0 +1,74 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Invoices &amp; payments</h1>
+<nav class="tabbar" aria-label="Money lists">
+  <a class="tab-link" href="/staff/invoices?tab=invoices">Invoices</a>
+  <a class="tab-link" href="/staff/invoices?tab=payments">Payments</a>
+  <a class="tab-link on" href="/staff/invoices/proformas">Proformas</a>
+</nav>
+
+<p class="muted">A proforma is a quotation with GST estimated, numbered PF-&hellip; so it never takes a tax invoice number.
+  Once the customer has paid, <strong>Convert</strong> charges their wallet and issues the GST tax invoice, with tax at the rate in force that day.
+  For plan prepayments, just record the payment: each renewal raises its own tax invoice, so converting as well would charge them twice.
+  Proformas are issued from a subscriber's Billing tab.</p>
+
+{{with $d}}
+<nav class="filterbar" aria-label="Filter by status">
+  {{range .Chips}}
+  <a class="chip{{if eq .Key $d.Status}} on{{end}}" href="/staff/invoices/proformas?status={{.Key}}{{if $d.SubscriberID}}&amp;subscriber={{$d.SubscriberID}}{{end}}">{{.Label}}</a>
+  {{end}}
+  {{if .SubscriberID}}<a class="chip" href="/staff/invoices/proformas?status={{.Status}}">All subscribers</a>{{end}}
+</nav>
+
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Proforma</th><th>Issued</th><th>Subscriber</th><th>For</th>
+      <th class="right">Taxable</th><th class="right">GST (est.)</th><th class="right">Total</th>
+      <th>Valid until</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr>
+        <td class="num">{{.Number}}</td>
+        <td class="num">{{datetime .CreatedAt}}<br><span class="muted small">by {{.CreatedBy}}</span></td>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td>{{.Description}}</td>
+        <td class="num right">{{money .Base}}</td>
+        <td class="num right">{{money .Tax}}</td>
+        <td class="num right">{{money .Total}}</td>
+        <td class="num">{{date .ValidUntil}}{{if .Expired}} <span class="pill bad">expired</span>{{end}}</td>
+        <td>{{if eq .Status "converted"}}<span class="pill ok">converted</span>{{with .Invoice}}<br><a class="small" href="/staff/invoices/{{.}}/pdf" target="_blank" rel="noopener">INV-{{printf "%06d" .}}</a>{{end}}
+            {{else if eq .Status "cancelled"}}<span class="pill neutral">cancelled</span><br><span class="muted small">{{.CancelReason}}</span>
+            {{else}}<span class="pill warn">open</span>{{end}}</td>
+        <td class="right">
+          <a class="btn" href="/staff/invoices/proformas/{{.ID}}/pdf" target="_blank" rel="noopener">PDF</a>
+          {{if and $d.CanManage (eq .Status "open")}}
+            {{if not .Expired}}
+            <form method="post" action="/staff/invoices/proformas/{{.ID}}/convert" class="inline"
+                  data-confirm="Charge {{.Username}}'s wallet and issue the tax invoice for {{.Number}}? Tax is charged at today's rate.">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="from_status" value="{{$d.Status}}">
+              {{if $d.SubscriberID}}<input type="hidden" name="from_subscriber" value="{{$d.SubscriberID}}">{{end}}
+              <button type="submit" class="primary">Convert</button>
+            </form>
+            {{end}}
+            <form method="post" action="/staff/invoices/proformas/{{.ID}}/cancel" class="inline"
+                  data-confirm="Cancel {{.Number}}?">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="from_status" value="{{$d.Status}}">
+              {{if $d.SubscriberID}}<input type="hidden" name="from_subscriber" value="{{$d.SubscriberID}}">{{end}}
+              <input name="reason" required placeholder="Why" aria-label="Reason for cancelling {{.Number}}">
+              <button type="submit">Cancel</button>
+            </form>
+          {{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="10" class="empty">No {{if ne .Status "all"}}{{.Status}} {{end}}proformas{{if .SubscriberID}} for this subscriber{{end}}.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}

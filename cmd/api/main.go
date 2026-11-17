@@ -216,8 +216,11 @@ func run(ctx context.Context) error {
 		// Cheque bounce reversal (FR-BIL-014).
 		Cheques: database.Billing(),
 		// Grace extensions and dunning timing (FR-BIL-016/017).
-		Dunning:  database.Billing(),
-		SubCache: &subCacheInvalidator{verifiers: database.VerifierCache()},
+		Dunning: database.Billing(),
+		// Proforma invoices (FR-BIL-018), taxed against the supplier's state.
+		Proformas:    database.Billing(),
+		GSTHomeState: cfg.GSTHomeState,
+		SubCache:     &subCacheInvalidator{verifiers: database.VerifierCache()},
 		// Task & approval workflows (FR-WFL-001..002). WorkflowStore
 		// satisfies both queriers — approvals and field tasks share a
 		// migration and a store, but nothing else.
@@ -380,6 +383,7 @@ func run(ctx context.Context) error {
 		// Credit-note requests go through the API's approval workflow.
 		CreditNotes: apiHandler,
 		Dunning:     apiHandler,
+		Proformas:   apiHandler,
 		// Counter payments and cheque bounces through the API's own path.
 		Payments: apiHandler,
 	})
