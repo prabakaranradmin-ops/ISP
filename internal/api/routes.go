@@ -104,6 +104,7 @@ type Handler struct {
 	dunning         DunningSettingsStore
 	proformas       ProformaStore
 	products        ProductStore
+	planChanges     PlanChangeStore
 	diagnostics     DiagnosticsStore
 	billingRuns     BillingRunStore
 	receipts        ReceiptStore
@@ -174,6 +175,8 @@ type HandlerDeps struct {
 	Dunning          DunningSettingsStore
 	// Proformas issues and converts proforma invoices (FR-BIL-018).
 	Proformas ProformaStore
+	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
+	PlanChanges PlanChangeStore
 	// Products manages the product catalogue and the charges attached to
 	// subscribers (FR-BIL-022).
 	Products ProductStore
@@ -250,6 +253,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		dunning:          deps.Dunning,
 		proformas:        deps.Proformas,
 		products:         deps.Products,
+		planChanges:      deps.PlanChanges,
 		diagnostics:      deps.Diagnostics,
 		billingRuns:      deps.BillingRuns,
 		receipts:         deps.Receipts,
@@ -658,6 +662,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		admin(http.HandlerFunc(h.AttachProductHTTP)))
 	mux.Handle("POST /api/v1/subscriber-products/{id}/end",
 		admin(http.HandlerFunc(h.EndAttachmentHTTP)))
+
+	// Scheduled plan changes (FR-BIL-023). Reading has the same reach as
+	// reading a subscriber's billing; scheduling and cancelling change
+	// what the next renewal charges, so they are billing decisions —
+	// matching the admin gate on the immediate plan change.
+	mux.Handle("POST /api/v1/subscribers/{id}/scheduled-plan-change",
+		admin(http.HandlerFunc(h.SchedulePlanChangeHTTP)))
+	mux.Handle("GET /api/v1/scheduled-plan-changes",
+		billingOrCSR(http.HandlerFunc(h.ListPlanChangesHTTP)))
+	mux.Handle("GET /api/v1/scheduled-plan-changes/{id}",
+		billingOrCSR(http.HandlerFunc(h.GetPlanChangeHTTP)))
+	mux.Handle("POST /api/v1/scheduled-plan-changes/{id}/cancel",
+		admin(http.HandlerFunc(h.CancelPlanChangeHTTP)))
 
 	// Tickets (API-004)
 	mux.Handle("POST /api/v1/tickets",

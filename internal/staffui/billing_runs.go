@@ -21,6 +21,7 @@ type BillingRunReader interface {
 var stageAdvice = map[string]string{
 	billing.StagePrice:      "Nothing was charged. Usually no GST rate in force; the next pass retries once one is set.",
 	billing.StageDebit:      "Nothing was charged. The wallet posting failed; the next pass retries.",
+	billing.StagePlanChange: "Charged at the new plan's price and still on the old plan, with the expiry not moved — so the next pass will charge them again. Act on this one first: apply the change by hand and extend their expiry, or refund the charge and cancel the scheduled change.",
 	billing.StageExpiry:     "Charged, but the plan was not extended. Extend their expiry by one cycle, or refund the charge.",
 	billing.StageActivation: "Charged, but the first cycle was not activated. Activate the subscriber, or refund the charge.",
 	billing.StageInvoice:    "Charged and renewed, but no invoice was written. Raise the invoice so the charge is declared.",

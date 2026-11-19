@@ -97,6 +97,11 @@ COMPONENTS=(
     # passes with nothing wired — confirmed by deleting the call and
     # watching it still report WIRED.
     "autoRenewalScanner.SetGSTHomeState:supplier state for per-line GST on renewals (FR-BIL-022)"
+    # FR-BIL-023. A renewal that moves a subscriber to a new plan has to
+    # drop their cached auth record, or RADIUS keeps serving the plan they
+    # just left until the entry expires — the upgrade they paid for simply
+    # not arriving, with nothing anywhere reporting a problem.
+    "autoRenewalScanner.SetSubscriberCache:auth-cache invalidation after a scheduled plan change (FR-BIL-023)"
 )
 
 if [ "${1:-}" = "--list" ]; then

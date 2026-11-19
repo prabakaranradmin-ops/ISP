@@ -421,7 +421,8 @@ func (s *BillingStore) SetSubscriberDunningState(ctx context.Context, subscriber
 func (s *BillingStore) ListRenewalCandidates(ctx context.Context) ([]billing.RenewalCandidate, error) {
 	const q = `
 		SELECT s.id, s.username, s.franchise_id, s.registered_state, s.dunning_state,
-		       s.status, p.name, p.price::text, p.validity_days, p.volume_gb, s.plan_expiry
+		       s.status, s.plan_id, p.name, p.price::text, p.validity_days, p.volume_gb,
+		       s.plan_expiry
 		  FROM subscribers s
 		  JOIN plans p ON p.id = s.plan_id
 		 WHERE s.status <> 'terminated'
@@ -470,7 +471,8 @@ func (s *BillingStore) ListRenewalCandidates(ctx context.Context) ([]billing.Ren
 		)
 		if err := rows.Scan(
 			&c.SubscriberID, &c.Username, &c.FranchiseID, &c.RegisteredState, &state,
-			&c.Status, &c.PlanName, &price, &c.PlanValidityDays, &c.PlanVolumeGB, &expiry,
+			&c.Status, &c.PlanID, &c.PlanName, &price, &c.PlanValidityDays, &c.PlanVolumeGB,
+			&expiry,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan renewal candidate: %w", err)
 		}

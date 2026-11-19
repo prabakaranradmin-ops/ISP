@@ -363,6 +363,14 @@ func run(ctx context.Context) error {
 	// billing.DefaultHomeState and an operator outside Tamil Nadu would
 	// have every renewal taxed under the wrong head.
 	autoRenewalScanner.SetGSTHomeState(cfg.GSTHomeState)
+	// FR-BIL-023: a renewal that applies a scheduled plan change has to
+	// make it real on the network, not just in the database. The cached
+	// auth record carries the old plan's rate limit, so it is dropped; a
+	// subscriber still holding a session (one in grace, typically) is
+	// re-rated by CoA rather than kept at the old speed until they
+	// reconnect.
+	autoRenewalScanner.SetSubscriberCache(subscriberCache)
+	autoRenewalScanner.SetSessionLookup(liveSessions)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

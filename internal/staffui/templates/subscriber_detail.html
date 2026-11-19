@@ -105,6 +105,81 @@
       </form>
     </div>
     {{end}}
+    {{if and $d.ShowBilling $d.Subscriber}}
+    <div class="card" id="plan-change">
+      <h3>Scheduled plan change</h3>
+      <p class="muted small">Moves the subscriber at a <strong>renewal</strong>, not now: the renewal on or after
+        the date you give buys the next cycle on the new plan, at the new plan's price. Nothing changes before
+        then, and there is no proration — they keep the cycle they have paid for to its last day.
+        To move them immediately instead, use <strong>Change plan</strong>, which does prorate.</p>
+
+      {{with $d.PendingPlanChange}}
+      <p><strong>{{.Summary}}</strong> from <strong>{{date .EffectiveOn}}</strong>
+         &mdash; {{money .NewPlanPrice}} + GST per cycle.</p>
+      <dl>
+        <dt>Scheduled by</dt><dd>{{.ScheduledBy}} on {{datetime .ScheduledAt}}</dd>
+        {{with .Reason}}<dt>Note</dt><dd>{{.}}</dd>{{end}}
+      </dl>
+      {{if $d.ShowPlanChange}}
+      <form method="post" action="/staff/scheduled-plan-changes/{{.ID}}/cancel"
+            data-confirm="Cancel this scheduled plan change? They stay on their current plan.">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="subscriber_id" value="{{.SubscriberID}}">
+        <div class="formgrid">
+          <label>Reason <input name="reason" required maxlength="200" placeholder="Customer changed their mind"></label>
+        </div>
+        <button type="submit">Cancel scheduled change</button>
+      </form>
+      {{end}}
+      {{else}}
+        {{if and $d.ShowPlanChange $d.Plans}}
+        <form method="post" action="/staff/subscribers/{{$d.Subscriber.ID}}/scheduled-plan-change">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <div class="formgrid">
+            <label>Move to
+              <select name="new_plan_id" required>
+                <option value="">Choose a plan&hellip;</option>
+                {{range $d.Plans}}
+                {{if ne .ID $d.Subscriber.PlanID}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+                {{end}}
+              </select>
+            </label>
+            <label>From
+              <input name="effective_on" type="date" required value="{{$d.PlanChangeDefaultDate}}">
+              <span class="muted small">Usually their current expiry, so the change lands on the next renewal.</span>
+            </label>
+            <label>Note <span class="muted small">(optional)</span>
+              <input name="reason" maxlength="200" placeholder="Customer asked to downgrade">
+            </label>
+          </div>
+          <button class="primary" type="submit">Schedule plan change</button>
+        </form>
+        {{else}}
+        <p class="muted">No plan change scheduled.</p>
+        {{end}}
+      {{end}}
+
+      {{if $d.PlanChanges}}
+      <table>
+        <thead><tr><th>Change</th><th>From</th><th>Status</th><th>Scheduled</th></tr></thead>
+        <tbody>
+        {{range $d.PlanChanges}}
+          <tr>
+            <td>{{.Summary}}</td>
+            <td class="num">{{date .EffectiveOn}}</td>
+            <td>
+              {{.StatusLabel}}
+              {{if .AppliedInvoiceID}}<br><a class="small" href="/staff/invoices/{{.AppliedInvoiceID}}/pdf" target="_blank" rel="noopener">{{.AppliedInvoiceNumber}}</a>{{end}}
+              {{with .CancelReason}}<br><span class="muted small">{{.}}</span>{{end}}
+            </td>
+            <td class="num">{{datetime .ScheduledAt}}<br><span class="muted small">by {{.ScheduledBy}}</span></td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+      {{end}}
+    </div>
+    {{end}}
     {{if and $d.ShowCharges $d.Subscriber}}
     <div class="card" id="charges">
       <h3>Charges besides the plan</h3>

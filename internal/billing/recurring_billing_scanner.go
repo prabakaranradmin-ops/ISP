@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/fup"
+	"github.com/maaransoft/isp-bss-oss/internal/health"
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/prometheus/client_golang/prometheus"
@@ -57,10 +59,14 @@ var (
 
 // RenewalCandidate is a subscriber the auto-renewal scanner may charge.
 type RenewalCandidate struct {
-	SubscriberID     int
-	Username         string
-	FranchiseID      *int
-	RegisteredState  string
+	SubscriberID    int
+	Username        string
+	FranchiseID     *int
+	RegisteredState string
+	// PlanID is the plan the subscriber is on as the pass starts. Compared
+	// against a due scheduled change's target so a change naming the plan
+	// they already hold is not treated as a move (FR-BIL-023).
+	PlanID           int
 	PlanName         string
 	PlanPrice        decimal.Decimal
 	PlanValidityDays int
@@ -102,7 +108,48 @@ type RenewalScanQuerier interface {
 	// every one-time charge it billed, in one transaction.
 	CreateInvoiceWithLines(ctx context.Context, inv Invoice, lines []InvoiceLine) (int, error)
 	GetActiveGstRate(ctx context.Context) (GstRate, error)
+	// GetDuePlanChange returns the scheduled plan change to apply to this
+	// subscriber today, or (nil, nil) if there is none — the ordinary case
+	// on almost every renewal (FR-BIL-023).
+	GetDuePlanChange(ctx context.Context, subscriberID int, on time.Time) (*ScheduledPlanChange, error)
+	// ApplyDuePlanChange moves the subscriber onto the new plan, stamps
+	// the new expiry and marks the change applied, in one transaction.
+	ApplyDuePlanChange(ctx context.Context, changeID, subscriberID, newPlanID int, newExpiry time.Time, activate bool, invoiceID *int) error
+	// SetPlanChangeInvoice links an applied change to the invoice that
+	// billed its first cycle, once that invoice exists.
+	SetPlanChangeInvoice(ctx context.Context, changeID, invoiceID int) error
 }
+
+// CacheInvalidator drops a cached auth record so the next authentication
+// reloads the subscriber's new plan. Satisfied by *cache.SubscriberCache.
+type CacheInvalidator interface {
+	InvalidateSubscriber(ctx context.Context, username string) error
+}
+
+// SetSubscriberCache attaches auth-cache invalidation, needed when a
+// renewal changes the subscriber's plan (FR-BIL-023).
+//
+// Optional like the emitter and the queue, but the consequence of leaving
+// it out is sharper: RADIUS would keep handing out the old plan's rate
+// limit from cache until the entry expired, so a subscriber who paid for
+// an upgrade would not get it until then.
+func (s *RecurringBillingScanner) SetSubscriberCache(c CacheInvalidator) { s.subCache = c }
+
+// SessionLookup finds a subscriber's live session, so a plan change can
+// push a CoA to the NAS holding it. Satisfied by *cache.SessionStore.
+type SessionLookup interface {
+	GetActiveSession(ctx context.Context, subscriberID int) (*health.SessionSummary, error)
+}
+
+// SetSessionLookup attaches live-session lookup, enabling a CoA after a
+// plan change applied by a renewal.
+//
+// Without it the new rate limit reaches the subscriber on their next
+// authentication rather than immediately. That is a real gap only for
+// someone renewed while still holding a session — a subscriber in grace,
+// typically — since anyone actually cut off reconnects and picks up the
+// new limit anyway.
+func (s *RecurringBillingScanner) SetSessionLookup(l SessionLookup) { s.sessions = l }
 
 // RecurringBillingScanner auto-renews subscribers from their existing wallet
 // balance once their plan has expired, closing the gap dunning's purely
@@ -118,6 +165,11 @@ type RecurringBillingScanner struct {
 	// DefaultHomeState, preserving what CalculateGstInvoice assumed before
 	// per-line invoicing made the home state explicit here.
 	gstHomeState string
+	// subCache and sessions are needed only when a renewal changes the
+	// subscriber's plan (FR-BIL-023): the cached auth record has to be
+	// dropped, and a live session told about the new rate limit.
+	subCache CacheInvalidator
+	sessions SessionLookup
 }
 
 // SetRunRecorder records each pass for billing staff (FR-BIL-020). Optional,
@@ -281,6 +333,9 @@ type renewResult struct {
 	charged  decimal.Decimal // what the wallet was debited, zero if nothing
 	invoiced bool
 	problems []RunFailure // every step that failed, including after the charge
+	// planChanged is the scheduled change this renewal applied, nil when
+	// the subscriber simply renewed what they were already on.
+	planChanged *ScheduledPlanChange
 }
 
 func (r *renewResult) fail(c RenewalCandidate, stage string, err error) {
@@ -303,6 +358,26 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 		return res
 	}
 	now := s.now()
+
+	// A scheduled plan change due today is resolved first, before anything
+	// is priced (FR-BIL-023).
+	//
+	// It has to come first because it changes what this cycle costs: the
+	// subscriber is buying the new plan, so the invoice, the debit and the
+	// cycle length must all be the new plan's. Pricing the old plan and
+	// moving them afterwards would charge them for what they are leaving.
+	//
+	// A failure to read the schedule stops the renewal rather than quietly
+	// renewing the old plan: the alternative is a customer who asked to be
+	// moved on the 1st being billed another month of the plan they are
+	// leaving, which nobody would notice until they complained.
+	change, err := s.duePlanChange(ctx, c)
+	if err != nil {
+		return failed(StagePrice, fmt.Errorf("plan change lookup for subscriber %d: %w", c.SubscriberID, err))
+	}
+	if change != nil {
+		c = applyPlanToCandidate(c, change)
+	}
 
 	// The invoice is computed BEFORE the debit, because its total is what the
 	// subscriber owes.
@@ -370,7 +445,25 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 		base = c.PlanExpiry
 	}
 	newExpiry := base.AddDate(0, 0, c.PlanValidityDays)
-	if c.Status == StatusPendingPayment {
+	activate := c.Status == StatusPendingPayment
+	switch {
+	case change != nil:
+		// A due plan change takes over stamping the expiry, because the
+		// move and the new dates have to land together: plan_id and
+		// plan_expiry disagreeing would mean a subscriber billed for one
+		// plan and rate-limited by another, and the change is marked
+		// applied in the same transaction so an overlapping pass cannot
+		// apply it twice.
+		//
+		// Only now, after the debit has committed — a subscriber who could
+		// not pay stays on the plan they have, with the change still
+		// waiting for a pass where they can.
+		if err := s.db.ApplyDuePlanChange(ctx, change.ID, c.SubscriberID, change.NewPlanID, newExpiry, activate, nil); err != nil {
+			return failed(StagePlanChange, fmt.Errorf("apply plan change %d for subscriber %d: %w",
+				change.ID, c.SubscriberID, err))
+		}
+		res.planChanged = change
+	case activate:
 		// First cycle: the expiry and the status have to move together. Two
 		// statements would leave a window where the subscriber is charged and
 		// dated but still unauthorised, or authorised with no expiry — which
@@ -378,11 +471,22 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 		if err := s.db.ActivateSubscriber(ctx, c.SubscriberID, newExpiry); err != nil {
 			return failed(StageActivation, fmt.Errorf("activate subscriber %d: %w", c.SubscriberID, err))
 		}
-	} else if err := s.db.SetPlanExpiry(ctx, c.SubscriberID, newExpiry); err != nil {
-		return failed(StageExpiry, fmt.Errorf("extend plan_expiry for subscriber %d: %w", c.SubscriberID, err))
+	default:
+		if err := s.db.SetPlanExpiry(ctx, c.SubscriberID, newExpiry); err != nil {
+			return failed(StageExpiry, fmt.Errorf("extend plan_expiry for subscriber %d: %w", c.SubscriberID, err))
+		}
 	}
 
-	if err := s.persistInvoice(ctx, inv, lines); err != nil {
+	// The plan the subscriber authenticates against has just changed, so
+	// the cached copy of it is now wrong. Done before the invoice because
+	// it is what the customer actually notices: the invoice can be
+	// reconciled later, a stale rate limit is the upgrade they paid for
+	// not arriving.
+	if change != nil {
+		s.announcePlanChange(ctx, c, change)
+	}
+
+	if err := s.persistInvoice(ctx, inv, lines, change); err != nil {
 		// The wallet debit above already committed and must not be undone
 		// just because persisting failed — log for reconciliation rather
 		// than leaving a charged subscriber un-invoiced on a retry.
@@ -549,13 +653,114 @@ func (s *RecurringBillingScanner) homeState() string {
 // before this was configurable.
 func (s *RecurringBillingScanner) SetGSTHomeState(state string) { s.gstHomeState = state }
 
+// announcePlanChange makes a just-applied plan change take effect on the
+// network: it drops the cached auth record and, if the subscriber is
+// holding a session, pushes a CoA so the new rate limit applies without
+// waiting for them to reconnect.
+//
+// Every failure here is logged and swallowed. The change has committed and
+// the subscriber has paid for it; refusing the renewal now would undo a
+// move that has already happened, and the worst case without these is a
+// subscriber on the right plan at the old speed until their cached record
+// expires or their session ends.
+func (s *RecurringBillingScanner) announcePlanChange(ctx context.Context, c RenewalCandidate, change *ScheduledPlanChange) {
+	if s.subCache != nil {
+		if err := s.subCache.InvalidateSubscriber(ctx, c.Username); err != nil {
+			log.Error().Err(err).Int("subscriber_id", c.SubscriberID).
+				Msg("billing: auth-cache invalidation failed after a scheduled plan change")
+		}
+	}
+	if s.sessions == nil || s.tasks == nil {
+		return
+	}
+	sess, err := s.sessions.GetActiveSession(ctx, c.SubscriberID)
+	if err != nil || sess == nil {
+		// No session, or we could not tell. Nothing to re-rate: the new
+		// limit applies on their next authentication.
+		return
+	}
+	payload, err := json.Marshal(fup.CoAPayload{SubscriberID: c.SubscriberID, NasIP: sess.NasIP})
+	if err != nil {
+		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Msg("billing: CoA payload marshal failed")
+		return
+	}
+	// Keyed per subscriber per change, so a retried or overlapping pass
+	// does not queue the same re-rate twice.
+	task := jobqueue.NewTask(fup.TaskTypeCoA, payload,
+		jobqueue.Queue(fup.QueueNetCommands),
+		jobqueue.TaskID(fmt.Sprintf("planchange-coa-%d-%d", c.SubscriberID, change.ID)),
+		jobqueue.MaxRetry(5),
+		jobqueue.Retention(24*time.Hour))
+	if _, err := s.tasks.EnqueueContext(ctx, task); err != nil {
+		if errors.Is(err, jobqueue.ErrTaskIDConflict) {
+			return
+		}
+		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).
+			Msg("billing: CoA enqueue failed after a scheduled plan change")
+	}
+}
+
+// duePlanChange returns the scheduled plan change this renewal should
+// apply, or nil.
+//
+// A terminated subscriber never reaches here (they are not renewal
+// candidates), so the only filtering needed is the date, which the store
+// does.
+func (s *RecurringBillingScanner) duePlanChange(ctx context.Context, c RenewalCandidate) (*ScheduledPlanChange, error) {
+	change, err := s.db.GetDuePlanChange(ctx, c.SubscriberID, s.now())
+	if err != nil {
+		return nil, err
+	}
+	if change == nil {
+		return nil, nil
+	}
+	// Already on the target plan — an immediate change got there first, or
+	// the same change was scheduled twice across a plan edit. There is
+	// nothing to move, so the renewal proceeds as an ordinary one and the
+	// change is left pending rather than silently consumed: closing it
+	// here would need its own transaction and a reason, and leaving it
+	// means an operator sees it still listed and can cancel it.
+	if change.NewPlanID == c.PlanID {
+		log.Info().Int("subscriber_id", c.SubscriberID).Int("change_id", change.ID).
+			Msg("billing: scheduled plan change names the plan the subscriber is already on; renewing without it")
+		return nil, nil
+	}
+	return change, nil
+}
+
+// applyPlanToCandidate rewrites the candidate's plan fields to the plan it
+// is about to be moved to, so the cycle is priced, dated and invoiced as
+// the new plan throughout.
+//
+// PlanExpiry and Status are left alone: they describe the cycle ending,
+// not the one being bought.
+func applyPlanToCandidate(c RenewalCandidate, change *ScheduledPlanChange) RenewalCandidate {
+	c.PlanID = change.NewPlanID
+	c.PlanName = change.NewPlanName
+	c.PlanPrice = change.NewPlanPrice
+	c.PlanValidityDays = change.NewPlanValidityDays
+	c.PlanVolumeGB = change.NewPlanVolumeGB
+	return c
+}
+
 // persistInvoice writes the computed invoice with its lines and announces
 // it. Closing the one-time charges it billed is part of the same
 // transaction — see CreateInvoiceWithLines.
-func (s *RecurringBillingScanner) persistInvoice(ctx context.Context, inv Invoice, lines []InvoiceLine) error {
+//
+// When this cycle applied a scheduled plan change, the invoice is linked
+// back to it so "what did the change cost them" is answerable from the
+// row. That link is a convenience, so failing to write it is logged and
+// the renewal stands.
+func (s *RecurringBillingScanner) persistInvoice(ctx context.Context, inv Invoice, lines []InvoiceLine, change *ScheduledPlanChange) error {
 	invoiceID, err := s.db.CreateInvoiceWithLines(ctx, inv, lines)
 	if err != nil {
 		return fmt.Errorf("create invoice: %w", err)
+	}
+	if change != nil {
+		if err := s.db.SetPlanChangeInvoice(ctx, change.ID, invoiceID); err != nil {
+			log.Warn().Err(err).Int("change_id", change.ID).Int("invoice_id", invoiceID).
+				Msg("billing: could not link an applied plan change to its invoice")
+		}
 	}
 	// After the row exists, never before: a partner told an invoice was
 	// generated must be able to fetch it.

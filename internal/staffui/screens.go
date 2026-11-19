@@ -231,8 +231,22 @@ type subscriberDetailData struct {
 	// AvailableProducts fills the attach dropdown: the offered catalogue
 	// only, since a retired product cannot be attached to anyone new.
 	AvailableProducts []billing.Product
-	ShowTickets       bool
-	ShowSpeedOverride bool
+	// ShowPlanChange gates the schedule/cancel forms (FR-BIL-023) to the
+	// roles that may decide what the next renewal charges — the same set
+	// as the immediate plan change. PlanChanges is this subscriber's
+	// scheduled-change history, pending first.
+	ShowPlanChange bool
+	PlanChanges    []billing.ScheduledPlanChange
+	// PendingPlanChange is the one waiting to fire, if any, so the plan
+	// card can say so without the template searching the slice.
+	PendingPlanChange *billing.ScheduledPlanChange
+	// PlanChangeDefaultDate pre-fills the date field with the subscriber's
+	// current expiry, which is what an operator almost always wants: the
+	// change then lands on the next renewal. Formatted for <input
+	// type="date">, and empty for a subscriber who has never had a cycle.
+	PlanChangeDefaultDate string
+	ShowTickets           bool
+	ShowSpeedOverride     bool
 
 	// Credentials card (view/reset password) and plan change.
 	ShowCredentials   bool // can see the card and reveal the password
@@ -291,6 +305,7 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 		ProformaDefaultValid: billing.ProformaDefaultValid,
 		ShowCharges:          canAccess("products", s.Role, s.LeaAccess) && h.products != nil,
 		ShowManageCharges:    canManageProducts(s.Role) && h.products != nil,
+		ShowPlanChange:       canManageCredentials(s.Role) && h.planChanges != nil,
 		PaymentMethods:       billing.PaymentMethods,
 		ShowTickets:          canAccess("tickets", s.Role, s.LeaAccess),
 		ShowSpeedOverride:    s.Role == "isp_owner",
@@ -324,6 +339,17 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 		}
 		detail.Subscriber = sub
 		detail.Grace = newGraceView(sub.GraceUntil, sub.GraceReason, sub.GraceSetBy, sub.PlanExpiry, sub.Status, time.Now())
+		// The next renewal's date, as the default for a scheduled plan
+		// change (FR-BIL-023). An expiry already in the past is no use as
+		// a default — Normalise would refuse it — so today is offered
+		// instead, which applies the change at the next pass.
+		if sub.PlanExpiry != nil {
+			when := billing.DayOf(*sub.PlanExpiry)
+			if today := billing.DayOf(time.Now()); when.Before(today) {
+				when = today
+			}
+			detail.PlanChangeDefaultDate = when.Format("2006-01-02")
+		}
 	}
 
 	// Each panel degrades on its own. A failing diagnostic must not take the
@@ -358,6 +384,26 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 			detail.Tickets = ts
 		}
 	}
+	// Scheduled plan changes (FR-BIL-023). Read whenever the plan card is
+	// shown, not only when the operator may change it: "they are moving to
+	// Fibre on the 1st" is the answer to a support call, and a CSR who
+	// cannot schedule one still needs to see that one exists.
+	if h.planChanges != nil && detail.ShowBilling {
+		list, err := h.planChanges.ListPlanChanges(r.Context(),
+			billing.PlanChangeFilter{SubscriberID: id, Limit: 20})
+		if err != nil {
+			log.Warn().Err(err).Int("id", id).Msg("staffui: scheduled plan changes unavailable")
+		} else {
+			detail.PlanChanges = list
+			for i := range list {
+				if list[i].Pending() {
+					detail.PendingPlanChange = &list[i]
+					break
+				}
+			}
+		}
+	}
+
 	// Catalogue charges (FR-BIL-022). History included, so a billing
 	// question about last month's invoice can be answered from this page.
 	// Degrades on its own like every other panel here.

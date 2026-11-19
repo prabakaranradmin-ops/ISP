@@ -89,6 +89,11 @@ var truncateOrder = []string{
 	"invoice_lines",
 	"subscriber_products",
 	"products",
+	// Migration 059. References subscribers, plans and invoices, so
+	// CASCADE would reach it — listed anyway, for the reason this slice
+	// documents its own order, and because a leaked pending row would
+	// collide on uq_spc_one_pending in the next test to schedule one.
+	"scheduled_plan_changes",
 	"invoices",
 	"gst_rates",
 	"kyc_verifications",

@@ -27,19 +27,24 @@ const (
 // the wallet had already been debited when the step failed, which is what
 // decides how urgent the failure is.
 const (
-	StagePrice      = "price"      // could not compute the invoice: nothing charged
-	StageDebit      = "debit"      // the wallet debit failed: nothing charged
-	StageExpiry     = "expiry"     // charged, but the plan was not extended
-	StageActivation = "activation" // charged, but the first cycle was not activated
-	StageInvoice    = "invoice"    // charged and renewed, but no invoice was written
-	StageDunning    = "dunning"    // renewed, but the dunning state was not restored
+	StagePrice      = "price"       // could not compute the invoice: nothing charged
+	StageDebit      = "debit"       // the wallet debit failed: nothing charged
+	StagePlanChange = "plan_change" // charged at the new plan's price, but not moved onto it
+	StageExpiry     = "expiry"      // charged, but the plan was not extended
+	StageActivation = "activation"  // charged, but the first cycle was not activated
+	StageInvoice    = "invoice"     // charged and renewed, but no invoice was written
+	StageDunning    = "dunning"     // renewed, but the dunning state was not restored
 )
 
 // StageCharged reports whether a failure at stage happened after the
 // wallet was debited.
+//
+// StagePlanChange is charged, and is the worst of these to leave alone: the
+// subscriber paid the new plan's price and is still on the old plan, so
+// they are owed either the plan or the difference (FR-BIL-023).
 func StageCharged(stage string) bool {
 	switch stage {
-	case StageExpiry, StageActivation, StageInvoice, StageDunning:
+	case StagePlanChange, StageExpiry, StageActivation, StageInvoice, StageDunning:
 		return true
 	}
 	return false

@@ -42,8 +42,27 @@ type fakeRenewalScanQuerier struct {
 	// once and then never again.
 	closedOneTime []int
 
+	// duePlanChange is what GetDuePlanChange answers for a subscriber
+	// (FR-BIL-023); absent means none due, which is every pre-existing
+	// test. applied records what ApplyDuePlanChange was asked to do.
+	duePlanChange map[int]*billing.ScheduledPlanChange
+	dueChangeErr  error
+	applied       []appliedPlanChange
+	applyErr      error
+	changeInvoice map[int]int
+
 	gstRate    billing.GstRate
 	gstRateErr error
+}
+
+// appliedPlanChange is one ApplyDuePlanChange call, so a test can assert
+// the subscriber was moved to the right plan on the right dates.
+type appliedPlanChange struct {
+	changeID     int
+	subscriberID int
+	newPlanID    int
+	expiry       time.Time
+	activate     bool
 }
 
 func newFakeRenewalScanQuerier() *fakeRenewalScanQuerier {
@@ -51,6 +70,7 @@ func newFakeRenewalScanQuerier() *fakeRenewalScanQuerier {
 		states:         map[int]billing.DunningState{},
 		setExpiryCalls: map[int]time.Time{},
 		billable:       map[int][]billing.SubscriberProduct{},
+		duePlanChange:  map[int]*billing.ScheduledPlanChange{},
 		gstRate: billing.GstRate{
 			ID: 1, CgstRate: decFromString(nil, "9"), SgstRate: decFromString(nil, "9"), IgstRate: decFromString(nil, "18"),
 		},
@@ -145,6 +165,39 @@ func (f *fakeRenewalScanQuerier) CreateInvoiceWithLines(_ context.Context, inv b
 		}
 	}
 	return len(f.invoiceCalls), nil
+}
+
+func (f *fakeRenewalScanQuerier) GetDuePlanChange(_ context.Context, subscriberID int, _ time.Time) (*billing.ScheduledPlanChange, error) {
+	if f.dueChangeErr != nil {
+		return nil, f.dueChangeErr
+	}
+	return f.duePlanChange[subscriberID], nil
+}
+
+// ApplyDuePlanChange mirrors the store: it records the move and, like the
+// real one, consumes the pending change so a second pass does not see it
+// again.
+func (f *fakeRenewalScanQuerier) ApplyDuePlanChange(_ context.Context, changeID, subscriberID, newPlanID int, newExpiry time.Time, activate bool, _ *int) error {
+	if f.applyErr != nil {
+		return f.applyErr
+	}
+	f.applied = append(f.applied, appliedPlanChange{
+		changeID: changeID, subscriberID: subscriberID, newPlanID: newPlanID,
+		expiry: newExpiry, activate: activate,
+	})
+	delete(f.duePlanChange, subscriberID)
+	// The real store stamps the expiry in the same transaction, so a test
+	// asserting on expiry sees it whichever branch ran.
+	f.setExpiryCalls[subscriberID] = newExpiry
+	return nil
+}
+
+func (f *fakeRenewalScanQuerier) SetPlanChangeInvoice(_ context.Context, changeID, invoiceID int) error {
+	if f.changeInvoice == nil {
+		f.changeInvoice = map[int]int{}
+	}
+	f.changeInvoice[changeID] = invoiceID
+	return nil
 }
 
 func (f *fakeRenewalScanQuerier) GetActiveGstRate(context.Context) (billing.GstRate, error) {

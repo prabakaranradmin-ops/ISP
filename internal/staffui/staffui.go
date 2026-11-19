@@ -246,6 +246,8 @@ type HandlerDeps struct {
 	// Dunning sets grace extensions and the dunning schedule
 	// (FR-BIL-016/017). The API handler.
 	Dunning DunningManager
+	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
+	PlanChanges PlanChangeManager
 	// Products manages the product catalogue and the charges attached to
 	// subscribers (FR-BIL-022).
 	Products ProductManager
@@ -308,6 +310,7 @@ type Handler struct {
 	dunning            DunningManager
 	proformas          ProformaManager
 	products           ProductManager
+	planChanges        PlanChangeManager
 	diagnostics        DiagnosticsRunner
 	billingRuns        BillingRunReader
 	receipts           ReceiptRenderer
@@ -360,6 +363,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		dunning:            deps.Dunning,
 		proformas:          deps.Proformas,
 		products:           deps.Products,
+		planChanges:        deps.PlanChanges,
 		diagnostics:        deps.Diagnostics,
 		billingRuns:        deps.BillingRuns,
 		receipts:           deps.Receipts,
@@ -618,6 +622,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/products/{id}/delete", h.authed(h.requireCSRF(h.DeleteProductForm)))
 	mux.Handle("POST /staff/subscribers/{id}/products", h.authed(h.requireCSRF(h.AttachProductForm)))
 	mux.Handle("POST /staff/subscriber-products/{id}/end", h.authed(h.requireCSRF(h.EndAttachmentForm)))
+
+	// Scheduled plan changes (FR-BIL-023), scheduled and cancelled from
+	// the subscriber's own page where the operator can see their plan.
+	mux.Handle("POST /staff/subscribers/{id}/scheduled-plan-change", h.authed(h.requireCSRF(h.SchedulePlanChangeForm)))
+	mux.Handle("POST /staff/scheduled-plan-changes/{id}/cancel", h.authed(h.requireCSRF(h.CancelPlanChangeForm)))
 	mux.Handle("GET /staff/invoices/{id}/pdf", h.authed(h.InvoicePDF))
 	mux.Handle("GET /staff/invoices/{id}/credit-note", h.authed(h.CreditNotePage))
 	mux.Handle("GET /staff/invoices/payments/{id}/receipt", h.authed(h.ReceiptPDF))
