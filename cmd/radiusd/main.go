@@ -357,6 +357,12 @@ func run(ctx context.Context) error {
 	// FR-BIL-020: each pass is recorded for billing staff. Renewals never
 	// wait on it; a recording failure is logged and the pass goes on.
 	autoRenewalScanner.SetRunRecorder(database.Billing())
+	// FR-BIL-022: the supplier's own state decides whether each invoice
+	// line is taxed CGST+SGST or IGST. Set explicitly from the same config
+	// the API uses — left unset the scanner would fall back to
+	// billing.DefaultHomeState and an operator outside Tamil Nadu would
+	// have every renewal taxed under the wrong head.
+	autoRenewalScanner.SetGSTHomeState(cfg.GSTHomeState)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

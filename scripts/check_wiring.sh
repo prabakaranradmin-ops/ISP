@@ -82,6 +82,21 @@ COMPONENTS=(
     # FR-OBS-005. The requirement is a proactive alert, so a monitor nobody
     # runs satisfies nothing at all.
     "NewAuthFailureMonitor:per-NAS RADIUS auth failure alerting (FR-OBS-005)"
+    # A setter, not a component, and tracked for the reason the Sentinel
+    # config override is a cautionary tale: unset, the auto-renewal scanner
+    # falls back to billing.DefaultHomeState ("TN") and silently taxes every
+    # invoice line of a non-Tamil-Nadu operator as interstate. The total is
+    # identical either way, which is exactly why nobody would notice — only
+    # the destination of the money is wrong, and only on the GST return.
+    #
+    # Qualified with the variable in cmd/radiusd, like
+    # daemon.SetAccountingStore above, and necessarily so: the exclusion
+    # below is `func <symbol>(`, which does not match a *method*
+    # declaration (`func (s *RecurringBillingScanner) SetGSTHomeState(`).
+    # Unqualified, the declaration itself counts as a caller and the check
+    # passes with nothing wired — confirmed by deleting the call and
+    # watching it still report WIRED.
+    "autoRenewalScanner.SetGSTHomeState:supplier state for per-line GST on renewals (FR-BIL-022)"
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -100,10 +115,16 @@ for entry in "${COMPONENTS[@]}"; do
 
     # A caller counts only if it is production code: not a _test.go file, not
     # the declaration itself, and not a doc comment mentioning the name.
+    #
+    # The optional `(receiver)` group matters: without it, `func <symbol>(`
+    # misses a *method* declaration, so an entry naming a method without a
+    # receiver variable counted its own declaration as a caller and
+    # reported WIRED with nothing wired at all. Found by deleting a real
+    # call and watching the check still pass.
     callers=$(grep -rn --include="*.go" "\b${symbol}(" cmd/ internal/ 2>/dev/null \
         | grep -v "_test\.go:" \
         | grep -vE ":[0-9]+:\s*//" \
-        | grep -vE "func ${symbol}\(" \
+        | grep -vE "func (\([^)]*\) )?${symbol}\(" \
         | wc -l)
 
     if [ "$callers" -gt 0 ]; then

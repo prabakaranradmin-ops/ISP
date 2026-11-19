@@ -223,6 +223,10 @@ func run(ctx context.Context) error {
 		Proformas:   database.Billing(),
 		Diagnostics: database.Billing(),
 		BillingRuns: database.Billing(),
+		// Product catalogue and the charges attached to subscribers
+		// (FR-BIL-022), billed as GST-correct invoice lines by the
+		// auto-renewal scanner in cmd/radiusd.
+		Products: database.Billing(),
 		// Payment receipts (FR-BIL-021), headed with the supplier's name.
 		Receipts:   database.Billing(),
 		ReceiptPDF: receiptPDF,
@@ -397,6 +401,10 @@ func run(ctx context.Context) error {
 		Diagnostics: apiHandler,
 		BillingRuns: apiHandler,
 		Receipts:    apiHandler,
+		// Product catalogue and subscriber charges (FR-BIL-022) through the
+		// API handler, so the console validates, audits and counts exactly
+		// as the API does.
+		Products: apiHandler,
 		// Counter payments and cheque bounces through the API's own path.
 		Payments: apiHandler,
 	})

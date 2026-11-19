@@ -246,6 +246,9 @@ type HandlerDeps struct {
 	// Dunning sets grace extensions and the dunning schedule
 	// (FR-BIL-016/017). The API handler.
 	Dunning DunningManager
+	// Products manages the product catalogue and the charges attached to
+	// subscribers (FR-BIL-022).
+	Products ProductManager
 	// Proformas issues, converts and cancels proforma invoices
 	// (FR-BIL-018). The API handler.
 	Proformas ProformaManager
@@ -304,6 +307,7 @@ type Handler struct {
 	payments           PaymentManager
 	dunning            DunningManager
 	proformas          ProformaManager
+	products           ProductManager
 	diagnostics        DiagnosticsRunner
 	billingRuns        BillingRunReader
 	receipts           ReceiptRenderer
@@ -355,6 +359,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		payments:           deps.Payments,
 		dunning:            deps.Dunning,
 		proformas:          deps.Proformas,
+		products:           deps.Products,
 		diagnostics:        deps.Diagnostics,
 		billingRuns:        deps.BillingRuns,
 		receipts:           deps.Receipts,
@@ -410,6 +415,15 @@ var sections = []Section{
 	// job.
 	{"catalogue", "Catalogue", "/staff/catalogue",
 		[]string{"isp_owner", "billing_admin"}, false},
+	// Products & Charges (FR-BIL-022) sits beside Catalogue for the same
+	// reason and with the same reach: adding a router rental or changing
+	// what installation costs re-prices what every subscriber attached to
+	// it is billed from their next renewal. Reading is widened to CSR
+	// inside the screen — a CSR fielding "why is my bill higher this
+	// month" needs to see the charges, not change them — matching the
+	// API's billingOrCSR gate on GET /products.
+	{"products", "Products & Charges", "/staff/products",
+		[]string{"isp_owner", "billing_admin", "csr"}, false},
 	// Router hardware is network-ops territory, same reach as LEA Lookup
 	// below: the owner and whoever configures the NAS estate, not billing
 	// or the front desk.
@@ -593,6 +607,17 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/invoices/proformas/{id}/pdf", h.authed(h.ProformaPDF))
 	mux.Handle("POST /staff/invoices/proformas/{id}/convert", h.authed(h.requireCSRF(h.ConvertProformaForm)))
 	mux.Handle("POST /staff/invoices/proformas/{id}/cancel", h.authed(h.requireCSRF(h.CancelProformaForm)))
+
+	// Product catalogue and subscriber charges (FR-BIL-022). Reading is
+	// gated by the "products" section; the write actions gate again inside
+	// themselves, so a CSR can see the catalogue without changing it.
+	mux.Handle("GET /staff/products", h.authed(h.Products))
+	mux.Handle("POST /staff/products", h.authed(h.requireCSRF(h.CreateProductForm)))
+	mux.Handle("POST /staff/products/{id}", h.authed(h.requireCSRF(h.UpdateProductForm)))
+	mux.Handle("POST /staff/products/{id}/active", h.authed(h.requireCSRF(h.SetProductActiveForm)))
+	mux.Handle("POST /staff/products/{id}/delete", h.authed(h.requireCSRF(h.DeleteProductForm)))
+	mux.Handle("POST /staff/subscribers/{id}/products", h.authed(h.requireCSRF(h.AttachProductForm)))
+	mux.Handle("POST /staff/subscriber-products/{id}/end", h.authed(h.requireCSRF(h.EndAttachmentForm)))
 	mux.Handle("GET /staff/invoices/{id}/pdf", h.authed(h.InvoicePDF))
 	mux.Handle("GET /staff/invoices/{id}/credit-note", h.authed(h.CreditNotePage))
 	mux.Handle("GET /staff/invoices/payments/{id}/receipt", h.authed(h.ReceiptPDF))

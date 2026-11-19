@@ -76,6 +76,29 @@ type InvoiceRow struct {
 	SGST           decimal.Decimal
 	IGST           decimal.Decimal
 	Total          decimal.Decimal
+	// HSNBreakdown is this invoice's own lines grouped by HSN/SAC code
+	// (FR-BIL-022). Since an invoice can now carry a router rental under a
+	// goods code beside bandwidth under a service code, the HSN summary
+	// cannot be a single bucket any more.
+	//
+	// Empty for an invoice with no lines — every invoice raised before
+	// migration 058, and any one-off charge — which is reported wholly
+	// under HSNInternetServices exactly as before.
+	HSNBreakdown []HSNPart
+}
+
+// HSNPart is one HSN/SAC code's share of a single invoice.
+type HSNPart struct {
+	HSN string
+	// Quantity is the summed line quantity under this code. GSTR-1's HSN
+	// table reports quantity against UQC, and a subscriber renting three
+	// routers has supplied three of them.
+	Quantity     decimal.Decimal
+	TaxableValue decimal.Decimal
+	CGST         decimal.Decimal
+	SGST         decimal.Decimal
+	IGST         decimal.Decimal
+	Total        decimal.Decimal
 }
 
 // IsB2B reports whether a supply belongs in the B2B section.
@@ -303,7 +326,26 @@ func BuildReturn(period Period, supplier Supplier, rows []InvoiceRow, notes []Cr
 		rate  string
 	}
 	b2c := map[b2cKey]*B2CLine{}
-	var hsn HSNLine
+	// Keyed by HSN/SAC code (FR-BIL-022): installation under a service
+	// code and a router rental under a goods code are two rows of GSTR-1's
+	// HSN table, not one.
+	hsn := map[string]*HSNLine{}
+	hsnBucket := func(code string) *HSNLine {
+		line, ok := hsn[code]
+		if !ok {
+			line = &HSNLine{
+				HSN: code, UQC: UQCOther,
+				Quantity: decimal.Zero, TotalValue: decimal.Zero,
+				TaxableValue: decimal.Zero, CGST: decimal.Zero,
+				SGST: decimal.Zero, IGST: decimal.Zero,
+			}
+			if code == HSNInternetServices {
+				line.Description = HSNDescription
+			}
+			hsn[code] = line
+		}
+		return line
+	}
 
 	for _, row := range rows {
 		gstCode, _ := GSTCodeFor(row.RecipientState)
@@ -345,13 +387,31 @@ func BuildReturn(period Period, supplier Supplier, rows []InvoiceRow, notes []Cr
 		}
 
 		// The HSN summary spans everything: B2B and B2C alike are supplies
-		// of the same service.
-		hsn.Quantity = hsn.Quantity.Add(decimal.NewFromInt(1))
-		hsn.TaxableValue = hsn.TaxableValue.Add(row.TaxableValue)
-		hsn.CGST = hsn.CGST.Add(row.CGST)
-		hsn.SGST = hsn.SGST.Add(row.SGST)
-		hsn.IGST = hsn.IGST.Add(row.IGST)
-		hsn.TotalValue = hsn.TotalValue.Add(row.Total)
+		// to be reported, each under the code it was taxed as.
+		//
+		// An invoice with lines contributes to one bucket per HSN/SAC code
+		// it carries; one without lines contributes wholly to internet
+		// services, which is what it was before per-line invoicing and
+		// what every invoice raised before migration 058 genuinely is.
+		if len(row.HSNBreakdown) == 0 {
+			b := hsnBucket(HSNInternetServices)
+			b.Quantity = b.Quantity.Add(decimal.NewFromInt(1))
+			b.TaxableValue = b.TaxableValue.Add(row.TaxableValue)
+			b.CGST = b.CGST.Add(row.CGST)
+			b.SGST = b.SGST.Add(row.SGST)
+			b.IGST = b.IGST.Add(row.IGST)
+			b.TotalValue = b.TotalValue.Add(row.Total)
+		} else {
+			for _, part := range row.HSNBreakdown {
+				b := hsnBucket(part.HSN)
+				b.Quantity = b.Quantity.Add(part.Quantity)
+				b.TaxableValue = b.TaxableValue.Add(part.TaxableValue)
+				b.CGST = b.CGST.Add(part.CGST)
+				b.SGST = b.SGST.Add(part.SGST)
+				b.IGST = b.IGST.Add(part.IGST)
+				b.TotalValue = b.TotalValue.Add(part.Total)
+			}
+		}
 
 		ret.Totals.Invoices++
 		ret.Totals.TaxableValue = ret.Totals.TaxableValue.Add(row.TaxableValue)
@@ -393,11 +453,28 @@ func BuildReturn(period Period, supplier Supplier, rows []InvoiceRow, notes []Cr
 		// Quantity is not decremented: a credit note adjusts the value of a
 		// supply that was made, it does not un-make it. Counting it as
 		// negative quantity would report fewer services delivered than were.
-		hsn.TaxableValue = hsn.TaxableValue.Sub(note.TaxableValue)
-		hsn.CGST = hsn.CGST.Sub(note.CGST)
-		hsn.SGST = hsn.SGST.Sub(note.SGST)
-		hsn.IGST = hsn.IGST.Sub(note.IGST)
-		hsn.TotalValue = hsn.TotalValue.Sub(note.Total)
+		//
+		// The credit reduces the internet-services bucket, not the bucket
+		// of whatever the credited invoice actually charged. A credit note
+		// carries no line detail of its own (migration 049) and generally
+		// credits an invoice from an earlier period, which is not in
+		// `rows` to look the breakdown up from — so there is nothing here
+		// to attribute it by.
+		//
+		// Correct for every credit note that exists today, since credit
+		// notes are raised against plan renewals and those are wholly
+		// internet services. It becomes wrong the first time an operator
+		// credits an invoice carrying a router rental: the goods bucket
+		// stays overstated and this one is reduced too far, with the
+		// return's own totals still right. Fixing it properly means
+		// per-line credit notes, which is an open decision recorded
+		// against FR-BIL-022 in the SRS rather than guessed at here.
+		b := hsnBucket(HSNInternetServices)
+		b.TaxableValue = b.TaxableValue.Sub(note.TaxableValue)
+		b.CGST = b.CGST.Sub(note.CGST)
+		b.SGST = b.SGST.Sub(note.SGST)
+		b.IGST = b.IGST.Sub(note.IGST)
+		b.TotalValue = b.TotalValue.Sub(note.Total)
 
 		ret.Totals.CreditNotes++
 		ret.Totals.TaxableValue = ret.Totals.TaxableValue.Sub(note.TaxableValue)
@@ -431,10 +508,13 @@ func BuildReturn(period Period, supplier Supplier, rows []InvoiceRow, notes []Cr
 	// count as something: a month whose only activity was crediting an
 	// earlier invoice still has a net supply to report, negative though it is.
 	if ret.Totals.Invoices > 0 || ret.Totals.CreditNotes > 0 {
-		hsn.HSN = HSNInternetServices
-		hsn.Description = HSNDescription
-		hsn.UQC = UQCOther
-		ret.HSN = []HSNLine{hsn}
+		for _, line := range hsn {
+			ret.HSN = append(ret.HSN, *line)
+		}
+		// By code, for the same byte-identical-re-export reason the other
+		// sections are sorted: map iteration order would otherwise
+		// reshuffle the HSN table on every run.
+		sort.Slice(ret.HSN, func(i, j int) bool { return ret.HSN[i].HSN < ret.HSN[j].HSN })
 	}
 	return ret
 }

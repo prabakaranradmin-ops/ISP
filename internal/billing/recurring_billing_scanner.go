@@ -94,7 +94,13 @@ type RenewalScanQuerier interface {
 	// purchase: it stamps plan_expiry and clears the status to active in one
 	// statement, so the two can never disagree.
 	ActivateSubscriber(ctx context.Context, subscriberID int, expiry time.Time) error
-	CreateInvoice(ctx context.Context, inv Invoice) (int, error)
+	// ListBillableProducts returns the catalogue charges to add to this
+	// subscriber's cycle: recurring attachments, and one-time ones not yet
+	// invoiced (FR-BIL-022).
+	ListBillableProducts(ctx context.Context, subscriberID int) ([]SubscriberProduct, error)
+	// CreateInvoiceWithLines writes the invoice, its lines, and closes
+	// every one-time charge it billed, in one transaction.
+	CreateInvoiceWithLines(ctx context.Context, inv Invoice, lines []InvoiceLine) (int, error)
 	GetActiveGstRate(ctx context.Context) (GstRate, error)
 }
 
@@ -108,6 +114,10 @@ type RecurringBillingScanner struct {
 	events EventEmitter
 	tasks  TaskEnqueuer
 	runs   RunRecorder
+	// gstHomeState is the supplier's own state. Empty means
+	// DefaultHomeState, preserving what CalculateGstInvoice assumed before
+	// per-line invoicing made the home state explicit here.
+	gstHomeState string
 }
 
 // SetRunRecorder records each pass for billing staff (FR-BIL-020). Optional,
@@ -309,7 +319,7 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 	// safer failure: the subscriber keeps their money and dunning picks them
 	// up, whereas charging without an invoice is money taken with no tax
 	// record behind it.
-	inv, err := s.buildInvoice(ctx, c)
+	inv, lines, err := s.buildInvoice(ctx, c)
 	if err != nil {
 		return failed(StagePrice, fmt.Errorf("price renewal for subscriber %d: %w", c.SubscriberID, err))
 	}
@@ -324,7 +334,7 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 		TaxAmount:      inv.CgstAmount.Add(inv.SgstAmount).Add(inv.IgstAmount),
 		Direction:      "debit",
 		CounterAccount: AccountRevenueClearing,
-		Description:    fmt.Sprintf("auto-renewal: %s", c.PlanName),
+		Description:    renewalMemo(c.PlanName, len(lines)),
 	})
 	if err != nil {
 		if errors.Is(err, ErrInsufficientBalance) {
@@ -332,6 +342,15 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 			// concurrent debit on the same subscriber (a staff adjustment,
 			// for instance) — losing that race is an expected outcome, not
 			// a failure: the subscriber is simply left for dunning.
+			//
+			// Since FR-BIL-022 the candidate query's "balance covers the
+			// plan price" test is necessary but no longer sufficient: a
+			// subscriber carrying an installation charge owes plan plus
+			// charges plus GST, so one whose balance covers only the plan
+			// lands here every pass until they top up. That is the right
+			// answer — they are short of what they owe — and the run
+			// record (FR-BIL-020) counts them, so it is visible rather
+			// than silent.
 			autorenewalTotal.WithLabelValues("insufficient_balance").Inc()
 			res.outcome = outcomeInsufficient
 			return res
@@ -363,7 +382,7 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 		return failed(StageExpiry, fmt.Errorf("extend plan_expiry for subscriber %d: %w", c.SubscriberID, err))
 	}
 
-	if err := s.persistInvoice(ctx, inv); err != nil {
+	if err := s.persistInvoice(ctx, inv, lines); err != nil {
 		// The wallet debit above already committed and must not be undone
 		// just because persisting failed — log for reconciliation rather
 		// than leaving a charged subscriber un-invoiced on a retry.
@@ -403,6 +422,22 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 		res.outcome = outcomeActivated
 	}
 	return res
+}
+
+// renewalMemo describes the debit on the wallet ledger. With catalogue
+// charges on the cycle the plan name alone no longer accounts for the
+// amount, and a subscriber reading their ledger should be able to see why
+// this month cost more than the plan.
+func renewalMemo(planName string, lineCount int) string {
+	if lineCount <= 1 {
+		return fmt.Sprintf("auto-renewal: %s", planName)
+	}
+	extras := lineCount - 1
+	noun := "charges"
+	if extras == 1 {
+		noun = "charge"
+	}
+	return fmt.Sprintf("auto-renewal: %s + %d %s", planName, extras, noun)
 }
 
 // wasCutOff reports whether a dunning stage means service had actually been
@@ -457,27 +492,68 @@ func (s *RecurringBillingScanner) enqueueRestorationNotice(ctx context.Context, 
 // plan's volume so the invoice is not silently missing FR-BIL-007's summary,
 // but the "used" half of that summary is a known limitation for the
 // auto-renewal path until that aggregation exists.
-// buildInvoice computes the cycle's invoice without persisting it, so renew
-// can debit exactly what the invoice says is owed.
+// buildInvoice computes the cycle's invoice and its lines without
+// persisting either, so renew can debit exactly what the invoice says is
+// owed.
 //
 // Split from persistence deliberately: the total has to be known before the
 // wallet is touched, and building it is pure computation that can fail
 // (a missing GST rate) without any side effect to unwind.
-func (s *RecurringBillingScanner) buildInvoice(ctx context.Context, c RenewalCandidate) (Invoice, error) {
+//
+// The cycle is the plan line plus every catalogue charge the subscriber
+// holds — recurring rentals every cycle, one-time charges once
+// (FR-BIL-022). Each is taxed in its own right and the header is their
+// sum; see ComposeInvoice.
+//
+// A failure to read the attached products stops the renewal rather than
+// billing the plan alone. Under-billing silently is the worse outcome: the
+// subscriber would be renewed, the rental would go uncharged for that
+// cycle, and nothing in the invoice would show that anything was missing.
+func (s *RecurringBillingScanner) buildInvoice(ctx context.Context, c RenewalCandidate) (Invoice, []InvoiceLine, error) {
 	rate, err := s.db.GetActiveGstRate(ctx)
 	if err != nil {
-		return Invoice{}, fmt.Errorf("get active gst rate: %w", err)
+		return Invoice{}, nil, fmt.Errorf("get active gst rate: %w", err)
 	}
-	inv := CalculateGstInvoice(c.PlanPrice, c.RegisteredState, rate)
+
+	attached, err := s.db.ListBillableProducts(ctx, c.SubscriberID)
+	if err != nil {
+		return Invoice{}, nil, fmt.Errorf("list billable products: %w", err)
+	}
+
+	charges := make([]LineCharge, 0, len(attached)+1)
+	charges = append(charges, PlanCharge(c.PlanName, c.PlanPrice))
+	for _, sp := range attached {
+		charges = append(charges, ProductCharge(sp))
+	}
+
+	lines, inv, err := ComposeInvoice(charges, c.RegisteredState, s.homeState(), rate)
+	if err != nil {
+		return Invoice{}, nil, fmt.Errorf("compose invoice: %w", err)
+	}
 	inv.SubscriberID = c.SubscriberID
 	inv.GbIncluded = c.PlanVolumeGB
 	inv.GbUsed = decimal.Zero
-	return inv, nil
+	return inv, lines, nil
 }
 
-// persistInvoice writes the computed invoice and announces it.
-func (s *RecurringBillingScanner) persistInvoice(ctx context.Context, inv Invoice) error {
-	invoiceID, err := s.db.CreateInvoice(ctx, inv)
+// homeState is the supplier's own state, deciding CGST+SGST against IGST.
+func (s *RecurringBillingScanner) homeState() string {
+	if s.gstHomeState != "" {
+		return s.gstHomeState
+	}
+	return DefaultHomeState
+}
+
+// SetGSTHomeState configures the supplier's own state. Without it the
+// scanner uses DefaultHomeState, which is what CalculateGstInvoice did
+// before this was configurable.
+func (s *RecurringBillingScanner) SetGSTHomeState(state string) { s.gstHomeState = state }
+
+// persistInvoice writes the computed invoice with its lines and announces
+// it. Closing the one-time charges it billed is part of the same
+// transaction — see CreateInvoiceWithLines.
+func (s *RecurringBillingScanner) persistInvoice(ctx context.Context, inv Invoice, lines []InvoiceLine) error {
+	invoiceID, err := s.db.CreateInvoiceWithLines(ctx, inv, lines)
 	if err != nil {
 		return fmt.Errorf("create invoice: %w", err)
 	}

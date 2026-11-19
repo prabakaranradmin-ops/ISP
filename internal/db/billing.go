@@ -751,6 +751,15 @@ func (s *BillingStore) GetInvoiceDetail(ctx context.Context, invoiceID int) (*ap
 	} else {
 		d.SpeedActive = rateLimit
 	}
+
+	// The invoice's own lines (FR-BIL-022), loaded here so every caller
+	// that renders an invoice — the staff PDF route, the portal's, and the
+	// JSON detail — itemises it without each having to ask separately.
+	// Empty for invoices raised before migration 058, which the template
+	// renders from the header as it always did.
+	if d.Lines, err = s.ListInvoiceLines(ctx, invoiceID); err != nil {
+		return nil, err
+	}
 	return &d, nil
 }
 
@@ -796,7 +805,74 @@ func (s *BillingStore) ListInvoicesForGSTR1(ctx context.Context, year int, month
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate GSTR-1 invoice rows: %w", err)
+	}
+
+	// Attach each invoice's HSN/SAC breakdown (FR-BIL-022), so the HSN
+	// summary reports a router rental under its goods code rather than
+	// filing it as internet services. One grouped query for the whole
+	// period rather than one per invoice.
+	if err := s.attachHSNBreakdowns(ctx, out, from, to); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// attachHSNBreakdowns fills InvoiceRow.HSNBreakdown for the given period.
+//
+// Invoices with no lines get none, and BuildReturn reports those wholly
+// under internet services — which is what they are.
+func (s *BillingStore) attachHSNBreakdowns(ctx context.Context, invoices []billing.InvoiceRow, from, to time.Time) error {
+	if len(invoices) == 0 {
+		return nil
+	}
+	const q = `
+		SELECT l.invoice_id, l.hsn_sac, SUM(l.quantity)::text,
+		       SUM(l.base_amount)::text, SUM(l.cgst_amount)::text,
+		       SUM(l.sgst_amount)::text, SUM(l.igst_amount)::text,
+		       SUM(l.total_amount)::text
+		  FROM invoice_lines l
+		  JOIN invoices i ON i.id = l.invoice_id
+		 WHERE i.created_at >= $1 AND i.created_at < $2
+		 GROUP BY l.invoice_id, l.hsn_sac
+		 ORDER BY l.invoice_id, l.hsn_sac`
+
+	rows, err := s.pool.Query(ctx, q, from, to)
+	if err != nil {
+		return fmt.Errorf("db: list invoice line HSN breakdown: %w", err)
+	}
+	defer rows.Close()
+
+	byInvoice := make(map[int][]billing.HSNPart, len(invoices))
+	for rows.Next() {
+		var (
+			invoiceID                          int
+			hsnSAC                             string
+			qty, base, cgst, sgst, igst, total string
+		)
+		if err := rows.Scan(&invoiceID, &hsnSAC, &qty, &base, &cgst, &sgst, &igst, &total); err != nil {
+			return fmt.Errorf("db: scan invoice line HSN row: %w", err)
+		}
+		part := billing.HSNPart{HSN: hsnSAC}
+		for dst, src := range map[*decimal.Decimal]string{
+			&part.Quantity: qty, &part.TaxableValue: base, &part.CGST: cgst,
+			&part.SGST: sgst, &part.IGST: igst, &part.Total: total,
+		} {
+			if *dst, err = parseDecimal(src); err != nil {
+				return err
+			}
+		}
+		byInvoice[invoiceID] = append(byInvoice[invoiceID], part)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("db: iterate invoice line HSN rows: %w", err)
+	}
+
+	for i := range invoices {
+		invoices[i].HSNBreakdown = byInvoice[invoices[i].InvoiceID]
+	}
+	return nil
 }
 
 // ListCreditNotesForGSTR1 returns every credit note issued in a calendar

@@ -30,7 +30,17 @@ type fakeRenewalScanQuerier struct {
 	failActivateForSubscriber int // 0 = never fail
 
 	invoiceCalls     []billing.Invoice
+	lineCalls        [][]billing.InvoiceLine
 	createInvoiceErr error
+
+	// billable maps a subscriber to the catalogue charges on their cycle
+	// (FR-BIL-022). Absent means none, which is every pre-existing test.
+	billable    map[int][]billing.SubscriberProduct
+	billableErr error
+	// closedOneTime records the attachments CreateInvoiceWithLines was
+	// asked to close, so a test can assert a one-time charge is billed
+	// once and then never again.
+	closedOneTime []int
 
 	gstRate    billing.GstRate
 	gstRateErr error
@@ -40,6 +50,7 @@ func newFakeRenewalScanQuerier() *fakeRenewalScanQuerier {
 	return &fakeRenewalScanQuerier{
 		states:         map[int]billing.DunningState{},
 		setExpiryCalls: map[int]time.Time{},
+		billable:       map[int][]billing.SubscriberProduct{},
 		gstRate: billing.GstRate{
 			ID: 1, CgstRate: decFromString(nil, "9"), SgstRate: decFromString(nil, "9"), IgstRate: decFromString(nil, "18"),
 		},
@@ -101,11 +112,38 @@ func (f *fakeRenewalScanQuerier) ActivateSubscriber(_ context.Context, subscribe
 	return nil
 }
 
-func (f *fakeRenewalScanQuerier) CreateInvoice(_ context.Context, inv billing.Invoice) (int, error) {
+func (f *fakeRenewalScanQuerier) ListBillableProducts(_ context.Context, subscriberID int) ([]billing.SubscriberProduct, error) {
+	if f.billableErr != nil {
+		return nil, f.billableErr
+	}
+	return f.billable[subscriberID], nil
+}
+
+// CreateInvoiceWithLines mirrors the store: it records the invoice and its
+// lines, and closes the one-time charges the invoice billed. The real
+// implementation does all three in one transaction; here the point is only
+// that the scanner hands over lines that agree with the header and names
+// the one-time attachments to close.
+func (f *fakeRenewalScanQuerier) CreateInvoiceWithLines(_ context.Context, inv billing.Invoice, lines []billing.InvoiceLine) (int, error) {
 	if f.createInvoiceErr != nil {
 		return 0, f.createInvoiceErr
 	}
 	f.invoiceCalls = append(f.invoiceCalls, inv)
+	f.lineCalls = append(f.lineCalls, lines)
+	for _, l := range lines {
+		if l.OneTime && l.AttachmentID != nil {
+			f.closedOneTime = append(f.closedOneTime, *l.AttachmentID)
+			// Billed once: drop it from what is billable next pass, as the
+			// store's status change does.
+			remaining := f.billable[inv.SubscriberID][:0]
+			for _, sp := range f.billable[inv.SubscriberID] {
+				if sp.ID != *l.AttachmentID {
+					remaining = append(remaining, sp)
+				}
+			}
+			f.billable[inv.SubscriberID] = remaining
+		}
+	}
 	return len(f.invoiceCalls), nil
 }
 

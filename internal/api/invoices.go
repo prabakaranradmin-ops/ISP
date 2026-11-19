@@ -144,6 +144,13 @@ type InvoiceDetail struct {
 	// LineDescription is set on a one-off charge's invoice (a converted
 	// proforma, FR-BIL-018) and printed instead of the plan line.
 	LineDescription string `json:"description,omitempty"`
+	// Lines itemises the invoice (FR-BIL-022): the plan plus whatever
+	// catalogue charges the subscriber held that cycle, each with its own
+	// HSN/SAC code and its own tax. Their amounts sum to the header's.
+	//
+	// Empty for invoices raised before migration 058 — those carried their
+	// whole value in the header, and still print from it.
+	Lines []billing.InvoiceLine `json:"lines,omitempty"`
 }
 
 // InvoiceQuerier lists and loads invoices. Satisfied by *db.BillingStore.
@@ -303,5 +310,6 @@ func BuildInvoiceData(d *InvoiceDetail) billing.InvoiceData {
 		SpeedActive:     d.SpeedActive,
 		FUPApplied:      d.FUPApplied,
 		LineDescription: d.LineDescription,
+		Lines:           d.Lines,
 	}
 }

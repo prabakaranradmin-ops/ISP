@@ -1,0 +1,126 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Products &amp; charges</h1>
+
+<p class="muted">What an ISP sells besides bandwidth: installation, router rental, a static IP, add-ons.
+  A <strong>one-time</strong> charge goes on the subscriber's next invoice and is then done with;
+  a <strong>recurring</strong> charge is billed on every renewal until you end it.
+  Each appears as its own line on the GST tax invoice under its own HSN/SAC code, taxed in its own right.
+  Charges are attached to a subscriber from their Billing tab.</p>
+
+{{with $d}}
+<nav class="filterbar" aria-label="Filter by kind">
+  {{range .Chips}}
+  <a class="chip{{if eq .Key $d.Kind}} on{{end}}" href="/staff/products{{if .Key}}?kind={{.Key}}{{end}}">{{.Label}}</a>
+  {{end}}
+</nav>
+
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Code</th><th>Name</th><th>Billed</th><th class="right">Price (excl. GST)</th>
+      <th class="right">HSN/SAC</th><th class="right">Subscribers</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr{{if not .Active}} class="muted"{{end}}>
+        <td class="num">{{.Code}}</td>
+        <td>{{.Name}}{{with .Description}}<br><span class="muted small">{{.}}</span>{{end}}</td>
+        <td>{{.KindLabel}}</td>
+        <td class="num right">{{money .Price}}</td>
+        <td class="num right">{{.HSNSAC}}</td>
+        <td class="num right">
+          {{if .Attached}}<a href="/staff/products?show={{.ID}}{{if $d.Kind}}&amp;kind={{$d.Kind}}{{end}}">{{.Attached}}</a>
+          {{else}}0{{end}}
+        </td>
+        <td>{{if .Active}}<span class="pill ok">offered</span>{{else}}<span class="pill neutral">retired</span>{{end}}</td>
+        <td class="right">
+          {{if $d.CanManage}}
+            <form method="post" action="/staff/products/{{.ID}}/active" class="inline"
+                  data-confirm="{{if .Active}}Retire {{.Code}}? Nobody new can be attached to it. The {{.Attached}} subscriber(s) who already hold it keep being billed until you end their charge individually.{{else}}Offer {{.Code}} again?{{end}}">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="active" value="{{if .Active}}false{{else}}true{{end}}">
+              <input type="hidden" name="from_kind" value="{{$d.Kind}}">
+              <button type="submit">{{if .Active}}Retire{{else}}Offer{{end}}</button>
+            </form>
+            {{if not .Attached}}
+            <form method="post" action="/staff/products/{{.ID}}/delete" class="inline"
+                  data-confirm="Delete {{.Code}} for good? Only possible because nothing has ever used it.">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="from_kind" value="{{$d.Kind}}">
+              <button type="submit" class="btn-danger">Delete</button>
+            </form>
+            {{end}}
+          {{end}}
+        </td>
+      </tr>
+      {{if .Subscribers}}
+      <tr>
+        <td colspan="8">
+          <strong>Who holds {{.Code}}</strong>
+          <table>
+            <thead><tr>
+              <th>Subscriber</th><th class="right">Qty</th><th class="right">Unit price</th>
+              <th class="right">Amount</th><th>Status</th><th>Attached</th>
+            </tr></thead>
+            <tbody>
+            {{range .Subscribers}}
+              <tr>
+                <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+                <td class="num right">{{.Quantity}}</td>
+                <td class="num right">{{money .UnitPrice}}</td>
+                <td class="num right">{{money .Base}}</td>
+                <td>{{.StatusLabel}}{{with .EndReason}}<br><span class="muted small">{{.}}</span>{{end}}</td>
+                <td class="num">{{datetime .AttachedAt}}<br><span class="muted small">by {{.AttachedBy}}</span></td>
+              </tr>
+            {{end}}
+            </tbody>
+          </table>
+          <p class="muted small">A subscriber's unit price is what it was when they were attached — changing the
+            catalogue price here never re-prices anyone already on it.</p>
+        </td>
+      </tr>
+      {{end}}
+    {{else}}
+      <tr><td colspan="8" class="muted">No products yet{{if .Kind}} of that kind{{end}}.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{if .CanManage}}
+<div class="card">
+  <h2>Add a product</h2>
+  <form method="post" action="/staff/products" class="formgrid">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Code
+      <input name="code" required maxlength="32" placeholder="ROUTER-RENT"
+             pattern="[A-Za-z0-9][A-Za-z0-9-]{1,31}">
+      <span class="muted small">2–32 characters: letters, digits and hyphens. Upper-cased when saved.</span>
+    </label>
+    <label>Name
+      <input name="name" required maxlength="120" placeholder="Router rental">
+    </label>
+    <label>Billed
+      <select name="kind" required>
+        {{range $d.Kinds}}<option value="{{.Key}}">{{.Label}}</option>{{end}}
+      </select>
+    </label>
+    <label>Price, excluding GST
+      <input name="price" required inputmode="decimal" placeholder="150.00">
+      <span class="muted small">GST is added on top when the charge is billed, at the rate in force that day.</span>
+    </label>
+    <label>HSN/SAC code
+      <input name="hsn_sac" required inputmode="numeric" pattern="[0-9]{4,8}" placeholder="8517">
+      <span class="muted small">4–8 digits. A router is goods (8517); bandwidth is a service (998432).
+        This prints on the tax invoice line, so it has to be the right one for what is being sold.</span>
+    </label>
+    <label>Description <span class="muted small">(optional)</span>
+      <input name="description" maxlength="500" placeholder="Monthly rental for the ONT/router supplied">
+    </label>
+    <button type="submit" class="primary">Add product</button>
+  </form>
+</div>
+{{end}}
+{{end}}
+{{end}}

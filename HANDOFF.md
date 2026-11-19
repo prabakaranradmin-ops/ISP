@@ -245,6 +245,43 @@ name/port override.
   drifts (the cert reads as not-yet-valid). Cached images still work; do not
   "fix" it by changing the system clock.
 
+### Running the DB suite with Docker down
+
+`scripts/run_db_tests.sh` needs Docker. When the daemon is not running, the
+suite can go against a throwaway cluster built from the PostgreSQL that
+ships with the product, on a port of its own:
+
+```bash
+PGBIN="/c/Program Files/ISP BSS/pgsql/bin"
+D=<a scratch dir>/pgtest
+echo postgres > "$D.pw"
+"$PGBIN/initdb.exe" -D "$D/data" -U postgres --pwfile="$D.pw" -A trust -E UTF8
+"$PGBIN/pg_ctl.exe" -D "$D/data" -l "$D/server.log" \
+    -o "-p 55432 -c listen_addresses=127.0.0.1" start   # blocks under MSYS; it
+                                                        # has started anyway —
+                                                        # confirm with pg_isready
+"$PGBIN/createdb.exe" -h 127.0.0.1 -p 55432 -U postgres isp_bss_oss
+export MSYS_NO_PATHCONV=1
+export TEST_DB_DSN="postgres://postgres:postgres@127.0.0.1:55432/isp_bss_oss?sslmode=disable"
+go run github.com/pressly/goose/v3/cmd/goose@v3.19.2 -dir ./migrations postgres "$TEST_DB_DSN" up
+go test -tags=integration -count=1 -p 1 -timeout 25m \
+    ./internal/db/... ./internal/cache/... ./internal/fup/... \
+    ./internal/reporting/... ./internal/jobqueue/...
+```
+
+Two things that will bite:
+
+- **The database must be named `isp_bss_oss`.** Migration 019 hard-codes that
+  name in its `GRANT CONNECT ON DATABASE` — any other name fails at 019 with
+  `database "isp_bss_oss" does not exist`, which reads as a connection
+  problem and is not one.
+- **Never point `TEST_DB_DSN` at the live `ISPBSSPostgres` service on 5432.**
+  The harness `TRUNCATE`s the tables it owns; against the installed system
+  that is the operator's real data. Hence a separate cluster on 55432 rather
+  than another database inside the running one.
+
+`pg_ctl stop` the cluster and delete its directory when done.
+
 ### Paths and Docker
 
 `MSYS_NO_PATHCONV=1` is required for most `docker run` arguments, but it
@@ -302,8 +339,10 @@ where `gcc` resolves if race detection matters for what you are changing.
 
 ```bash
 gofmt -l internal/ cmd/ && go build ./... && go vet -tags=integration ./...
-go test -count=1 ./...                      # 23 packages with tests
+go test -count=1 ./...                      # 31 packages with tests
 bash scripts/run_db_tests.sh -timeout 25m   # ~700s against real PostgreSQL
+                                            # (Docker down? see "Running the
+                                            #  DB suite with Docker down")
 golangci-lint run --build-tags=integration ./...   # 116 known, none recent
 ./scripts/check_wiring.sh                   # 20/20 wired
 npx playwright test                         # 45 browser tests
@@ -342,6 +381,12 @@ execution, across several sessions:
   years, deleting GST records early in a way nobody would ever notice
 - the JWT middleware answering `text/plain` while every handler answered
   JSON, making token expiry the one error a mobile client could not parse
+- a console screen (Products & Charges, FR-BIL-022) whose handler, routes,
+  role gate and template file were all correct and whose name was missing
+  from `staffui.pageNames`, so the page answered 500 while the whole Go
+  suite compiled and passed. `TestEveryPageTemplateIsRegistered` now
+  compares the registry against the embedded `templates/` directory in both
+  directions, which is the check that could not have been fooled
 
 When a check could plausibly pass for the wrong reason, break it
 deliberately and confirm it fails. Every negative control run so far has

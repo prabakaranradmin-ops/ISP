@@ -54,6 +54,16 @@ type InvoiceData struct {
 	SpeedActive string // e.g. "100 Mbps / 100 Mbps"
 	FUPApplied  bool
 
+	// Lines are the invoice's own lines (FR-BIL-022), printed as an
+	// itemised table with an HSN/SAC column when there are any.
+	//
+	// Empty for every invoice raised before migration 058, which carried
+	// its whole value in the header — those still render from BaseAmount
+	// and the tax fields above, so an old invoice reprints exactly as it
+	// always did. Also empty for a converted proforma, which has one
+	// charge and uses LineDescription.
+	Lines []InvoiceLine
+
 	// LineDescription replaces the plan line for a one-off charge (a
 	// converted proforma, FR-BIL-018). Empty for a plan renewal. A one-off
 	// charge has no usage to summarise, so the usage block is left out.
@@ -64,6 +74,16 @@ type InvoiceData struct {
 	Proforma   bool
 	ValidUntil time.Time
 }
+
+// InterstateTax reports whether this invoice is taxed as an interstate
+// supply (IGST) rather than intrastate (CGST + SGST), which decides how
+// many tax columns the itemised table prints.
+//
+// Read from the amount, not the rate, and matching the single-line
+// template's long-standing test: an invoice is interstate because IGST was
+// actually charged on it. An invoice with no tax at all reads as
+// intrastate and prints two zero columns, exactly as it did before.
+func (d InvoiceData) InterstateTax() bool { return d.IGSTAmount.Sign() > 0 }
 
 // invoicePDFTimeout bounds one GeneratePDF call: launching the browser,
 // loading the invoice HTML and printing it to PDF. 30s matches the timeout
@@ -259,6 +279,7 @@ var invoiceHTMLTemplate = template.Must(template.New("invoice").Parse(`<!DOCTYPE
   .usage-row { display: flex; justify-content: space-between; margin: 4px 0; }
   .footer { margin-top: 24px; font-size: 10px; color: #666; }
   .notice { border: 1px solid #f0c36d; background: #fff8e1; padding: 8px 12px; }
+  .num { text-align: right; }
 </style>
 </head>
 <body>
@@ -286,6 +307,37 @@ var invoiceHTMLTemplate = template.Must(template.New("invoice").Parse(`<!DOCTYPE
     <tr><th>State (for GST)</th><td colspan="3">{{.RegisteredState}}</td></tr>
   </table>
 
+  {{if .Lines}}
+  <!-- Itemised lines — FR-BIL-022. Each line is a separate supply with its
+       own HSN/SAC code and its own tax; the totals below are their sums. -->
+  <table>
+    <tr>
+      <th>#</th><th>Description</th><th class="num">HSN/SAC</th><th class="num">Qty</th>
+      <th class="num">Rate (₹)</th><th class="num">Taxable (₹)</th>
+      {{if $.InterstateTax}}<th class="num">IGST (₹)</th>{{else}}<th class="num">CGST (₹)</th><th class="num">SGST (₹)</th>{{end}}
+      <th class="num">Total (₹)</th>
+    </tr>
+    {{range .Lines}}
+    <tr>
+      <td>{{.LineNo}}</td><td>{{.Description}}</td><td class="num">{{.HSNSAC}}</td>
+      <td class="num">{{.Quantity}}</td><td class="num">{{.UnitPrice.StringFixed 2}}</td>
+      <td class="num">{{.BaseAmount.StringFixed 2}}</td>
+      {{if $.InterstateTax}}<td class="num">{{.IGSTAmount.StringFixed 2}}</td>{{else}}<td class="num">{{.CGSTAmount.StringFixed 2}}</td><td class="num">{{.SGSTAmount.StringFixed 2}}</td>{{end}}
+      <td class="num">{{.TotalAmount.StringFixed 2}}</td>
+    </tr>
+    {{end}}
+    <tr class="total">
+      <td colspan="5">Total</td>
+      <td class="num">{{.BaseAmount.StringFixed 2}}</td>
+      {{if .InterstateTax}}<td class="num">{{.IGSTAmount.StringFixed 2}}</td>{{else}}<td class="num">{{.CGSTAmount.StringFixed 2}}</td><td class="num">{{.SGSTAmount.StringFixed 2}}</td>{{end}}
+      <td class="num">₹{{.TotalAmount.StringFixed 2}}</td>
+    </tr>
+  </table>
+  <p class="footer">
+    {{if .InterstateTax}}IGST @ {{.IGSTRate}}%{{else}}CGST @ {{.CGSTRate}}% and SGST @ {{.SGSTRate}}%{{end}},
+    charged on each line in its own right and totalled above.
+  </p>
+  {{else}}
   <table>
     <tr><th>Description</th><th>Amount (₹)</th></tr>
     <tr><td>{{if .LineDescription}}{{.LineDescription}}{{else}}Internet Plan — {{.PlanName}}{{end}}</td><td>{{.BaseAmount.StringFixed 2}}</td></tr>
@@ -297,6 +349,7 @@ var invoiceHTMLTemplate = template.Must(template.New("invoice").Parse(`<!DOCTYPE
     {{end}}
     <tr class="total"><td>Total</td><td>₹{{.TotalAmount.StringFixed 2}}</td></tr>
   </table>
+  {{end}}
 
   {{if not .LineDescription}}
   <!-- Usage Summary Block — FR-BIL-007 plain-language requirement -->

@@ -220,8 +220,19 @@ type subscriberDetailData struct {
 	// ShowProforma: the same roles, when proformas are wired (FR-BIL-018).
 	ShowProforma         bool
 	ProformaDefaultValid int
-	ShowTickets          bool
-	ShowSpeedOverride    bool
+	// Charges are the catalogue products attached to this subscriber
+	// (FR-BIL-022), including ended and already-billed ones so the history
+	// of what they were charged is on the page. ShowCharges is read-only
+	// reach (owner, billing, CSR); ShowManageCharges gates the attach and
+	// end forms to owner and billing.
+	ShowCharges       bool
+	ShowManageCharges bool
+	Charges           []billing.SubscriberProduct
+	// AvailableProducts fills the attach dropdown: the offered catalogue
+	// only, since a retired product cannot be attached to anyone new.
+	AvailableProducts []billing.Product
+	ShowTickets       bool
+	ShowSpeedOverride bool
 
 	// Credentials card (view/reset password) and plan change.
 	ShowCredentials   bool // can see the card and reveal the password
@@ -278,6 +289,8 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 		ShowGrace:            canRecordPayment(s.Role) && h.dunning != nil,
 		ShowProforma:         canRecordPayment(s.Role) && h.proformas != nil,
 		ProformaDefaultValid: billing.ProformaDefaultValid,
+		ShowCharges:          canAccess("products", s.Role, s.LeaAccess) && h.products != nil,
+		ShowManageCharges:    canManageProducts(s.Role) && h.products != nil,
 		PaymentMethods:       billing.PaymentMethods,
 		ShowTickets:          canAccess("tickets", s.Role, s.LeaAccess),
 		ShowSpeedOverride:    s.Role == "isp_owner",
@@ -343,6 +356,24 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 	if detail.ShowTickets && h.tickets != nil {
 		if ts, err := h.tickets.ListTickets(r.Context(), id); err == nil {
 			detail.Tickets = ts
+		}
+	}
+	// Catalogue charges (FR-BIL-022). History included, so a billing
+	// question about last month's invoice can be answered from this page.
+	// Degrades on its own like every other panel here.
+	if detail.ShowCharges {
+		if charges, err := h.products.ListSubscriberProducts(r.Context(), id, true); err == nil {
+			detail.Charges = charges
+		} else {
+			log.Warn().Err(err).Int("id", id).Msg("staffui: charges panel unavailable")
+		}
+		if detail.ShowManageCharges {
+			if list, err := h.products.ListProducts(r.Context(),
+				billing.ProductFilter{ActiveOnly: true, Limit: 200}); err == nil {
+				detail.AvailableProducts = list
+			} else {
+				log.Warn().Err(err).Msg("staffui: product list for the attach form unavailable")
+			}
 		}
 	}
 

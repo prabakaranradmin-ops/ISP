@@ -403,3 +403,111 @@ func TestDerivedGSTRate(t *testing.T) {
 		})
 	}
 }
+
+// ── HSN summary per code — FR-BIL-022 ───────────────────────────────────────
+
+// The HSN summary used to be a single bucket under 998432, which was right
+// while an invoice could only ever be a plan renewal. Once an invoice can
+// carry a router rental under a goods code, filing it as internet services
+// is a misdeclaration — the money is right and the classification is not,
+// the same class of error NormaliseState was written for.
+func TestFR_BIL_022_HSNSummarySplitsByCode(t *testing.T) {
+	// 500 bandwidth + 300 of router (3 × 100), taxed intrastate at 9/9.
+	row := InvoiceRow{
+		InvoiceID: 1, InvoiceDate: jan(1), SubscriberID: 1,
+		SubscriberName: "Sub", RecipientState: "TN",
+		TaxableValue: d2("800.00"), CGST: d2("72.00"), SGST: d2("72.00"),
+		IGST: decimal.Zero, Total: d2("944.00"),
+		HSNBreakdown: []HSNPart{
+			{HSN: "998432", Quantity: d2("1"), TaxableValue: d2("500.00"),
+				CGST: d2("45.00"), SGST: d2("45.00"), IGST: decimal.Zero, Total: d2("590.00")},
+			{HSN: "8517", Quantity: d2("3"), TaxableValue: d2("300.00"),
+				CGST: d2("27.00"), SGST: d2("27.00"), IGST: decimal.Zero, Total: d2("354.00")},
+		},
+	}
+
+	ret := BuildReturn(Period{2026, time.January}, testSupplier, []InvoiceRow{row}, nil)
+
+	if len(ret.HSN) != 2 {
+		t.Fatalf("want 2 HSN rows, got %d: %+v", len(ret.HSN), ret.HSN)
+	}
+	// Sorted by code, so a re-export is byte-identical: "8517" < "998432".
+	if ret.HSN[0].HSN != "8517" || ret.HSN[1].HSN != "998432" {
+		t.Errorf("HSN rows are %s then %s", ret.HSN[0].HSN, ret.HSN[1].HSN)
+	}
+	if !ret.HSN[0].TaxableValue.Equal(d2("300.00")) || !ret.HSN[0].Quantity.Equal(d2("3")) {
+		t.Errorf("the goods row reads %s over qty %s", ret.HSN[0].TaxableValue, ret.HSN[0].Quantity)
+	}
+	if !ret.HSN[1].TaxableValue.Equal(d2("500.00")) {
+		t.Errorf("the services row reads %s", ret.HSN[1].TaxableValue)
+	}
+
+	// Whatever the split, the HSN table must still account for the whole
+	// return — that is the reconciliation an accountant ties against.
+	var taxable, cgst, sgst, igst, total decimal.Decimal
+	for _, h := range ret.HSN {
+		taxable = taxable.Add(h.TaxableValue)
+		cgst, sgst, igst = cgst.Add(h.CGST), sgst.Add(h.SGST), igst.Add(h.IGST)
+		total = total.Add(h.TotalValue)
+	}
+	if !taxable.Equal(ret.Totals.TaxableValue) || !cgst.Equal(ret.Totals.CGST) ||
+		!sgst.Equal(ret.Totals.SGST) || !igst.Equal(ret.Totals.IGST) ||
+		!total.Equal(ret.Totals.Total) {
+		t.Errorf("the HSN table does not sum to the return totals: taxable %s vs %s, total %s vs %s",
+			taxable, ret.Totals.TaxableValue, total, ret.Totals.Total)
+	}
+}
+
+// An invoice with no lines — every one raised before migration 058 — is
+// still reported wholly under internet services, in one row, exactly as
+// before. This is the regression the change above could most easily cause.
+func TestFR_BIL_022_LinelessInvoicesStillFileUnderInternetServices(t *testing.T) {
+	ret := BuildReturn(Period{2026, time.January}, testSupplier,
+		[]InvoiceRow{tnInvoice(1, ""), kaInvoice(2, "")}, nil)
+
+	if len(ret.HSN) != 1 {
+		t.Fatalf("want a single HSN row, got %d: %+v", len(ret.HSN), ret.HSN)
+	}
+	h := ret.HSN[0]
+	if h.HSN != HSNInternetServices || h.Description != HSNDescription || h.UQC != UQCOther {
+		t.Errorf("HSN row is %+v", h)
+	}
+	// One unit per invoice, as it always counted.
+	if !h.Quantity.Equal(d2("2")) {
+		t.Errorf("quantity is %s, want 2", h.Quantity)
+	}
+	if !h.TaxableValue.Equal(ret.Totals.TaxableValue) {
+		t.Errorf("HSN taxable %s does not equal the return total %s", h.TaxableValue, ret.Totals.TaxableValue)
+	}
+}
+
+// A mixed month: one old-style invoice and one itemised one.
+func TestFR_BIL_022_HSNSummaryMixesLinedAndLinelessInvoices(t *testing.T) {
+	itemised := InvoiceRow{
+		InvoiceID: 2, InvoiceDate: jan(2), SubscriberID: 2,
+		SubscriberName: "Sub", RecipientState: "TN",
+		TaxableValue: d2("300.00"), CGST: d2("27.00"), SGST: d2("27.00"),
+		IGST: decimal.Zero, Total: d2("354.00"),
+		HSNBreakdown: []HSNPart{
+			{HSN: "8517", Quantity: d2("2"), TaxableValue: d2("300.00"),
+				CGST: d2("27.00"), SGST: d2("27.00"), IGST: decimal.Zero, Total: d2("354.00")},
+		},
+	}
+	ret := BuildReturn(Period{2026, time.January}, testSupplier,
+		[]InvoiceRow{tnInvoice(1, ""), itemised}, nil)
+
+	if len(ret.HSN) != 2 {
+		t.Fatalf("want 2 HSN rows, got %d", len(ret.HSN))
+	}
+	byCode := map[string]HSNLine{}
+	for _, h := range ret.HSN {
+		byCode[h.HSN] = h
+	}
+	// The lineless invoice lands on services; the itemised one on goods.
+	if !byCode[HSNInternetServices].TaxableValue.Equal(d2("799.00")) {
+		t.Errorf("services row is %s, want 799.00", byCode[HSNInternetServices].TaxableValue)
+	}
+	if !byCode["8517"].TaxableValue.Equal(d2("300.00")) {
+		t.Errorf("goods row is %s, want 300.00", byCode["8517"].TaxableValue)
+	}
+}

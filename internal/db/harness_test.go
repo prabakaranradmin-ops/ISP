@@ -79,6 +79,16 @@ var truncateOrder = []string{
 	"wallet_ledgers",
 	// Before invoices and gst_rates, which it references (migration 056).
 	"proforma_invoices",
+	// Migration 058, before invoices and subscribers, which both reference.
+	// products is listed explicitly and not left to CASCADE: nothing
+	// truncated here references it, so a catalogue entry would survive
+	// between tests and the next test to create INSTALL would collide on
+	// products_code_key — exactly what cpe_device_types is listed for.
+	// invoice_lines and subscriber_products come first so the dependency
+	// order this slice documents stays true.
+	"invoice_lines",
+	"subscriber_products",
+	"products",
 	"invoices",
 	"gst_rates",
 	"kyc_verifications",

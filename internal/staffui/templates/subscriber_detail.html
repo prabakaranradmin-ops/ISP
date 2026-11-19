@@ -105,6 +105,79 @@
       </form>
     </div>
     {{end}}
+    {{if and $d.ShowCharges $d.Subscriber}}
+    <div class="card" id="charges">
+      <h3>Charges besides the plan</h3>
+      <p class="muted small">Catalogue products on this account. A <strong>recurring</strong> charge is billed on
+        every renewal until it is ended; a <strong>one-time</strong> charge goes on the next invoice and is then
+        done. Each prints as its own line on the tax invoice under its own HSN/SAC code.</p>
+      {{if $d.Charges}}
+      <table>
+        <thead><tr>
+          <th>Charge</th><th>Billed</th><th class="right">Qty</th><th class="right">Unit</th>
+          <th class="right">Amount</th><th>Status</th><th></th>
+        </tr></thead>
+        <tbody>
+        {{range $d.Charges}}
+          <tr>
+            <td>{{.ProductName}}<br><span class="muted small">{{.ProductCode}} &middot; HSN/SAC {{.HSNSAC}}</span></td>
+            <td>{{if .Recurring}}Every renewal{{else}}Once{{end}}</td>
+            <td class="num right">{{.Quantity}}</td>
+            <td class="num right">{{money .UnitPrice}}</td>
+            <td class="num right">{{money .Base}}</td>
+            <td>
+              {{.StatusLabel}}
+              {{if .InvoiceID}}<br><a class="small" href="/staff/invoices/{{.InvoiceID}}/pdf" target="_blank" rel="noopener">{{.InvoiceNumber}}</a>{{end}}
+              {{with .EndReason}}<br><span class="muted small">{{.}}</span>{{end}}
+            </td>
+            <td class="right">
+              {{if and $d.ShowManageCharges .Active}}
+              <form method="post" action="/staff/subscriber-products/{{.ID}}/end" class="inline"
+                    data-confirm="End the {{.ProductName}} charge? It will not appear on any further invoice.">
+                <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+                <input type="hidden" name="subscriber_id" value="{{.SubscriberID}}">
+                <input name="reason" required maxlength="200" placeholder="Reason" size="18">
+                <button type="submit">End</button>
+              </form>
+              {{end}}
+            </td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <p class="muted">No charges besides the plan.</p>
+      {{end}}
+
+      {{if $d.ShowManageCharges}}
+        {{if $d.AvailableProducts}}
+        <form method="post" action="/staff/subscribers/{{$d.Subscriber.ID}}/products">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <div class="formgrid">
+            <label>Add a charge
+              <select name="product_id" required>
+                <option value="">Choose a product&hellip;</option>
+                {{range $d.AvailableProducts}}
+                <option value="{{.ID}}">{{.Code}} &mdash; {{.Name}} ({{money .Price}}, {{.KindLabel}})</option>
+                {{end}}
+              </select>
+            </label>
+            <label>Quantity <input name="quantity" type="number" min="1" max="999" value="1"></label>
+            <label>Price override (&#8377;)
+              <input name="unit_price" inputmode="decimal" placeholder="catalogue price">
+              <span class="muted small">Leave blank for the catalogue price. Whatever is used is fixed for this
+                subscriber &mdash; a later catalogue change will not re-price them.</span>
+            </label>
+          </div>
+          <button class="primary" type="submit">Add charge</button>
+        </form>
+        {{else}}
+        <p class="muted small">No products are offered yet. Add one under
+          <a href="/staff/products">Products &amp; charges</a>.</p>
+        {{end}}
+      {{end}}
+    </div>
+    {{end}}
     {{if and $d.ShowGrace $d.Subscriber}}
     <div class="card" id="grace">
       <h3>Grace extension</h3>

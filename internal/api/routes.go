@@ -103,6 +103,7 @@ type Handler struct {
 	cheques         ChequeBouncer
 	dunning         DunningSettingsStore
 	proformas       ProformaStore
+	products        ProductStore
 	diagnostics     DiagnosticsStore
 	billingRuns     BillingRunStore
 	receipts        ReceiptStore
@@ -173,6 +174,9 @@ type HandlerDeps struct {
 	Dunning          DunningSettingsStore
 	// Proformas issues and converts proforma invoices (FR-BIL-018).
 	Proformas ProformaStore
+	// Products manages the product catalogue and the charges attached to
+	// subscribers (FR-BIL-022).
+	Products ProductStore
 	// Diagnostics runs the billing consistency checks (FR-BIL-019).
 	Diagnostics DiagnosticsStore
 	// BillingRuns reads the recurring-billing run history (FR-BIL-020).
@@ -245,6 +249,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		cheques:          deps.Cheques,
 		dunning:          deps.Dunning,
 		proformas:        deps.Proformas,
+		products:         deps.Products,
 		diagnostics:      deps.Diagnostics,
 		billingRuns:      deps.BillingRuns,
 		receipts:         deps.Receipts,
@@ -627,6 +632,32 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		admin(http.HandlerFunc(h.ConvertProformaHTTP)))
 	mux.Handle("POST /api/v1/proformas/{id}/cancel",
 		admin(http.HandlerFunc(h.CancelProformaHTTP)))
+
+	// Product catalogue (FR-BIL-022). Reading the catalogue and a
+	// subscriber's charges has the same reach as reading an invoice, since
+	// a CSR answering "why is my bill higher this month" needs it.
+	// Changing the catalogue, and attaching or ending a charge, move money
+	// onto a future invoice, so they are billing decisions.
+	mux.Handle("GET /api/v1/products",
+		billingOrCSR(http.HandlerFunc(h.ListProductsHTTP)))
+	mux.Handle("POST /api/v1/products",
+		admin(http.HandlerFunc(h.CreateProductHTTP)))
+	mux.Handle("GET /api/v1/products/{id}",
+		billingOrCSR(http.HandlerFunc(h.GetProductHTTP)))
+	mux.Handle("PUT /api/v1/products/{id}",
+		admin(http.HandlerFunc(h.UpdateProductHTTP)))
+	mux.Handle("DELETE /api/v1/products/{id}",
+		admin(http.HandlerFunc(h.DeleteProductHTTP)))
+	mux.Handle("POST /api/v1/products/{id}/active",
+		admin(http.HandlerFunc(h.SetProductActiveHTTP)))
+	mux.Handle("GET /api/v1/products/{id}/subscribers",
+		billingOrCSR(http.HandlerFunc(h.ListProductSubscribersHTTP)))
+	mux.Handle("GET /api/v1/subscribers/{id}/products",
+		billingOrCSR(http.HandlerFunc(h.ListSubscriberProductsHTTP)))
+	mux.Handle("POST /api/v1/subscribers/{id}/products",
+		admin(http.HandlerFunc(h.AttachProductHTTP)))
+	mux.Handle("POST /api/v1/subscriber-products/{id}/end",
+		admin(http.HandlerFunc(h.EndAttachmentHTTP)))
 
 	// Tickets (API-004)
 	mux.Handle("POST /api/v1/tickets",
