@@ -33,9 +33,19 @@ func (s *RadiusStore) GetSubscriberByUsername(ctx context.Context, username stri
 		       p.rate_limit_string, COALESCE(p.fup_throttle_string, ''),
 		       COALESCE(s.fup_active, FALSE), s.plan_id, s.nt_hash,
 		       COALESCE(s.speed_override_rate_limit, ''), s.speed_override_expires_at,
-		       p.volume_gb
+		       p.volume_gb,
+		       COALESCE(host(a.address), '')
 		FROM subscribers s
 		JOIN plans p ON p.id = s.plan_id
+		-- The static address this subscriber holds, if any (FR-NET-005).
+		-- LEFT, so the overwhelming majority who hold none still
+		-- authenticate; served by uq_static_ip_subscriber, the partial
+		-- unique index that also enforces one live address per subscriber.
+		--
+		-- host() strips the mask INET carries, because Framed-IP-Address
+		-- is an address and "203.0.113.4/32" is not parseable as one.
+		LEFT JOIN static_ip_assignments a
+		       ON a.subscriber_id = s.id AND a.status = 'active'
 		WHERE s.username = $1`
 
 	var sub radius.Subscriber
@@ -43,7 +53,7 @@ func (s *RadiusStore) GetSubscriberByUsername(ctx context.Context, username stri
 		&sub.ID, &sub.Username, &sub.PasswordHash, &sub.Status,
 		&sub.RateLimitStr, &sub.FUPThrottle, &sub.FUPActive, &sub.PlanID, &sub.NTHash,
 		&sub.SpeedOverrideRateLimit, &sub.SpeedOverrideExpiresAt,
-		&sub.VolumeGB,
+		&sub.VolumeGB, &sub.StaticIP,
 	)
 	if isNoRows(err) {
 		// A missing subscriber is a normal reject, not a failure: handleAuth

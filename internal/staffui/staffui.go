@@ -246,6 +246,8 @@ type HandlerDeps struct {
 	// Dunning sets grace extensions and the dunning schedule
 	// (FR-BIL-016/017). The API handler.
 	Dunning DunningManager
+	// IPPools manages IP pools and static addresses (FR-NET-005).
+	IPPools IPPoolManager
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeManager
 	// Products manages the product catalogue and the charges attached to
@@ -311,6 +313,7 @@ type Handler struct {
 	proformas          ProformaManager
 	products           ProductManager
 	planChanges        PlanChangeManager
+	ipPools            IPPoolManager
 	diagnostics        DiagnosticsRunner
 	billingRuns        BillingRunReader
 	receipts           ReceiptRenderer
@@ -364,6 +367,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		proformas:          deps.Proformas,
 		products:           deps.Products,
 		planChanges:        deps.PlanChanges,
+		ipPools:            deps.IPPools,
 		diagnostics:        deps.Diagnostics,
 		billingRuns:        deps.BillingRuns,
 		receipts:           deps.Receipts,
@@ -442,6 +446,13 @@ var sections = []Section{
 	{"cpe", "CPE Devices", "/staff/cpe",
 		[]string{"isp_owner", "noc_engineer", "technician"}, false},
 	{"nas", "Routers", "/staff/nas",
+		[]string{"isp_owner", "noc_engineer"}, false},
+	// IP pools (FR-NET-005) sit with Routers and share its reach: a pool
+	// describes the network's address space, and getting it wrong hands
+	// two customers one address. Assigning a subscriber an address is
+	// gated separately inside the screen (canAssignStaticIP), because the
+	// charge that follows it is a billing act.
+	{"ip-pools", "IP Pools", "/staff/ip-pools",
 		[]string{"isp_owner", "noc_engineer"}, false},
 	// Same reach as Routers: a cross-device view of the same estate, not a
 	// new kind of access.
@@ -627,6 +638,17 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// the subscriber's own page where the operator can see their plan.
 	mux.Handle("POST /staff/subscribers/{id}/scheduled-plan-change", h.authed(h.requireCSRF(h.SchedulePlanChangeForm)))
 	mux.Handle("POST /staff/scheduled-plan-changes/{id}/cancel", h.authed(h.requireCSRF(h.CancelPlanChangeForm)))
+
+	// IP pools and static addresses (FR-NET-005). Pool management is on
+	// its own screen; assigning an address happens on the subscriber's
+	// page, where the operator can see who they are giving it to.
+	mux.Handle("GET /staff/ip-pools", h.authed(h.IPPools))
+	mux.Handle("POST /staff/ip-pools", h.authed(h.requireCSRF(h.CreatePoolForm)))
+	mux.Handle("POST /staff/ip-pools/{id}/delete", h.authed(h.requireCSRF(h.DeletePoolForm)))
+	mux.Handle("POST /staff/ip-pool-exclusions", h.authed(h.requireCSRF(h.AddExclusionForm)))
+	mux.Handle("POST /staff/ip-pool-exclusions/{id}/delete", h.authed(h.requireCSRF(h.RemoveExclusionForm)))
+	mux.Handle("POST /staff/subscribers/{id}/static-ip", h.authed(h.requireCSRF(h.AllocateStaticIPForm)))
+	mux.Handle("POST /staff/static-ips/{id}/release", h.authed(h.requireCSRF(h.ReleaseStaticIPForm)))
 	mux.Handle("GET /staff/invoices/{id}/pdf", h.authed(h.InvoicePDF))
 	mux.Handle("GET /staff/invoices/{id}/credit-note", h.authed(h.CreditNotePage))
 	mux.Handle("GET /staff/invoices/payments/{id}/receipt", h.authed(h.ReceiptPDF))

@@ -256,57 +256,78 @@ func (s *BillingStore) AttachProduct(ctx context.Context, req billing.AttachRequ
 
 	var out billing.SubscriberProduct
 	err = inTx(ctx, s.pool, func(tx pgx.Tx) error {
-		var (
-			priceTxt string
-			active   bool
-		)
-		// FOR UPDATE: the price read here is the price written below, and
-		// a concurrent price edit must not land between the two.
-		err := tx.QueryRow(ctx, `
-			SELECT price::text, active FROM products WHERE id = $1 FOR UPDATE`,
-			req.ProductID).Scan(&priceTxt, &active)
-		if isNoRows(err) {
-			return fmt.Errorf("db: product %d: %w", req.ProductID, billing.ErrProductNotFound)
-		}
+		sp, err := attachProductTx(ctx, tx, req, by)
 		if err != nil {
-			return fmt.Errorf("db: attach product %d: load: %w", req.ProductID, err)
+			return err
 		}
-		if !active {
-			return billing.ErrProductInactive
-		}
-
-		price := req.UnitPrice
-		if !price.IsPositive() {
-			if price, err = parseDecimal(priceTxt); err != nil {
-				return err
-			}
-		}
-
-		row := tx.QueryRow(ctx, `
-			WITH ins AS (
-				INSERT INTO subscriber_products
-					(subscriber_id, product_id, quantity, unit_price, attached_by)
-				VALUES ($1, $2, $3, $4::numeric, $5)
-				RETURNING *
-			)
-			SELECT `+attachmentColumns+`
-			  FROM ins sp JOIN products p ON p.id = sp.product_id`,
-			req.SubscriberID, req.ProductID, req.Quantity, price.String(), by)
-		if err := scanAttachment(row, &out, nil); err != nil {
-			// No such subscriber: the FK rejects it. Reported as not-found
-			// rather than as an internal failure, since an id that does
-			// not exist is the caller's mistake and a 500 would send
-			// someone looking at the database instead of the request.
-			if foreignKeyViolation(err, "subscriber_products_subscriber_id_fkey") {
-				return fmt.Errorf("db: subscriber %d: %w", req.SubscriberID, ErrNotFound)
-			}
-			return fmt.Errorf("db: attach product %d to subscriber %d: %w",
-				req.ProductID, req.SubscriberID, err)
-		}
+		out = *sp
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	return &out, nil
+}
+
+// attachProductTx is AttachProduct's body, inside a caller's transaction.
+//
+// Shared rather than duplicated because allocating a static address
+// attaches a product too (FR-NET-005 bills the address through
+// FR-BIL-022), and a second copy of "look up the price, refuse a retired
+// product, insert the attachment" would be a second place for those rules
+// to drift from these.
+func attachProductTx(ctx context.Context, tx pgx.Tx, req billing.AttachRequest, by string) (*billing.SubscriberProduct, error) {
+	req, err := req.Normalise()
+	if err != nil {
+		return nil, err
+	}
+	var (
+		priceTxt string
+		active   bool
+	)
+	// FOR UPDATE: the price read here is the price written below, and
+	// a concurrent price edit must not land between the two.
+	err = tx.QueryRow(ctx, `
+		SELECT price::text, active FROM products WHERE id = $1 FOR UPDATE`,
+		req.ProductID).Scan(&priceTxt, &active)
+	if isNoRows(err) {
+		return nil, fmt.Errorf("db: product %d: %w", req.ProductID, billing.ErrProductNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: attach product %d: load: %w", req.ProductID, err)
+	}
+	if !active {
+		return nil, billing.ErrProductInactive
+	}
+
+	price := req.UnitPrice
+	if !price.IsPositive() {
+		if price, err = parseDecimal(priceTxt); err != nil {
+			return nil, err
+		}
+	}
+
+	var out billing.SubscriberProduct
+	row := tx.QueryRow(ctx, `
+		WITH ins AS (
+			INSERT INTO subscriber_products
+				(subscriber_id, product_id, quantity, unit_price, attached_by)
+			VALUES ($1, $2, $3, $4::numeric, $5)
+			RETURNING *
+		)
+		SELECT `+attachmentColumns+`
+		  FROM ins sp JOIN products p ON p.id = sp.product_id`,
+		req.SubscriberID, req.ProductID, req.Quantity, price.String(), by)
+	if err := scanAttachment(row, &out, nil); err != nil {
+		// No such subscriber: the FK rejects it. Reported as not-found
+		// rather than as an internal failure, since an id that does
+		// not exist is the caller's mistake and a 500 would send
+		// someone looking at the database instead of the request.
+		if foreignKeyViolation(err, "subscriber_products_subscriber_id_fkey") {
+			return nil, fmt.Errorf("db: subscriber %d: %w", req.SubscriberID, ErrNotFound)
+		}
+		return nil, fmt.Errorf("db: attach product %d to subscriber %d: %w",
+			req.ProductID, req.SubscriberID, err)
 	}
 	return &out, nil
 }

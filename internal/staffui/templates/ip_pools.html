@@ -1,0 +1,150 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>IP pools</h1>
+
+<p class="muted">The address ranges this network owns. A <strong>static</strong> pool is what addresses are handed
+  out from here — a subscriber given one gets it as Framed-IP-Address on every authentication, so the router
+  stops choosing for them. Record the router's own <strong>DHCP</strong> and <strong>CGNAT</strong> ranges too:
+  nothing is allocated from those, but having them written down is what answers "where did this address come
+  from" when one collides. Exclude the network, gateway and broadcast addresses before handing any out.
+  Addresses are assigned to a subscriber from their own page.</p>
+
+{{with $d}}
+<nav class="filterbar" aria-label="Filter by purpose">
+  {{range .Chips}}
+  <a class="chip{{if eq .Key $d.Purpose}} on{{end}}" href="/staff/ip-pools{{if .Key}}?purpose={{.Key}}{{end}}">{{.Label}}</a>
+  {{end}}
+</nav>
+
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Pool</th><th>Router</th><th>Purpose</th><th>Range</th>
+      <th class="right">Size</th><th class="right">Assigned</th><th>Excluded</th><th></th>
+    </tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr>
+        <td>{{.Name}}{{with .Description}}<br><span class="muted small">{{.}}</span>{{end}}</td>
+        <td class="num">{{if .NASIP}}{{.NASIP}}{{with .NASDescription}}<br><span class="muted small">{{.}}</span>{{end}}
+            {{else}}<span class="muted">any</span>{{end}}</td>
+        <td>{{.PurposeLabel}}</td>
+        <td class="num">{{.Range.String}}</td>
+        <td class="num right">{{.SizeLabel}}</td>
+        <td class="num right">
+          {{if .Assigned}}<a href="/staff/ip-pools?show={{.ID}}{{if $d.Purpose}}&amp;purpose={{$d.Purpose}}{{end}}">{{.Assigned}}</a>
+          {{else}}0{{end}}
+        </td>
+        <td>
+          {{range .Exclusions}}
+          <div>
+            <span class="num">{{.Range.String}}</span>
+            <span class="muted small">{{.Reason}}</span>
+            {{if $d.CanManage}}
+            <form method="post" action="/staff/ip-pool-exclusions/{{.ID}}/delete" class="inline"
+                  data-confirm="Stop excluding {{.Range.String}}? Those addresses can then be handed out.">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="from_purpose" value="{{$d.Purpose}}">
+              <button type="submit">Remove</button>
+            </form>
+            {{end}}
+          </div>
+          {{else}}
+          <span class="muted small">none</span>
+          {{end}}
+        </td>
+        <td class="right">
+          {{if $d.CanManage}}
+            {{if not .Assigned}}
+            <form method="post" action="/staff/ip-pools/{{.ID}}/delete" class="inline"
+                  data-confirm="Delete the pool {{.Name}}?">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="from_purpose" value="{{$d.Purpose}}">
+              <button type="submit" class="btn-danger">Delete</button>
+            </form>
+            {{end}}
+          {{end}}
+        </td>
+      </tr>
+      {{if .Holders}}
+      <tr>
+        <td colspan="8">
+          <strong>Addresses from {{.Name}}</strong>
+          <table>
+            <thead><tr><th>Address</th><th>Subscriber</th><th>Status</th><th>Billed</th><th>Assigned</th></tr></thead>
+            <tbody>
+            {{range .Holders}}
+              <tr>
+                <td class="num">{{.Address.String}}</td>
+                <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+                <td>{{.StatusLabel}}{{with .ReleaseReason}}<br><span class="muted small">{{.}}</span>{{end}}</td>
+                <td>{{if .Billed}}yes{{else}}<span class="muted">no</span>{{end}}</td>
+                <td class="num">{{datetime .AssignedAt}}<br><span class="muted small">by {{.AssignedBy}}</span></td>
+              </tr>
+            {{end}}
+            </tbody>
+          </table>
+        </td>
+      </tr>
+      {{end}}
+    {{else}}
+      <tr><td colspan="8" class="muted">No IP pools yet{{if .Purpose}} of that kind{{end}}.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{if .CanManage}}
+<div class="card">
+  <h2>Add a pool</h2>
+  <form method="post" action="/staff/ip-pools" class="formgrid">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Name <input name="name" required maxlength="60" placeholder="Customer statics"></label>
+    <label>Router
+      <select name="nas_id">
+        <option value="">Any router</option>
+        {{range $d.Routers}}<option value="{{.ID}}">{{.Label}}</option>{{end}}
+      </select>
+      <span class="muted small">Leave as "any" for a routed block that follows the subscriber.</span>
+    </label>
+    <label>Purpose
+      <select name="purpose" required>
+        {{range $d.Purposes}}<option value="{{.Key}}">{{.Label}}</option>{{end}}
+      </select>
+    </label>
+    <label>First address
+      <input name="first_address" required placeholder="203.0.113.0/29">
+      <span class="muted small">An address, or a CIDR block on its own — a block means all of its
+        addresses, including the network and broadcast ones, which you then exclude.</span>
+    </label>
+    <label>Last address <span class="muted small">(leave blank for a single address or a block)</span>
+      <input name="last_address" placeholder="203.0.113.7">
+    </label>
+    <label>Description <span class="muted small">(optional)</span>
+      <input name="description" maxlength="200" placeholder="Business customers on the Anna Nagar ring">
+    </label>
+    <button type="submit" class="primary">Add pool</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Exclude addresses from a pool</h2>
+  <form method="post" action="/staff/ip-pool-exclusions" class="formgrid">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Pool
+      <select name="pool_id" required>
+        <option value="">Choose a pool&hellip;</option>
+        {{range $d.Rows}}<option value="{{.ID}}">{{.Name}} ({{.Range.String}})</option>{{end}}
+      </select>
+    </label>
+    <label>First address <input name="first_address" required placeholder="203.0.113.0"></label>
+    <label>Last address <span class="muted small">(blank for one)</span>
+      <input name="last_address" placeholder="203.0.113.1">
+    </label>
+    <label>Reason <input name="reason" required maxlength="200" placeholder="network and gateway"></label>
+    <button type="submit">Exclude</button>
+  </form>
+</div>
+{{end}}
+{{end}}
+{{end}}

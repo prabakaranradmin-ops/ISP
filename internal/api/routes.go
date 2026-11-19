@@ -105,6 +105,7 @@ type Handler struct {
 	proformas       ProformaStore
 	products        ProductStore
 	planChanges     PlanChangeStore
+	ipPools         IPPoolStore
 	diagnostics     DiagnosticsStore
 	billingRuns     BillingRunStore
 	receipts        ReceiptStore
@@ -175,6 +176,8 @@ type HandlerDeps struct {
 	Dunning          DunningSettingsStore
 	// Proformas issues and converts proforma invoices (FR-BIL-018).
 	Proformas ProformaStore
+	// IPPools manages IP pools and static addresses (FR-NET-005).
+	IPPools IPPoolStore
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeStore
 	// Products manages the product catalogue and the charges attached to
@@ -254,6 +257,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		proformas:        deps.Proformas,
 		products:         deps.Products,
 		planChanges:      deps.PlanChanges,
+		ipPools:          deps.IPPools,
 		diagnostics:      deps.Diagnostics,
 		billingRuns:      deps.BillingRuns,
 		receipts:         deps.Receipts,
@@ -517,6 +521,42 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		nocOnly(http.HandlerFunc(h.CreateNASDevice)))
 	mux.Handle("PATCH /api/v1/nas/{id}",
 		nocOnly(http.HandlerFunc(h.UpdateNASDevice)))
+
+	// IP pools and static addresses (FR-NET-005).
+	//
+	// Pool management is NOC tier, for the same reason the NAS inventory
+	// is: a pool is a description of the network's address space, and
+	// getting it wrong hands two customers one address.
+	//
+	// Assigning and releasing a subscriber's address is nocOrBilling, a
+	// gate of its own: handing out an address is a network act, and the
+	// charge that follows it (FR-BIL-022) is a billing one, so both tiers
+	// legitimately do this — a small operator has one person doing both.
+	// Reading is staffRead, because "what is my IP address" is a
+	// front-desk question.
+	nocOrBilling := func(next http.Handler) http.Handler {
+		return auth(middleware.RequireRole("noc_engineer", "billing_admin", "isp_owner")(next))
+	}
+	mux.Handle("GET /api/v1/ip-pools",
+		nocOnly(http.HandlerFunc(h.ListPoolsHTTP)))
+	mux.Handle("POST /api/v1/ip-pools",
+		nocOnly(http.HandlerFunc(h.CreatePoolHTTP)))
+	mux.Handle("GET /api/v1/ip-pools/{id}",
+		nocOnly(http.HandlerFunc(h.GetPoolHTTP)))
+	mux.Handle("DELETE /api/v1/ip-pools/{id}",
+		nocOnly(http.HandlerFunc(h.DeletePoolHTTP)))
+	mux.Handle("GET /api/v1/ip-pools/{id}/assignments",
+		nocOnly(http.HandlerFunc(h.ListPoolAssignmentsHTTP)))
+	mux.Handle("POST /api/v1/ip-pools/{id}/exclusions",
+		nocOnly(http.HandlerFunc(h.AddExclusionHTTP)))
+	mux.Handle("DELETE /api/v1/ip-pool-exclusions/{id}",
+		nocOnly(http.HandlerFunc(h.RemoveExclusionHTTP)))
+	mux.Handle("POST /api/v1/subscribers/{id}/static-ip",
+		nocOrBilling(http.HandlerFunc(h.AllocateStaticIPHTTP)))
+	mux.Handle("GET /api/v1/subscribers/{id}/static-ip",
+		staffRead(http.HandlerFunc(h.ListSubscriberStaticIPsHTTP)))
+	mux.Handle("POST /api/v1/static-ips/{id}/release",
+		nocOrBilling(http.HandlerFunc(h.ReleaseStaticIPHTTP)))
 
 	// Hotspot administration (FR-HSP-001..002 | MDS §4.23).
 	//

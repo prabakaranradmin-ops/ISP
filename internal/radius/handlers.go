@@ -3,6 +3,7 @@ package radius
 import (
 	"context"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -141,6 +142,8 @@ func (d *RadiusDaemon) handleAuth(ctx context.Context, w radius.ResponseWriter, 
 // rate-limited and later throttled by the identical machinery as PPPoE,
 // because it is literally the same Access-Accept construction.
 func (d *RadiusDaemon) applyRateLimit(resp *radius.Packet, sub *Subscriber, r *radius.Request) {
+	applyStaticIP(resp, sub)
+
 	rateLimit := effectiveRateLimit(sub)
 
 	vendor := nas.VendorMikrotik
@@ -162,6 +165,46 @@ func (d *RadiusDaemon) applyRateLimit(resp *radius.Packet, sub *Subscriber, r *r
 	}
 	for _, a := range attrs {
 		resp.Add(a.Type, a.Value)
+	}
+}
+
+// applyStaticIP attaches Framed-IP-Address when the subscriber holds a
+// static address from an IP pool (FR-NET-005), so the NAS gives them that
+// address rather than one from its own pool.
+//
+// Attached inside applyRateLimit for the reason that function exists: PAP,
+// EAP-MSCHAPv2 and MAB all shape their Access-Accept through it, and a
+// subscriber's address must not depend on which method they authenticated
+// with.
+//
+// A malformed stored address is logged and dropped rather than rejecting
+// the authentication. The subscriber is legitimate; the worst outcome of
+// carrying on is that they get a dynamic address, which is what they would
+// have had before this feature, whereas refusing would put a customer
+// offline over a bad row.
+func applyStaticIP(resp *radius.Packet, sub *Subscriber) {
+	if sub.StaticIP == "" {
+		return
+	}
+	ip := net.ParseIP(sub.StaticIP)
+	if ip == nil {
+		log.Warn().Str("username", sub.Username).Str("static_ip", sub.StaticIP).
+			Msg("radius: stored static address is not an IP, Accept sent without Framed-IP-Address")
+		return
+	}
+	// Framed-IP-Address is an IPv4 attribute (RFC 2865 §5.8). An IPv6
+	// address belongs in Framed-IPv6-Prefix, which this does not yet set —
+	// so it is skipped rather than silently truncated to four bytes, which
+	// is what To4() would hand the NAS.
+	v4 := ip.To4()
+	if v4 == nil {
+		log.Warn().Str("username", sub.Username).Str("static_ip", sub.StaticIP).
+			Msg("radius: static address is IPv6; Framed-IP-Address carries IPv4 only, Accept sent without it")
+		return
+	}
+	if err := rfc2865.FramedIPAddress_Set(resp, v4); err != nil {
+		log.Warn().Err(err).Str("username", sub.Username).
+			Msg("radius: could not set Framed-IP-Address, Accept sent without it")
 	}
 }
 

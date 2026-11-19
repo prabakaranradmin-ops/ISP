@@ -94,6 +94,12 @@ var truncateOrder = []string{
 	// documents its own order, and because a leaked pending row would
 	// collide on uq_spc_one_pending in the next test to schedule one.
 	"scheduled_plan_changes",
+	// Migration 060. Assignments before pools (ON DELETE RESTRICT would
+	// otherwise block the truncate rather than cascade), and ip_pools
+	// before nas_devices, which it references.
+	"static_ip_assignments",
+	"ip_pool_exclusions",
+	"ip_pools",
 	"invoices",
 	"gst_rates",
 	"kyc_verifications",

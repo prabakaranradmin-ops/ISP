@@ -171,6 +171,11 @@ type Subscriber struct {
 	// plans.volume_gb. Carried through purely so acctStart can populate
 	// LiveSession.BytesTotal for the portal's live-usage panel.
 	VolumeGB int
+	// StaticIP is the address this subscriber holds from an IP pool
+	// (FR-NET-005), returned as Framed-IP-Address so the NAS gives them
+	// that address instead of one from its own pool. Empty for the
+	// subscribers who have none, which is almost all of them.
+	StaticIP string
 }
 
 // radiusJob bundles the ResponseWriter and Request so both can pass through the worker queue.

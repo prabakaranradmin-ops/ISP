@@ -230,6 +230,10 @@ func run(ctx context.Context) error {
 		// Scheduled plan changes (FR-BIL-023); applied by that same
 		// scanner, which prices the cycle on the new plan.
 		PlanChanges: database.Billing(),
+		// IP pools and static addresses (FR-NET-005). On NASStore because
+		// a pool is part of the router estate, even though an assignment
+		// can carry a catalogue charge.
+		IPPools: database.NAS(),
 		// Payment receipts (FR-BIL-021), headed with the supplier's name.
 		Receipts:   database.Billing(),
 		ReceiptPDF: receiptPDF,
@@ -409,6 +413,7 @@ func run(ctx context.Context) error {
 		// as the API does.
 		Products:    apiHandler,
 		PlanChanges: apiHandler,
+		IPPools:     apiHandler,
 		// Counter payments and cheque bounces through the API's own path.
 		Payments: apiHandler,
 	})

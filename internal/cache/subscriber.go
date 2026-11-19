@@ -57,6 +57,12 @@ type cachedSubscriber struct {
 	SpeedOverrideRateLimit string
 	SpeedOverrideExpiresAt *time.Time
 	NTHash                 []byte
+	// StaticIP mirrors radius.Subscriber.StaticIP for the same reason as
+	// the fields above: a subscriber holding a static address who
+	// reconnects within the TTL would otherwise be served a cache hit with
+	// no Framed-IP-Address, and the NAS would hand them a dynamic address
+	// instead of the one they are paying for.
+	StaticIP string
 	// NotFound records a negative result, so a flood of requests for a username
 	// that does not exist cannot turn into a flood of database queries.
 	NotFound bool
@@ -113,6 +119,7 @@ func (c *SubscriberCache) GetSubscriberByUsername(ctx context.Context, username 
 			SpeedOverrideRateLimit: entry.SpeedOverrideRateLimit,
 			SpeedOverrideExpiresAt: entry.SpeedOverrideExpiresAt,
 			NTHash:                 entry.NTHash,
+			StaticIP:               entry.StaticIP,
 		}, nil
 	}
 	subscriberCacheMisses.Inc()
@@ -144,6 +151,7 @@ func (c *SubscriberCache) cacheResult(key string, sub *radius.Subscriber, userna
 			SpeedOverrideRateLimit: sub.SpeedOverrideRateLimit,
 			SpeedOverrideExpiresAt: sub.SpeedOverrideExpiresAt,
 			NTHash:                 sub.NTHash,
+			StaticIP:               sub.StaticIP,
 		}
 	}
 

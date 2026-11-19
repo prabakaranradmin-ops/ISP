@@ -105,6 +105,82 @@
       </form>
     </div>
     {{end}}
+    {{if and $d.ShowStaticIP $d.Subscriber}}
+    <div class="card" id="static-ip">
+      <h3>Static IP address</h3>
+      {{with $d.CurrentStaticIP}}
+      <p><strong class="num">{{.Address.String}}</strong> from {{.PoolName}}.
+         {{if .Billed}}Billed as a catalogue charge on their invoice.{{else}}Not billed.{{end}}</p>
+      <p class="muted small">Returned as Framed-IP-Address on every authentication, so the router gives them
+        this address instead of one from its own pool. It takes effect on their next connection.</p>
+      <dl><dt>Assigned by</dt><dd>{{.AssignedBy}} on {{datetime .AssignedAt}}</dd></dl>
+      {{if $d.ShowAssignStaticIP}}
+      <form method="post" action="/staff/static-ips/{{.ID}}/release"
+            data-confirm="Release {{.Address.String}}? The address goes back to the pool and any charge for it ends.">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="subscriber_id" value="{{.SubscriberID}}">
+        <div class="formgrid">
+          <label>Reason <input name="reason" required maxlength="200" placeholder="Customer downgraded"></label>
+        </div>
+        <button type="submit">Release address</button>
+      </form>
+      {{end}}
+      {{else}}
+      <p class="muted">No static address. The router assigns one from its own pool.</p>
+      {{if $d.ShowAssignStaticIP}}
+        {{if $d.StaticIPPools}}
+        <form method="post" action="/staff/subscribers/{{$d.Subscriber.ID}}/static-ip">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <div class="formgrid">
+            <label>From pool
+              <select name="pool_id" required>
+                <option value="">Choose a pool&hellip;</option>
+                {{range $d.StaticIPPools}}
+                <option value="{{.ID}}">{{.Name}} ({{.Range.String}}){{if .NASIP}} on {{.NASIP}}{{end}}</option>
+                {{end}}
+              </select>
+            </label>
+            <label>Address <span class="muted small">(optional)</span>
+              <input name="address" placeholder="next free one">
+              <span class="muted small">Leave blank for the lowest free address in the pool.</span>
+            </label>
+            <label>Bill it as <span class="muted small">(optional)</span>
+              <select name="product_id">
+                <option value="">Not billed</option>
+                {{range $d.StaticIPProducts}}
+                <option value="{{.ID}}">{{.Name}} — {{money .Price}} per cycle</option>
+                {{end}}
+              </select>
+              <span class="muted small">A recurring catalogue charge, billed on every renewal until the
+                address is released. Releasing the address ends it.</span>
+            </label>
+          </div>
+          <button class="primary" type="submit">Assign address</button>
+        </form>
+        {{else}}
+        <p class="muted small">No static IP pools are set up. Add one under
+          <a href="/staff/ip-pools">IP Pools</a>.</p>
+        {{end}}
+      {{end}}
+      {{end}}
+
+      {{if $d.StaticIPs}}
+      <table>
+        <thead><tr><th>Address</th><th>Pool</th><th>Status</th><th>Assigned</th></tr></thead>
+        <tbody>
+        {{range $d.StaticIPs}}
+          <tr>
+            <td class="num">{{.Address.String}}</td>
+            <td>{{.PoolName}}</td>
+            <td>{{.StatusLabel}}{{with .ReleaseReason}}<br><span class="muted small">{{.}}</span>{{end}}</td>
+            <td class="num">{{datetime .AssignedAt}}<br><span class="muted small">by {{.AssignedBy}}</span></td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+      {{end}}
+    </div>
+    {{end}}
     {{if and $d.ShowBilling $d.Subscriber}}
     <div class="card" id="plan-change">
       <h3>Scheduled plan change</h3>

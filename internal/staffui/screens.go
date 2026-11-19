@@ -15,6 +15,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/health"
+	"github.com/maaransoft/isp-bss-oss/internal/nas"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
 	"github.com/maaransoft/isp-bss-oss/internal/revenue"
 	"github.com/maaransoft/isp-bss-oss/internal/tickets"
@@ -245,8 +246,19 @@ type subscriberDetailData struct {
 	// change then lands on the next renewal. Formatted for <input
 	// type="date">, and empty for a subscriber who has never had a cycle.
 	PlanChangeDefaultDate string
-	ShowTickets           bool
-	ShowSpeedOverride     bool
+	// ShowStaticIP gates the static-address panel (FR-NET-005). Reading is
+	// staff-wide, since "what is my IP address" is a front-desk question;
+	// ShowAssignStaticIP gates the assign and release forms.
+	ShowStaticIP       bool
+	ShowAssignStaticIP bool
+	StaticIPs          []nas.StaticAssignment
+	CurrentStaticIP    *nas.StaticAssignment
+	// StaticIPPools are the static pools an address may come from, and
+	// StaticIPProducts the recurring charges it may be billed with.
+	StaticIPPools     []nas.Pool
+	StaticIPProducts  []billing.Product
+	ShowTickets       bool
+	ShowSpeedOverride bool
 
 	// Credentials card (view/reset password) and plan change.
 	ShowCredentials   bool // can see the card and reveal the password
@@ -306,6 +318,8 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 		ShowCharges:          canAccess("products", s.Role, s.LeaAccess) && h.products != nil,
 		ShowManageCharges:    canManageProducts(s.Role) && h.products != nil,
 		ShowPlanChange:       canManageCredentials(s.Role) && h.planChanges != nil,
+		ShowStaticIP:         h.ipPools != nil,
+		ShowAssignStaticIP:   canAssignStaticIP(s.Role) && h.ipPools != nil,
 		PaymentMethods:       billing.PaymentMethods,
 		ShowTickets:          canAccess("tickets", s.Role, s.LeaAccess),
 		ShowSpeedOverride:    s.Role == "isp_owner",
@@ -384,6 +398,32 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 			detail.Tickets = ts
 		}
 	}
+	// The static address this subscriber holds, and its history
+	// (FR-NET-005). Degrades on its own like every other panel here.
+	if detail.ShowStaticIP {
+		if list, err := h.ipPools.ListSubscriberStaticIPs(r.Context(), id); err == nil {
+			detail.StaticIPs = list
+			for i := range list {
+				if list[i].Active() {
+					detail.CurrentStaticIP = &list[i]
+					break
+				}
+			}
+		} else {
+			log.Warn().Err(err).Int("id", id).Msg("staffui: static address panel unavailable")
+		}
+		// The assign form's dropdowns, only for whoever may use them.
+		if detail.ShowAssignStaticIP && detail.CurrentStaticIP == nil {
+			if pools, err := h.ipPools.ListPools(r.Context(),
+				nas.PoolFilter{Purpose: nas.PoolStatic, Limit: 200}); err == nil {
+				detail.StaticIPPools = pools
+			} else {
+				log.Warn().Err(err).Msg("staffui: static pool list unavailable")
+			}
+			detail.StaticIPProducts = h.staticIPProducts(r.Context())
+		}
+	}
+
 	// Scheduled plan changes (FR-BIL-023). Read whenever the plan card is
 	// shown, not only when the operator may change it: "they are moving to
 	// Fibre on the 1st" is the answer to a support call, and a CSR who
