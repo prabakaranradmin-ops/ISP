@@ -16,14 +16,44 @@ type CatalogueStore struct {
 // NewCatalogueStore constructs a CatalogueStore.
 func NewCatalogueStore(pool dbPool) *CatalogueStore { return &CatalogueStore{pool: pool} }
 
-// ListPlans returns every plan, newest first.
-func (s *CatalogueStore) ListPlans(ctx context.Context) ([]staffui.Plan, error) {
-	const q = `
-		SELECT id, name, rate_limit_string, volume_gb, fup_threshold_bytes,
-		       COALESCE(fup_throttle_string, ''), price, validity_days, created_at
-		  FROM plans
-		 ORDER BY id DESC`
+// planColumns is the stored plan plus how many subscribers hold it.
+const planColumns = `
+	p.id, p.name, p.rate_limit_string, p.volume_gb, p.fup_threshold_bytes,
+	COALESCE(p.fup_throttle_string, ''), p.price, p.validity_days, p.active,
+	p.created_at, COALESCE(p.updated_by, ''), p.updated_at,
+	(SELECT COUNT(*) FROM subscribers s WHERE s.plan_id = p.id AND s.status <> 'terminated')`
 
+func scanPlan(row interface{ Scan(...any) error }, p *staffui.Plan) error {
+	return row.Scan(&p.ID, &p.Name, &p.RateLimitString, &p.VolumeGB,
+		&p.FUPThresholdBytes, &p.FUPThrottleString, &p.Price,
+		&p.ValidityDays, &p.Active, &p.CreatedAt, &p.UpdatedBy, &p.UpdatedAt,
+		&p.Subscribers)
+}
+
+// ListPlans returns every plan, offered ones first then newest.
+//
+// Retired plans are included: the screen that manages them has to show
+// them, and a subscriber on one needs their tariff to be explicable.
+func (s *CatalogueStore) ListPlans(ctx context.Context) ([]staffui.Plan, error) {
+	return s.listPlans(ctx, `
+		SELECT `+planColumns+`
+		  FROM plans p
+		 ORDER BY p.active DESC, p.id DESC`)
+}
+
+// ListActivePlans returns only the plans that may still be assigned.
+//
+// This is what every dropdown that puts a subscriber on a plan reads, so
+// a retired tariff cannot be sold to anybody new (FR-CAT-001).
+func (s *CatalogueStore) ListActivePlans(ctx context.Context) ([]staffui.Plan, error) {
+	return s.listPlans(ctx, `
+		SELECT `+planColumns+`
+		  FROM plans p
+		 WHERE p.active
+		 ORDER BY p.name`)
+}
+
+func (s *CatalogueStore) listPlans(ctx context.Context, q string) ([]staffui.Plan, error) {
 	rows, err := s.pool.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("db: list plans: %w", err)
@@ -33,14 +63,90 @@ func (s *CatalogueStore) ListPlans(ctx context.Context) ([]staffui.Plan, error) 
 	var out []staffui.Plan
 	for rows.Next() {
 		var p staffui.Plan
-		if err := rows.Scan(&p.ID, &p.Name, &p.RateLimitString, &p.VolumeGB,
-			&p.FUPThresholdBytes, &p.FUPThrottleString, &p.Price,
-			&p.ValidityDays, &p.CreatedAt); err != nil {
+		if err := scanPlan(rows, &p); err != nil {
 			return nil, fmt.Errorf("db: scan plan: %w", err)
 		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// UpdatePlan changes a tariff in place.
+//
+// Editing the price re-prices every subscriber on the plan from their next
+// renewal, because the renewal path reads plans.price at the time it bills
+// (unlike a product attachment, which snapshots its price — see migration
+// 058). That is what a tariff change means, and it is why this is
+// attributed and audited, and why the console shows how many subscribers
+// an edit affects before it is made.
+//
+// A rate-limit change reaches the NAS as radiusd's subscriber auth cache
+// expires, within its 60-second TTL — that cache is process-local and this
+// process cannot reach it (see subCacheInvalidator in cmd/api).
+func (s *CatalogueStore) UpdatePlan(ctx context.Context, p staffui.Plan, by string) (*staffui.Plan, error) {
+	var throttle *string
+	if p.FUPThrottleString != "" {
+		throttle = &p.FUPThrottleString
+	}
+	const q = `
+		UPDATE plans
+		   SET name = $2, rate_limit_string = $3, volume_gb = $4,
+		       fup_threshold_bytes = $5, fup_throttle_string = $6,
+		       price = $7, validity_days = $8,
+		       updated_by = $9, updated_at = now()
+		 WHERE id = $1
+		RETURNING id`
+
+	var id int
+	err := s.pool.QueryRow(ctx, q, p.ID, p.Name, p.RateLimitString, p.VolumeGB,
+		p.FUPThresholdBytes, throttle, p.Price, p.ValidityDays, by).Scan(&id)
+	if isNoRows(err) {
+		return nil, fmt.Errorf("db: plan %d: %w", p.ID, ErrNotFound)
+	}
+	if err != nil {
+		if uniqueViolation(err, "uq_plan_name_active") {
+			return nil, fmt.Errorf("%w: %s", staffui.ErrPlanNameTaken, p.Name)
+		}
+		return nil, fmt.Errorf("db: update plan %d: %w", p.ID, err)
+	}
+	return s.GetPlan(ctx, id)
+}
+
+// GetPlan loads one plan.
+func (s *CatalogueStore) GetPlan(ctx context.Context, id int) (*staffui.Plan, error) {
+	var out staffui.Plan
+	err := scanPlan(s.pool.QueryRow(ctx,
+		`SELECT `+planColumns+` FROM plans p WHERE p.id = $1`, id), &out)
+	if isNoRows(err) {
+		return nil, fmt.Errorf("db: plan %d: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: get plan %d: %w", id, err)
+	}
+	return &out, nil
+}
+
+// SetPlanActive retires or reinstates a plan.
+//
+// Retiring hides it from the dropdowns that assign one; it does not move
+// anybody. The subscribers on it keep renewing at its price, which is the
+// tariff they bought — the same rule products (058) and IP pools (060)
+// follow, stated first here.
+func (s *CatalogueStore) SetPlanActive(ctx context.Context, id int, active bool, by string) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE plans SET active = $2, updated_by = $3, updated_at = now()
+		 WHERE id = $1`, id, active, by)
+	if err != nil {
+		if uniqueViolation(err, "uq_plan_name_active") {
+			// Reinstating a plan whose name a live one has taken since.
+			return fmt.Errorf("%w: another offered plan already uses that name", staffui.ErrPlanNameTaken)
+		}
+		return fmt.Errorf("db: set plan %d active=%v: %w", id, active, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("db: plan %d: %w", id, ErrNotFound)
+	}
+	return nil
 }
 
 // CreatePlan inserts a plan and returns it as stored.
@@ -57,19 +163,19 @@ func (s *CatalogueStore) CreatePlan(ctx context.Context, p staffui.Plan) (*staff
 		INSERT INTO plans (name, rate_limit_string, volume_gb, fup_threshold_bytes,
 		                   fup_throttle_string, price, validity_days)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, name, rate_limit_string, volume_gb, fup_threshold_bytes,
-		          COALESCE(fup_throttle_string, ''), price, validity_days, created_at`
+		RETURNING id`
 
-	var out staffui.Plan
+	var id int
 	if err := s.pool.QueryRow(ctx, q,
 		p.Name, p.RateLimitString, p.VolumeGB, p.FUPThresholdBytes,
 		throttle, p.Price, p.ValidityDays,
-	).Scan(&out.ID, &out.Name, &out.RateLimitString, &out.VolumeGB,
-		&out.FUPThresholdBytes, &out.FUPThrottleString, &out.Price,
-		&out.ValidityDays, &out.CreatedAt); err != nil {
+	).Scan(&id); err != nil {
+		if uniqueViolation(err, "uq_plan_name_active") {
+			return nil, fmt.Errorf("%w: %s", staffui.ErrPlanNameTaken, p.Name)
+		}
 		return nil, fmt.Errorf("db: create plan: %w", err)
 	}
-	return &out, nil
+	return s.GetPlan(ctx, id)
 }
 
 // ListGSTRates returns every GST slab, most recently effective first.

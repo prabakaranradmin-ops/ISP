@@ -604,6 +604,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/catalogue", h.authed(h.Catalogue))
 	mux.Handle("POST /staff/catalogue/plans", h.authed(h.requireCSRF(h.CreatePlan)))
 	mux.Handle("POST /staff/catalogue/gst", h.authed(h.requireCSRF(h.CreateGSTRate)))
+
+	// Plan editing, duplication, retirement and CSV export (FR-CAT-001).
+	mux.Handle("GET /staff/catalogue/plans.csv", h.authed(h.ExportPlansCSV))
+	mux.Handle("POST /staff/catalogue/plans/{id}", h.authed(h.requireCSRF(h.UpdatePlanForm)))
+	mux.Handle("POST /staff/catalogue/plans/{id}/duplicate", h.authed(h.requireCSRF(h.DuplicatePlanForm)))
+	mux.Handle("POST /staff/catalogue/plans/{id}/active", h.authed(h.requireCSRF(h.SetPlanActiveForm)))
 	mux.Handle("GET /staff/sessions", h.authed(h.Sessions))
 	mux.Handle("POST /staff/sessions/{session_id}/disconnect", h.authed(h.requireCSRF(h.DisconnectSessionForm)))
 	mux.Handle("GET /staff/cpe", h.authed(h.CPEList))

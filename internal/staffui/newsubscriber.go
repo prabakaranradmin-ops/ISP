@@ -49,7 +49,9 @@ func (h *Handler) renderNewSubscriber(w http.ResponseWriter, r *http.Request, s 
 
 	nd := newSubscriberData{Form: form}
 	if h.catalogue != nil {
-		plans, err := h.catalogue.ListPlans(r.Context())
+		// Offered plans only: a new subscriber cannot be put on a retired
+		// tariff (FR-CAT-001).
+		plans, err := h.catalogue.ListActivePlans(r.Context())
 		if err != nil {
 			log.Error().Err(err).Msg("staffui: list plans for new subscriber failed")
 		} else {

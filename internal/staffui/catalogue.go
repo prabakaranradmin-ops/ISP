@@ -2,6 +2,7 @@ package staffui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -23,8 +24,43 @@ type Plan struct {
 	FUPThrottleString string
 	Price             decimal.Decimal
 	ValidityDays      int
-	CreatedAt         time.Time
+	// Active is whether the plan may still be assigned (FR-CAT-001).
+	// A retired plan keeps its existing subscribers, who go on renewing
+	// at its price — that is the tariff they bought.
+	Active    bool
+	CreatedAt time.Time
+	UpdatedBy string
+	UpdatedAt *time.Time
+	// Subscribers is how many are currently on this plan, when the query
+	// asked for it. Tells an operator what an edit or a retirement costs.
+	Subscribers int
 }
+
+// FUPThresholdGB is the FUP threshold in whole GB, for the edit form.
+// Zero means unlimited.
+func (p Plan) FUPThresholdGB() int64 {
+	if p.FUPThresholdBytes <= 0 {
+		return 0
+	}
+	return p.FUPThresholdBytes / (1024 * 1024 * 1024)
+}
+
+// StatusLabel is the operator-facing status.
+func (p Plan) StatusLabel() string {
+	if p.Active {
+		return "Offered"
+	}
+	return "Retired"
+}
+
+// ErrPlanNameTaken is returned when another plan still being offered
+// already uses that name (FR-CAT-001, migration 061).
+//
+// Only among offered plans: a retired "Fibre 100" and its replacement may
+// legitimately share a name, which is in fact how a tariff is usually
+// re-priced — retire the old one, create the new one at the new price, and
+// leave the existing subscribers on what they bought.
+var ErrPlanNameTaken = errors.New("staffui: another offered plan already uses that name")
 
 // GSTRate is one dated GST slab. Rates are never edited in place: billing
 // reads the row in force on an invoice's date, so a change is a new row
@@ -46,8 +82,15 @@ type GSTRate struct {
 // cannot be created without a plan_id and invoices cannot be raised without
 // a GST rate, which made "run psql by hand" a required step of going live.
 type CatalogueStore interface {
+	// ListPlans returns every plan, retired ones included, with how many
+	// subscribers each holds.
 	ListPlans(ctx context.Context) ([]Plan, error)
+	// ListActivePlans returns only the plans that may still be assigned,
+	// for the dropdowns that assign one (FR-CAT-001).
+	ListActivePlans(ctx context.Context) ([]Plan, error)
 	CreatePlan(ctx context.Context, p Plan) (*Plan, error)
+	UpdatePlan(ctx context.Context, p Plan, by string) (*Plan, error)
+	SetPlanActive(ctx context.Context, id int, active bool, by string) error
 	ListGSTRates(ctx context.Context) ([]GSTRate, error)
 	CreateGSTRate(ctx context.Context, r GSTRate) (*GSTRate, error)
 }

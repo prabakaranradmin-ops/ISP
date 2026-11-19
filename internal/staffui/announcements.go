@@ -73,6 +73,10 @@ func (h *Handler) renderAnnouncements(w http.ResponseWriter, r *http.Request, s 
 	ad.Statuses, ad.Channels = SubscriberStatuses, announcementChannels
 	planNames := map[int]string{}
 	if h.catalogue != nil {
+		// Every plan, retired ones included, and deliberately not
+		// ListActivePlans: this is a filter over the subscribers who exist,
+		// and the ones still on a retired tariff are exactly the audience
+		// an operator announcing its withdrawal needs to reach.
 		if plans, err := h.catalogue.ListPlans(r.Context()); err == nil {
 			ad.Plans = plans
 			for _, p := range plans {

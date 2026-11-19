@@ -291,7 +291,9 @@ func (h *Handler) renderConvert(w http.ResponseWriter, r *http.Request, s Sessio
 	d.Error = errMsg
 	cd.Lead = lead
 	if h.catalogue != nil {
-		if plans, err := h.catalogue.ListPlans(r.Context()); err == nil {
+		// Offered plans only: converting a lead sells them a plan
+		// (FR-CAT-001).
+		if plans, err := h.catalogue.ListActivePlans(r.Context()); err == nil {
 			cd.Plans = plans
 		}
 	}

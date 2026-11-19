@@ -184,7 +184,9 @@ func (h *Handler) attachBulkPlans(r *http.Request, sd *subscribersData) {
 	if !sd.ShowBulkActions || h.catalogue == nil {
 		return
 	}
-	if plans, err := h.catalogue.ListPlans(r.Context()); err == nil {
+	// Offered plans only: this dropdown moves subscribers onto a plan, and
+	// a retired tariff may not be sold to anybody new (FR-CAT-001).
+	if plans, err := h.catalogue.ListActivePlans(r.Context()); err == nil {
 		sd.Plans = plans
 	}
 }
@@ -327,9 +329,14 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 		ShowResetPassword:    canManageCredentials(s.Role),
 		ShowChangePlan:       canManageCredentials(s.Role),
 	}
-	// The plan dropdown for the change-plan form.
+	// The plan dropdown for the change-plan and scheduled-change forms.
+	// Offered plans only (FR-CAT-001): both forms assign a plan.
+	//
+	// A subscriber already on a retired plan therefore does not see their
+	// own plan in the list, which is correct — the list is what they may
+	// be moved to, not what they are on.
 	if detail.ShowChangePlan && h.catalogue != nil {
-		if plans, err := h.catalogue.ListPlans(r.Context()); err == nil {
+		if plans, err := h.catalogue.ListActivePlans(r.Context()); err == nil {
 			detail.Plans = plans
 		}
 	}
