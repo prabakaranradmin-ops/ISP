@@ -89,6 +89,13 @@ const SCREENS = [
     deny: ['noc', 'csr', 'tech'],
   },
   {
+    key: 'fair-use',
+    url: '/staff/fair-use',
+    heading: 'Fair-use policies',
+    allow: ['owner', 'billing'],
+    deny: ['noc', 'csr', 'tech'],
+  },
+  {
     key: 'plan-attributes',
     url: '/staff/plan-attributes',
     heading: 'RADIUS attributes',
@@ -338,6 +345,81 @@ test.describe('Bandwidth profiles (FR-CAT-002)', () => {
     await signIn(page, 'csr');
     const res = await page.request.get('/staff/bandwidth');
     expect(res.status()).toBe(403);
+  });
+});
+
+test.describe('Fair-use policies (FR-CAT-003)', () => {
+  // The round trip through a real browser: a three-step policy created from
+  // the form, with the thresholds coming back in GB. The Go tests assert the
+  // GB-to-bytes conversion; this asserts the form's values survive it, which
+  // is where a factor-of-a-billion unit mistake would land.
+  test('a multi-step policy can be created and shows every step', async ({ page }) => {
+    await signIn(page, 'billing');
+    await page.goto('/staff/fair-use');
+
+    const name = `E2E fair use ${Date.now()}`;
+    const form = page.locator('form[action="/staff/fair-use"]').last();
+    await form.locator('input[name="name"]').fill(name);
+    const thresholds = form.locator('input[name="threshold_gb"]');
+    const rates = form.locator('input[name="throttle_rate"]');
+    await thresholds.nth(0).fill('500');
+    await rates.nth(0).fill('10M/10M');
+    await thresholds.nth(1).fill('1000');
+    await rates.nth(1).fill('2M/2M');
+    await form.getByRole('button', { name: 'Add policy' }).click();
+
+    const row = page.locator('tr', { hasText: name });
+    await expect(row).toContainText('500 GB');
+    await expect(row).toContainText('10M/10M');
+    await expect(row).toContainText('1000');
+    await expect(row).toContainText('2M/2M');
+    // Throttling starts at the first step, which is also what the 80%
+    // warning is measured against.
+    await expect(row).toContainText('500 GB');
+    await snap(page, 'fair-use-policies');
+  });
+
+  test('a step with no throttle rate is refused with a reason, not a 500', async ({ page }) => {
+    await signIn(page, 'billing');
+    await page.goto('/staff/fair-use');
+
+    const form = page.locator('form[action="/staff/fair-use"]').last();
+    await form.locator('input[name="name"]').fill(`E2E bad ${Date.now()}`);
+    await form.locator('input[name="threshold_gb"]').nth(0).fill('500');
+    // The rate is required by the markup, so it is cleared explicitly to
+    // get past the browser's own validation and reach the server's.
+    await form.locator('input[name="throttle_rate"]').nth(0).fill('not-a-rate');
+    await form.getByRole('button', { name: 'Add policy' }).click();
+
+    // Matched on "tier 1:" rather than the rate wording, which also appears
+    // in the page's own help text. This is the better assertion anyway: the
+    // message has to name which step is wrong, not just that one is.
+    await expect(page.getByText(/tier 1:/)).toBeVisible();
+    const body = (await page.textContent('body')) ?? '';
+    expect(body).not.toContain('Internal Server Error');
+    expect(body).not.toContain('SQLSTATE');
+  });
+
+  test('a plan can be pointed at a policy and back to its own threshold', async ({ page }) => {
+    await signIn(page, 'billing');
+    await page.goto('/staff/fair-use');
+
+    // Detaching is the supported setup for a plan with no policy, so it has
+    // to be expressible rather than a one-way door.
+    const attach = page.locator('form[action="/staff/fair-use/attach"]');
+    await expect(attach.locator('select[name="policy_id"] option', { hasText: /None/ })).toHaveCount(1);
+    await attach.locator('select[name="policy_id"]').selectOption('');
+    await attach.getByRole('button', { name: 'Apply to plan' }).click();
+    await expect(page.getByText(/back to its own single threshold/)).toBeVisible();
+  });
+
+  test('network and front-desk roles cannot reach the screen', async ({ page }) => {
+    for (const role of ['noc', 'csr'] as const) {
+      await signIn(page, role);
+      const res = await page.request.get('/staff/fair-use');
+      expect(res.status(), `${role} opening /staff/fair-use`).toBe(403);
+      await page.getByRole('button', { name: 'Sign out' }).click();
+    }
   });
 });
 

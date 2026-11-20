@@ -1,0 +1,140 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Fair-use policies</h1>
+
+<p class="muted">A fair-use policy is the set of steps a plan takes once a subscriber is over quota: cross the
+  first threshold and their speed drops, cross a harder one and it drops further. Plans share policies, so an
+  operator runs a handful of shapes across many tariffs.</p>
+<p class="muted"><strong>Editing a policy re-shapes every plan on it</strong> &mdash; subscribers move tier on
+  the scanner's next pass, within a minute, not immediately. The first threshold is also the figure the 80%
+  warning is measured against, because that is where a customer's speed actually changes.</p>
+
+{{with $d}}
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Policy</th><th>Steps</th><th class="right">Throttling starts</th>
+      <th class="right">Plans</th>
+      {{if .CanManage}}<th></th>{{end}}
+    </tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr{{if not .Active}} class="retired"{{end}}>
+        <td>
+          {{.Name}}
+          {{if not .Active}}<br><span class="pill neutral">retired</span>{{end}}
+        </td>
+        <td class="small">
+          {{range .Tiers}}
+            over <strong>{{.ThresholdGB}} GB</strong> &rarr; {{.ThrottleRate}}<br>
+          {{else}}
+            <span class="muted">no steps &mdash; this policy throttles nobody</span>
+          {{end}}
+        </td>
+        <td class="num right">{{if .FirstThresholdGB}}{{.FirstThresholdGB}} GB{{else}}&mdash;{{end}}</td>
+        <td class="num right">
+          {{if .InUseByPlans}}{{.InUseByPlans}}{{else}}<span class="muted">0</span>{{end}}
+        </td>
+        {{if $d.CanManage}}
+        <td class="actions">
+          <details>
+            <summary>Edit</summary>
+            <form method="post" action="/staff/fair-use" class="formgrid">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="policy_id" value="{{.ID}}">
+              <label>Name <input name="name" value="{{.Name}}" required></label>
+              <p class="muted small">Leave a threshold blank to remove that step. Thresholds are in GB of
+                usage in the cycle, counted from zero each cycle &mdash; not added to the step below.</p>
+              {{range .Tiers}}
+              <label>Over (GB) <input name="threshold_gb" value="{{.ThresholdGB}}"></label>
+              <label>Throttle to <input name="throttle_rate" value="{{.ThrottleRate}}" placeholder="10M/10M"></label>
+              {{end}}
+              {{/* Spare rows so steps can be added without a second visit. */}}
+              <label>Over (GB) <input name="threshold_gb" placeholder="new step"></label>
+              <label>Throttle to <input name="throttle_rate" placeholder="2M/2M"></label>
+              <button type="submit" class="primary">Save, re-shaping {{.InUseByPlans}} plan(s)</button>
+            </form>
+
+            <form method="post" action="/staff/fair-use/{{.ID}}/active" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="active" value="{{if .Active}}false{{else}}true{{end}}">
+              <button type="submit">{{if .Active}}Retire{{else}}Offer again{{end}}</button>
+              <span class="muted small">
+                {{if .Active}}Takes it out of the dropdowns. The plans already on it keep being evaluated
+                against it.{{else}}Puts it back in the dropdowns.{{end}}
+              </span>
+            </form>
+
+            {{if not .InUseByPlans}}
+            <form method="post" action="/staff/fair-use/{{.ID}}/delete" class="inline"
+                  onsubmit="return confirm('Delete {{.Name}}? No plan uses it.')">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <button type="submit" class="danger">Delete</button>
+            </form>
+            {{else}}
+            <p class="muted small">No delete: {{.InUseByPlans}} plan(s) use this. Retire it instead &mdash;
+              deleting it would change what those subscribers experience with nothing to explain why.</p>
+            {{end}}
+          </details>
+        </td>
+        {{end}}
+      </tr>
+    {{else}}
+      <tr><td colspan="{{if .CanManage}}5{{else}}4{{end}}" class="empty">
+        No fair-use policies yet. Plans without one use their own single threshold and throttle, exactly as
+        before.
+      </td></tr>
+    {{end}}
+    </tbody>
+  </table>
+
+  <p>
+    {{if .IncludeRetired}}<a href="/staff/fair-use">Hide retired policies</a>
+    {{else}}<a href="/staff/fair-use?retired=true">Show retired policies too</a>{{end}}
+  </p>
+</div>
+
+{{if .CanManage}}
+<div class="card">
+  <h3>Add a policy</h3>
+  <p class="muted small">Up to {{.MaxTiers}} steps. Thresholds are cumulative usage in the cycle, so a plan
+    that throttles at 500GB and harder at 1TB has steps of 500 and 1000, not 500 and 500.</p>
+  <form method="post" action="/staff/fair-use" class="formgrid">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Name <input name="name" placeholder="Retail fair use" required></label>
+    <label>Over (GB) <input name="threshold_gb" placeholder="500" required></label>
+    <label>Throttle to <input name="throttle_rate" placeholder="10M/10M" required></label>
+    <label>Over (GB) <input name="threshold_gb" placeholder="1000 (optional)"></label>
+    <label>Throttle to <input name="throttle_rate" placeholder="2M/2M"></label>
+    <label>Over (GB) <input name="threshold_gb" placeholder="2000 (optional)"></label>
+    <label>Throttle to <input name="throttle_rate" placeholder="512k/512k"></label>
+    <button type="submit" class="primary">Add policy</button>
+  </form>
+  <p class="muted small">A throttle is a flat ceiling written &quot;down/up&quot;. It is deliberately not a
+    bandwidth profile: giving a throttled subscriber a burst would hand back the speed the throttle exists to
+    remove.</p>
+</div>
+
+<div class="card">
+  <h3>Which policy a plan uses</h3>
+  <p class="muted small">A plan with no policy keeps using its own single threshold and throttle. That is a
+    supported setup, not something left half-done.</p>
+  <form method="post" action="/staff/fair-use/attach" class="formgrid">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Plan
+      <select name="plan_id">
+        {{range .Plans}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+      </select>
+    </label>
+    <label>Fair-use policy
+      <select name="policy_id">
+        <option value="">None &mdash; use the plan's own threshold</option>
+        {{range .Rows}}{{if .Active}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}
+      </select>
+    </label>
+    <button type="submit" class="primary">Apply to plan</button>
+  </form>
+</div>
+{{end}}
+{{end}}
+{{end}}

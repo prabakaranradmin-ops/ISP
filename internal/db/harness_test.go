@@ -127,6 +127,11 @@ var truncateOrder = []string{
 	"radius_verifier_cache",
 	"subscribers",
 	"plans",
+	// Migration 067. data_topups references subscribers so CASCADE reaches
+	// it, but it is listed so a test that only touches top-ups starts
+	// clean. fup_policies comes after plans, like bandwidth_profiles, since
+	// plans.fup_policy_id references it; its tiers go by CASCADE.
+	"data_topups",
 	// Migration 066. Before plans would be taken by its own CASCADE
 	// anyway, but listed so a test that only touches attributes still
 	// starts clean.
@@ -136,6 +141,7 @@ var truncateOrder = []string{
 	// everything behind it before the tables above had been cleared in
 	// their intended order.
 	"bandwidth_profiles",
+	"fup_policies",
 	// Migration 034 seeds nas_devices with explicit ids, so it must be reset
 	// between tests or the second test to seed id=1 collides. plan_nas_profiles
 	// references it and is taken by CASCADE.
@@ -309,6 +315,22 @@ func seedSubscriber(ctx context.Context, t *testing.T, pool *pgxpool.Pool, id in
 		o.FUPActive, o.DndOptOut)
 	if err != nil {
 		t.Fatalf("seed subscriber %d: %v", id, err)
+	}
+
+	// A throttled subscriber also carries the rate that was applied to them
+	// (FR-CAT-003, migration 067 backfills this for existing rows). Setting
+	// only the boolean would describe a state the live system never
+	// produces: the FUP scanner would see "flagged throttled, but no rate
+	// recorded", decide the rate is wrong, and re-throttle them — so a test
+	// seeding FUPActive would get an extra row it did not ask for.
+	if o.FUPActive {
+		if _, err := pool.Exec(ctx, `
+			UPDATE subscribers s
+			   SET fup_applied_rate = NULLIF(p.fup_throttle_string, '')
+			  FROM plans p
+			 WHERE p.id = s.plan_id AND s.id = $1`, id); err != nil {
+			t.Fatalf("seed applied rate for subscriber %d: %v", id, err)
+		}
 	}
 }
 

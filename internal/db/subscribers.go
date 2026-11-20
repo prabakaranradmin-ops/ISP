@@ -31,7 +31,14 @@ var _ radius.DBQuerier = (*RadiusStore)(nil)
 func (s *RadiusStore) GetSubscriberByUsername(ctx context.Context, username string) (*radius.Subscriber, error) {
 	const q = `
 		SELECT s.id, s.username, s.password_hash, s.status,
-		       p.rate_limit_string, COALESCE(p.fup_throttle_string, ''),
+		       p.rate_limit_string,
+		       -- The rate the FUP scanner actually applied (FR-CAT-003),
+		       -- falling back to the plan's single legacy throttle for a
+		       -- plan with no policy. Without the first term a subscriber
+		       -- on the second tier of a policy would reconnect onto the
+		       -- first tier's gentler rate, because the plan columns only
+		       -- describe one step.
+		       COALESCE(NULLIF(s.fup_applied_rate, ''), p.fup_throttle_string, ''),
 		       COALESCE(s.fup_active, FALSE), s.plan_id, s.nt_hash,
 		       COALESCE(s.speed_override_rate_limit, ''), s.speed_override_expires_at,
 		       p.volume_gb,

@@ -259,6 +259,8 @@ type HandlerDeps struct {
 	Bandwidth BandwidthManager
 	// ReplyAttrs manages per-plan RADIUS reply attributes (FR-CAT-004).
 	ReplyAttrs ReplyAttrManager
+	// FUPPolicies manages multi-tier fair-use policies (FR-CAT-003).
+	FUPPolicies FUPPolicyManager
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeManager
 	// Products manages the product catalogue and the charges attached to
@@ -327,6 +329,7 @@ type Handler struct {
 	ipPools            IPPoolManager
 	bandwidth          BandwidthManager
 	replyAttrs         ReplyAttrManager
+	fupPolicies        FUPPolicyManager
 	audit              AuditReader
 	authLog            AuthLogReader
 	gatewayLog         GatewayLogReader
@@ -386,6 +389,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		ipPools:            deps.IPPools,
 		bandwidth:          deps.Bandwidth,
 		replyAttrs:         deps.ReplyAttrs,
+		fupPolicies:        deps.FUPPolicies,
 		audit:              deps.Audit,
 		authLog:            deps.AuthLog,
 		gatewayLog:         deps.GatewayLog,
@@ -460,6 +464,13 @@ var sections = []Section{
 	// the decision is commercial, and the NOC sees the rendered result on
 	// the Routers and Sessions screens either way.
 	{"bandwidth", "Bandwidth Profiles", "/staff/bandwidth",
+		[]string{"isp_owner", "billing_admin"}, false},
+	// Fair-use policies (FR-CAT-003) sit with Bandwidth Profiles and share
+	// its reach: a policy decides the speed a plan delivers once a customer
+	// is over quota, which is part of what they were sold. Deliberately not
+	// the Routers tier that RADIUS Attributes (FR-CAT-004) sits in — those
+	// carry no price, and this does.
+	{"fair-use", "Fair-Use Policies", "/staff/fair-use",
 		[]string{"isp_owner", "billing_admin"}, false},
 	// Router hardware is network-ops territory, same reach as LEA Lookup
 	// below: the owner and whoever configures the NAS estate, not billing
@@ -661,6 +672,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/leads/{id}/convert", h.authed(h.requireCSRF(h.ConvertLeadForm)))
 	mux.Handle("GET /staff/catalogue", h.authed(h.Catalogue))
 	mux.Handle("GET /staff/bandwidth", h.authed(h.Bandwidth))
+	mux.Handle("GET /staff/fair-use", h.authed(h.FairUse))
+	mux.Handle("POST /staff/fair-use", h.authed(h.requireCSRF(h.SaveFUPPolicyForm)))
+	mux.Handle("POST /staff/fair-use/attach", h.authed(h.requireCSRF(h.AttachFUPPolicyForm)))
+	mux.Handle("POST /staff/fair-use/{id}/active", h.authed(h.requireCSRF(h.SetFUPPolicyActiveForm)))
+	mux.Handle("POST /staff/fair-use/{id}/delete", h.authed(h.requireCSRF(h.DeleteFUPPolicyForm)))
 	mux.Handle("POST /staff/bandwidth", h.authed(h.requireCSRF(h.CreateBandwidthForm)))
 	mux.Handle("POST /staff/bandwidth/{id}", h.authed(h.requireCSRF(h.UpdateBandwidthForm)))
 	mux.Handle("POST /staff/bandwidth/{id}/active", h.authed(h.requireCSRF(h.SetBandwidthActiveForm)))

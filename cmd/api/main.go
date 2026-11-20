@@ -250,6 +250,9 @@ func run(ctx context.Context) error {
 		Bandwidth: database.NAS(),
 		// Per-plan RADIUS reply attributes (FR-CAT-004), same store.
 		ReplyAttributes: database.NAS(),
+		// Multi-tier fair-use policies and data top-ups (FR-CAT-003) sit on
+		// the FUP store, beside the scanner queries that read them.
+		FUPPolicies: database.FUP(),
 		// Payment-gateway orders and callbacks (FR-PAY-001), recorded
 		// whether or not they credit a wallet.
 		GatewayLog: database.GatewayLog(),
@@ -439,6 +442,7 @@ func run(ctx context.Context) error {
 		IPPools:     apiHandler,
 		Bandwidth:   apiHandler,
 		ReplyAttrs:  apiHandler,
+		FUPPolicies: apiHandler,
 		Audit:       database.Audit(),
 		AuthLog:     database.AuthLog(),
 		GatewayLog:  database.GatewayLog(),

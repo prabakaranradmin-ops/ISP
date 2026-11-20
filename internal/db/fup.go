@@ -37,28 +37,6 @@ const liveSessionUsage = `
 	WHERE h.stop_time IS NULL
 	GROUP BY h.subscriber_id`
 
-// GetActiveSessionsAboveFUP returns online subscribers whose usage has reached
-// their plan's FUP threshold and who are not already throttled.
-//
-// Filtering fup_active here rather than in Go keeps the scanner's 10s tick from
-// re-issuing CoA for subscribers it throttled on a previous pass.
-func (s *FUPStore) GetActiveSessionsAboveFUP(ctx context.Context) ([]fup.SessionStats, error) {
-	const q = `
-		WITH usage AS (` + liveSessionUsage + `)
-		SELECT s.id, s.username, COALESCE(u.nas_ip, ''),
-		       p.fup_threshold_bytes, COALESCE(u.bytes_used, 0), s.fup_active,
-		       COALESCE(p.fup_throttle_string, '')
-		FROM usage u
-		JOIN subscribers s ON s.id = u.subscriber_id
-		JOIN plans p       ON p.id = s.plan_id
-		WHERE p.fup_threshold_bytes > 0
-		  AND s.fup_active = FALSE
-		  AND u.bytes_used >= p.fup_threshold_bytes
-		  AND s.status IN ('active','grace_period')`
-
-	return s.scanSessionStats(ctx, q)
-}
-
 // GetSessionsAtWarning returns online subscribers who have crossed pct of their
 // quota but have not yet breached it.
 //
@@ -68,18 +46,44 @@ func (s *FUPStore) GetSessionsAtWarning(ctx context.Context, pct int) ([]fup.Ses
 	if pct <= 0 || pct >= 100 {
 		pct = fup.FUPWarningPct
 	}
+	// The threshold warned against is the plan's policy's FIRST tier
+	// (FR-CAT-003), not its hardest and not the plan's legacy column. The
+	// first tier is where the subscriber's speed actually changes, so it is
+	// the number 80% of means anything; warning at 80% of the hardest tier
+	// would arrive long after they had already been throttled twice. A plan
+	// with no policy keeps using its own column, as before.
+	//
+	// Top-ups shift the threshold up, so somebody who has bought their way
+	// clear is not warned about a limit they are no longer near.
 	const q = `
-		WITH usage AS (` + liveSessionUsage + `)
+		WITH usage AS (` + liveSessionUsage + `),
+		topups AS (` + topupBytes + `)
 		SELECT s.id, s.username, COALESCE(u.nas_ip, ''),
-		       p.fup_threshold_bytes, COALESCE(u.bytes_used, 0), s.fup_active,
-		       COALESCE(p.fup_throttle_string, '')
+		       eff.threshold_bytes, COALESCE(u.bytes_used, 0), s.fup_active,
+		       COALESCE(eff.throttle_rate, '')
 		FROM usage u
 		JOIN subscribers s ON s.id = u.subscriber_id
 		JOIN plans p       ON p.id = s.plan_id
-		WHERE p.fup_threshold_bytes > 0
+		LEFT JOIN topups t ON t.subscriber_id = s.id
+		-- Each branch is parenthesised: an ORDER BY / LIMIT inside an
+		-- unparenthesised UNION ALL arm is a syntax error, and PostgreSQL
+		-- would otherwise read them as applying to the whole union.
+		JOIN LATERAL (
+			(SELECT ft.threshold_bytes + COALESCE(t.topped_up, 0) AS threshold_bytes,
+			        ft.throttle_rate
+			 FROM fup_policy_tiers ft
+			 WHERE ft.policy_id = p.fup_policy_id
+			 ORDER BY ft.threshold_bytes
+			 LIMIT 1)
+			UNION ALL
+			(SELECT p.fup_threshold_bytes + COALESCE(t.topped_up, 0),
+			        COALESCE(p.fup_throttle_string, '')
+			 WHERE p.fup_policy_id IS NULL AND p.fup_threshold_bytes > 0)
+		) eff ON TRUE
+		WHERE eff.threshold_bytes > 0
 		  AND s.fup_active = FALSE
-		  AND u.bytes_used >= (p.fup_threshold_bytes * $1) / 100
-		  AND u.bytes_used <  p.fup_threshold_bytes
+		  AND u.bytes_used >= (eff.threshold_bytes * $1) / 100
+		  AND u.bytes_used <  eff.threshold_bytes
 		  AND s.status IN ('active','grace_period')`
 
 	return s.scanSessionStats(ctx, q, pct)
@@ -108,8 +112,20 @@ func (s *FUPStore) scanSessionStats(ctx context.Context, q string, args ...any) 
 }
 
 // SetFUPActive records that a subscriber is (or is no longer) throttled.
+//
+// Clearing it also clears fup_applied_rate (FR-CAT-003). Without that, a
+// staff member un-throttling somebody would leave the rate the scanner had
+// applied in place, and GetSubscriberNASSession — which prefers the applied
+// rate — would keep sending it: the un-throttle would appear to succeed and
+// change nothing. Setting it leaves the rate alone, because the caller is
+// asserting "throttled" without saying to what, and the plan's own throttle
+// is the right answer then.
 func (s *FUPStore) SetFUPActive(ctx context.Context, subscriberID int, active bool) error {
-	const q = `UPDATE subscribers SET fup_active = $2 WHERE id = $1`
+	const q = `
+		UPDATE subscribers
+		   SET fup_active = $2,
+		       fup_applied_rate = CASE WHEN $2 THEN fup_applied_rate ELSE NULL END
+		 WHERE id = $1`
 
 	tag, err := s.pool.Exec(ctx, q, subscriberID, active)
 	if err != nil {
@@ -191,6 +207,12 @@ func (s *FUPStore) GetSubscriberNASSession(ctx context.Context, subscriberID int
 		       CASE WHEN s.speed_override_rate_limit IS NOT NULL
 		                 AND (s.speed_override_expires_at IS NULL OR s.speed_override_expires_at > NOW())
 		            THEN s.speed_override_rate_limit
+		            -- The tier the scanner applied (FR-CAT-003). Checked
+		            -- before the plan's legacy throttle, which describes
+		            -- only one step and would send the wrong rate to a
+		            -- subscriber on a policy's second or third tier.
+		            WHEN COALESCE(s.fup_applied_rate, '') <> ''
+		            THEN s.fup_applied_rate
 		            WHEN s.fup_active AND COALESCE(p.fup_throttle_string,'') <> ''
 		            THEN p.fup_throttle_string
 		            ELSE p.rate_limit_string

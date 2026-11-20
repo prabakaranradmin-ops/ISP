@@ -48,14 +48,25 @@ func TestFR_FUP_001_FUPStore_BreachDetection(t *testing.T) {
 
 	store := database.FUP()
 
-	sessions, err := store.GetActiveSessionsAboveFUP(ctx)
+	// Asserted through SessionsNeedingThrottleChange, which replaced
+	// GetActiveSessionsAboveFUP in FR-CAT-003. The selection rules under
+	// test are unchanged — this is the same question asked the way the
+	// scanner now asks it, so the coverage follows the live path instead of
+	// a second query that could drift from it.
+	//
+	// Subscriber 2 is the case the change is about: already throttled, and
+	// excluded here because the rate applied to them already matches what
+	// their usage calls for, not because a boolean says "throttled". That
+	// distinction is what lets a harder tier be reached at all.
+	changes, err := store.SessionsNeedingThrottleChange(ctx)
 	if err != nil {
-		t.Fatalf("GetActiveSessionsAboveFUP: %v", err)
+		t.Fatalf("SessionsNeedingThrottleChange: %v", err)
 	}
-	if len(sessions) != 1 {
-		t.Fatalf("want exactly 1 breaching session, got %d: %+v", len(sessions), sessions)
+	if len(changes) != 1 {
+		t.Fatalf("want exactly 1 subscriber needing a throttle change, got %d: %+v",
+			len(changes), changes)
 	}
-	got := sessions[0]
+	got := changes[0]
 	if got.SubscriberID != 1 {
 		t.Errorf("want subscriber 1, got %d", got.SubscriberID)
 	}
@@ -65,14 +76,17 @@ func TestFR_FUP_001_FUPStore_BreachDetection(t *testing.T) {
 	if got.NasIP != "10.10.0.1" {
 		t.Errorf("nas_ip: want 10.10.0.1, got %q", got.NasIP)
 	}
-	if got.FUPThreshold != quota3TB {
-		t.Errorf("threshold: want %d, got %d", quota3TB, got.FUPThreshold)
+	if got.TargetThreshold != quota3TB {
+		t.Errorf("threshold: want %d, got %d", quota3TB, got.TargetThreshold)
 	}
 	if got.BytesUsed < quota3TB {
 		t.Errorf("bytes_used must be at or above quota, got %d", got.BytesUsed)
 	}
-	if got.FUPActive {
-		t.Error("selected subscriber must not already be throttled")
+	if got.AppliedRate != "" {
+		t.Errorf("selected subscriber already has a rate applied: %q", got.AppliedRate)
+	}
+	if got.TargetRate != "10M/10M" {
+		t.Errorf("target rate: want the plan's throttle 10M/10M, got %q", got.TargetRate)
 	}
 }
 
@@ -112,8 +126,9 @@ func TestFR_FUP_004_FUPStore_WarningBand(t *testing.T) {
 	}
 }
 
-// TestFR_FUP_001_FUPStore_SetFUPActive verifies the throttle flag persists and removes the
-// subscriber from the next breach scan.
+// TestFR_FUP_001_FUPStore_SetFUPActive verifies the applied rate persists,
+// keeps the legacy boolean in step, and removes the subscriber from the next
+// breach scan — and that a manual un-throttle undoes all three.
 //
 // FR-FUP-001
 func TestFR_FUP_001_FUPStore_SetFUPActive(t *testing.T) {
@@ -126,31 +141,60 @@ func TestFR_FUP_001_FUPStore_SetFUPActive(t *testing.T) {
 
 	store := database.FUP()
 
-	before, err := store.GetActiveSessionsAboveFUP(ctx)
+	before, err := store.SessionsNeedingThrottleChange(ctx)
 	if err != nil {
 		t.Fatalf("scan before: %v", err)
 	}
 	if len(before) != 1 {
-		t.Fatalf("precondition: want 1 breaching session, got %d", len(before))
+		t.Fatalf("precondition: want 1 subscriber needing a throttle, got %d", len(before))
 	}
 
-	if err := store.SetFUPActive(ctx, 1, true); err != nil {
-		t.Fatalf("SetFUPActive: %v", err)
+	// Recording the rate is what takes them out of the scan now, not the
+	// boolean (FR-CAT-003). The boolean could not express which of several
+	// tiers was applied, so it could not tell "already on the right rate"
+	// from "already throttled, but to the wrong one".
+	if err := store.SetFUPAppliedRate(ctx, 1, "10M/10M"); err != nil {
+		t.Fatalf("SetFUPAppliedRate: %v", err)
 	}
 
-	after, err := store.GetActiveSessionsAboveFUP(ctx)
+	after, err := store.SessionsNeedingThrottleChange(ctx)
 	if err != nil {
 		t.Fatalf("scan after: %v", err)
 	}
 	if len(after) != 0 {
-		t.Errorf("a throttled subscriber must not be re-selected, got %d", len(after))
+		t.Errorf("a subscriber already on the right rate must not be re-selected, got %d: %+v",
+			len(after), after)
 	}
 
-	t.Run("clearing the flag re-arms detection", func(t *testing.T) {
+	// And the boolean is kept in step, because the Access-Accept path, the
+	// portal and the console all still read it.
+	var active bool
+	if err := pool.QueryRow(ctx, `SELECT fup_active FROM subscribers WHERE id = 1`).Scan(&active); err != nil {
+		t.Fatalf("read fup_active: %v", err)
+	}
+	if !active {
+		t.Error("recording an applied rate left fup_active false, so every reader of that " +
+			"flag would show the subscriber as unthrottled")
+	}
+
+	t.Run("a manual un-throttle clears the applied rate and re-arms detection", func(t *testing.T) {
+		// The interaction that would otherwise be silent: without clearing
+		// the rate, GetSubscriberNASSession keeps preferring it and the
+		// un-throttle appears to succeed while changing nothing.
 		if err := store.SetFUPActive(ctx, 1, false); err != nil {
 			t.Fatalf("SetFUPActive false: %v", err)
 		}
-		again, err := store.GetActiveSessionsAboveFUP(ctx)
+
+		var rate *string
+		if err := pool.QueryRow(ctx,
+			`SELECT fup_applied_rate FROM subscribers WHERE id = 1`).Scan(&rate); err != nil {
+			t.Fatalf("read fup_applied_rate: %v", err)
+		}
+		if rate != nil && *rate != "" {
+			t.Errorf("un-throttling left the applied rate as %q, so the CoA path would keep sending it", *rate)
+		}
+
+		again, err := store.SessionsNeedingThrottleChange(ctx)
 		if err != nil {
 			t.Fatalf("scan: %v", err)
 		}
@@ -265,12 +309,12 @@ func TestFR_AAA_003_FUPStore_SessionLifecycle(t *testing.T) {
 	}
 
 	t.Run("a closed session no longer counts toward FUP", func(t *testing.T) {
-		sessions, err := store.GetActiveSessionsAboveFUP(ctx)
+		changes, err := store.SessionsNeedingThrottleChange(ctx)
 		if err != nil {
 			t.Fatalf("scan: %v", err)
 		}
-		if len(sessions) != 0 {
-			t.Errorf("closed sessions must not appear in the FUP scan, got %d", len(sessions))
+		if len(changes) != 0 {
+			t.Errorf("closed sessions must not appear in the FUP scan, got %d", len(changes))
 		}
 	})
 }

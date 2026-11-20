@@ -37,9 +37,13 @@ import (
 // itFUPDB is an in-memory FUPQuerier.
 type itFUPDB struct {
 	mu          sync.Mutex
-	aboveFUP    []SessionStats
+	changes     []ThrottleChange
 	atWarning   []SessionStats
 	fupActiveOn map[int]bool
+	// appliedRates records what SetFUPAppliedRate was called with, so a
+	// test can assert the rate the scanner committed rather than only that
+	// a CoA was queued.
+	appliedRates map[int]string
 	// expiredOverrides is what ListExpiredSpeedOverrides reports; cleared
 	// records which ids ClearSpeedOverride was actually called for, so a
 	// test can assert the auto-revert swept what it claimed to.
@@ -47,10 +51,20 @@ type itFUPDB struct {
 	cleared          map[int]bool
 }
 
-func (db *itFUPDB) GetActiveSessionsAboveFUP(context.Context) ([]SessionStats, error) {
+func (db *itFUPDB) SessionsNeedingThrottleChange(context.Context) ([]ThrottleChange, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.aboveFUP, nil
+	return db.changes, nil
+}
+
+func (db *itFUPDB) SetFUPAppliedRate(_ context.Context, subscriberID int, rate string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.appliedRates == nil {
+		db.appliedRates = map[int]string{}
+	}
+	db.appliedRates[subscriberID] = rate
+	return nil
 }
 
 func (db *itFUPDB) GetSessionsAtWarning(context.Context, int) ([]SessionStats, error) {
@@ -296,12 +310,13 @@ func TestFR_FUP_001_FUPScanner_EnqueuesCoAOn100Pct(t *testing.T) {
 
 	const threshold = int64(1_771_674_009_600) // 1.65 TB
 	db := &itFUPDB{
-		aboveFUP: []SessionStats{{
-			SubscriberID: 42,
-			Username:     "heavy@isp",
-			NasIP:        "10.10.0.1",
-			FUPThreshold: threshold,
-			BytesUsed:    threshold + 1,
+		changes: []ThrottleChange{{
+			SubscriberID:    42,
+			Username:        "heavy@isp",
+			NasIP:           "10.10.0.1",
+			TargetThreshold: threshold,
+			BytesUsed:       threshold + 1,
+			TargetRate:      "10M/10M",
 		}},
 	}
 
@@ -337,17 +352,17 @@ func TestFR_FUP_001_FUPScanner_EnqueuesCoAOn100Pct(t *testing.T) {
 // already-throttled sessions do not generate CoA traffic.
 //
 // INT-FUP-001 (supporting) | FR-FUP-001
-func TestFR_FUP_001_FUPScanner_SkipsUnlimitedAndAlreadyThrottled(t *testing.T) {
+// Deciding who needs a throttle change moved into SQL with FR-CAT-003:
+// unlimited plans, subscribers already on the right rate, and subscribers
+// under a manual speed override are all excluded by
+// SessionsNeedingThrottleChange itself. That filtering is asserted against a
+// real database in internal/db (TestFR_CAT_003_*) — what is left for the
+// scanner is that it enqueues nothing when the query says nothing needs
+// changing, which is the steady state on almost every one of its ticks.
+func TestFR_FUP_001_FUPScanner_EnqueuesNothingWhenNoRateIsWrong(t *testing.T) {
 	_, client, inspector := itQueue(t)
 
-	db := &itFUPDB{
-		aboveFUP: []SessionStats{
-			{SubscriberID: 1, Username: "unlimited@isp", FUPThreshold: 0, BytesUsed: 9_999_999_999},
-			{SubscriberID: 2, Username: "throttled@isp", FUPThreshold: 100, BytesUsed: 500, FUPActive: true},
-		},
-	}
-
-	scanner := NewScanner(db, client)
+	scanner := NewScanner(&itFUPDB{}, client)
 	if err := scanner.scan(context.Background()); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -806,13 +821,13 @@ func TestFR_NOTIF_003_FUPScanner_NotifiesOnThrottleApplied(t *testing.T) {
 
 	const threshold = int64(1_771_674_009_600)
 	db := &itFUPDB{
-		aboveFUP: []SessionStats{{
-			SubscriberID: 42,
-			Username:     "heavy@isp",
-			NasIP:        "10.10.0.1",
-			FUPThreshold: threshold,
-			BytesUsed:    threshold + 1,
-			FUPThrottle:  "10M/10M",
+		changes: []ThrottleChange{{
+			SubscriberID:    42,
+			Username:        "heavy@isp",
+			NasIP:           "10.10.0.1",
+			TargetThreshold: threshold,
+			BytesUsed:       threshold + 1,
+			TargetRate:      "10M/10M",
 		}},
 	}
 
@@ -851,9 +866,9 @@ func TestFR_NOTIF_003_ThrottleNotificationIsOncePerQuotaCycle(t *testing.T) {
 
 	const threshold = int64(500)
 	db := &itFUPDB{
-		aboveFUP: []SessionStats{{
+		changes: []ThrottleChange{{
 			SubscriberID: 7, Username: "sub7", NasIP: "10.0.0.1",
-			FUPThreshold: threshold, BytesUsed: threshold + 1, FUPThrottle: "5M/5M",
+			TargetThreshold: threshold, BytesUsed: threshold + 1, TargetRate: "5M/5M",
 		}},
 	}
 	scanner := NewScanner(db, client)
@@ -861,9 +876,10 @@ func TestFR_NOTIF_003_ThrottleNotificationIsOncePerQuotaCycle(t *testing.T) {
 	if err := scanner.scan(context.Background()); err != nil {
 		t.Fatalf("first scan: %v", err)
 	}
-	// The real scanner would see fup_active set on the second pass, but the
-	// task ID is the guarantee that holds even if it does not — a scan
-	// racing SetFUPActive must still not double-notify.
+	// The real scanner would see the rate already applied on the second
+	// pass and return nothing, but the task ID is the guarantee that holds
+	// even if it does not — a scan racing SetFUPAppliedRate must still not
+	// double-notify.
 	if err := scanner.scan(context.Background()); err != nil {
 		t.Fatalf("second scan: %v", err)
 	}
@@ -934,5 +950,86 @@ func TestFR_FUP_005_ThrottledHandler_HandlesPlanWithNoThrottleString(t *testing.
 	}
 	if len(calls[0].Vars) < 2 || calls[0].Vars[1] == "" {
 		t.Errorf("an absent throttle string must still render as something readable, got %v", calls[0].Vars)
+	}
+}
+
+// A release must not announce a throttle — FR-CAT-003.
+//
+// A top-up lifts the throttle, and the scanner's CoA restores the
+// subscriber's speed. Telling them at that moment that their speed was
+// reduced would be worse than saying nothing: they have just paid to undo
+// exactly that, and the message would read as the payment having failed.
+// Restoration is announced by the purchase path, which knows what was
+// bought; the scanner only announces the throttling direction.
+func TestFR_CAT_003_AReleaseDoesNotAnnounceAThrottle(t *testing.T) {
+	_, client, inspector := itQueue(t)
+
+	db := &itFUPDB{
+		changes: []ThrottleChange{{
+			SubscriberID: 9, Username: "toppedup@isp", NasIP: "10.0.0.9",
+			BytesUsed: 600 << 30, ToppedUpBytes: 100 << 30,
+			AppliedRate: "10M/10M",
+			// Empty target: back to plan speed.
+			TargetRate: "",
+		}},
+	}
+	scanner := NewScanner(db, client)
+	if err := scanner.scan(context.Background()); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	// The CoA still goes out — that is what actually restores the speed.
+	if pending := itPendingTasks(t, inspector, QueueNetCommands); len(pending) != 1 {
+		t.Errorf("a release queued %d CoA tasks, want 1", len(pending))
+	}
+	// But no throttle notification.
+	for _, task := range itPendingTasks(t, inspector, QueueNotifications) {
+		if task.Type == TaskTypeFUPThrottled {
+			t.Error("lifting a throttle announced that the subscriber had been throttled")
+		}
+	}
+
+	// And the release is recorded as the subscriber being back at plan
+	// speed, not as some rate.
+	db.mu.Lock()
+	rate, ok := db.appliedRates[9]
+	db.mu.Unlock()
+	if !ok {
+		t.Fatal("the release was not recorded at all")
+	}
+	if rate != "" {
+		t.Errorf("the release recorded the rate %q, want it cleared", rate)
+	}
+}
+
+// Moving to a harder tier must still announce, with the new speed — the
+// subscriber's experience changed and the support desk needs the trail.
+func TestFR_CAT_003_TighteningATierAnnouncesTheNewSpeed(t *testing.T) {
+	_, client, inspector := itQueue(t)
+
+	db := &itFUPDB{
+		changes: []ThrottleChange{{
+			SubscriberID: 11, Username: "heavier@isp", NasIP: "10.0.0.11",
+			BytesUsed: 1100 << 30, TargetThreshold: 1000 << 30,
+			AppliedRate: "10M/10M", TargetRate: "2M/2M",
+		}},
+	}
+	scanner := NewScanner(db, client)
+	if err := scanner.scan(context.Background()); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	pending := itPendingTasks(t, inspector, QueueNotifications)
+	if len(pending) != 1 || pending[0].Type != TaskTypeFUPThrottled {
+		t.Fatalf("tightening queued %+v, want one throttle notification", pending)
+	}
+	var payload ThrottledPayload
+	if err := json.Unmarshal(pending[0].Payload, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// The harder tier's rate, not the one they were already on — otherwise
+	// the message tells them nothing changed.
+	if payload.ThrottleSpeed != "2M/2M" {
+		t.Errorf("throttle_speed %q, want the harder tier 2M/2M", payload.ThrottleSpeed)
 	}
 }

@@ -130,6 +130,12 @@ COMPONENTS=(
     # reaching no router at all — which is the exact shape of defect this
     # script exists to catch.
     "ListEnabledReplyAttributes:per-plan RADIUS reply attribute loading (FR-CAT-004)"
+    # Multi-tier fair-use policies (FR-CAT-003). The console screen and the
+    # API service layer both compile with no store wired and the screen then
+    # answers a readable 503, so an unwired store is a feature that looks
+    # present and does nothing. The scanner's own side is covered by the
+    # FUPQuerier interface, which will not compile without it.
+    "SaveFUPPolicy:fair-use policy management from the console (FR-CAT-003)"
 )
 
 if [ "${1:-}" = "--list" ]; then

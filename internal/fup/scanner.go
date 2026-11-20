@@ -35,6 +35,14 @@ var (
 		Name: "fup_throttled_notification_enqueued_total",
 		Help: "Number of FUP throttle-applied notifications enqueued",
 	})
+	fupThrottleReleased = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fup_throttle_released_total",
+		Help: "Throttles lifted because a data top-up raised the subscriber's thresholds",
+	})
+	fupTierTightened = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fup_tier_tightened_total",
+		Help: "Subscribers moved to a harder FUP tier from an existing throttle",
+	})
 	speedOverrideExpired = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "speed_override_expired_total",
 		Help: "Number of owner-triggered speed overrides auto-reverted on expiry",
@@ -73,7 +81,13 @@ type SessionStats struct {
 
 // FUPQuerier is the DB interface for the scanner.
 type FUPQuerier interface {
-	GetActiveSessionsAboveFUP(ctx context.Context) ([]SessionStats, error)
+	// SessionsNeedingThrottleChange replaced "who is over their threshold
+	// and not yet throttled" (FR-CAT-003). The old question could not see a
+	// subscriber crossing a second tier — they were already flagged
+	// throttled, so the scanner skipped them and the harder tier was
+	// unreachable.
+	SessionsNeedingThrottleChange(ctx context.Context) ([]ThrottleChange, error)
+	SetFUPAppliedRate(ctx context.Context, subscriberID int, rate string) error
 	GetSessionsAtWarning(ctx context.Context, pct int) ([]SessionStats, error)
 	SetFUPActive(ctx context.Context, subscriberID int, active bool) error
 	// ListExpiredSpeedOverrides and ClearSpeedOverride back the auto-revert
@@ -201,44 +215,81 @@ func WarningTaskID(subscriberID int, threshold int64) string {
 }
 
 func (s *Scanner) scanBreaches(ctx context.Context) error {
-	sessions, err := s.db.GetActiveSessionsAboveFUP(ctx)
+	changes, err := s.db.SessionsNeedingThrottleChange(ctx)
 	if err != nil {
-		return fmt.Errorf("fup: get sessions: %w", err)
+		return fmt.Errorf("fup: sessions needing a throttle change: %w", err)
 	}
-	for _, sess := range sessions {
-		if sess.FUPThreshold == 0 || sess.FUPActive {
-			continue // unlimited or already throttled
+	for _, c := range changes {
+		// The rate is recorded before the CoA is enqueued, deliberately.
+		// The queue retries with backoff, and the CoA handler reads the
+		// rate back out of the database at execution time — so the record
+		// has to be the authority by then. Enqueueing first would race: a
+		// fast worker could read the old rate and apply it, then mark the
+		// task done.
+		//
+		// The cost of this order is that a CoA which never succeeds leaves
+		// the database claiming a rate the NAS is not enforcing. That is
+		// the safer direction: the scanner re-examines every tick, finds
+		// the applied rate already correct, and stops — whereas the
+		// opposite order would re-enqueue forever. A CoA that exhausts its
+		// retries goes to the dead-letter queue and raises an operator
+		// alert (FR-FUP-003), which is where that belongs.
+		if err := s.db.SetFUPAppliedRate(ctx, c.SubscriberID, c.TargetRate); err != nil {
+			log.Error().Err(err).Int("sub_id", c.SubscriberID).
+				Msg("fup: record applied throttle rate failed")
+			continue
 		}
-		if sess.BytesUsed >= sess.FUPThreshold {
-			fupBreachDetected.Inc()
-			if err := s.db.SetFUPActive(ctx, sess.SubscriberID, true); err != nil {
-				log.Error().Err(err).Int("sub_id", sess.SubscriberID).Msg("fup: set fup_active failed")
-				continue
-			}
-			coaPayload := []byte(fmt.Sprintf(`{"subscriber_id":%d,"nas_ip":"%s"}`,
-				sess.SubscriberID, sess.NasIP))
-			task := jobqueue.NewTask(TaskTypeCoA, coaPayload,
-				jobqueue.Queue(QueueNetCommands),
-				jobqueue.MaxRetry(5),
-				jobqueue.Retention(24*time.Hour))
-			if _, err := s.client.EnqueueContext(ctx, task); err != nil {
-				return fmt.Errorf("fup: enqueue CoA for sub %d: %w", sess.SubscriberID, err)
-			}
-			coaEnqueued.Inc()
 
-			// Tell the subscriber their speed dropped (FR-NOTIF-003,
-			// FR-FUP-005). Enqueued after the CoA rather than before, so a
-			// failure to actually apply the throttle does not first
-			// announce one that never happened.
-			//
-			// A failure here is logged, not returned: the throttle itself
-			// has already been applied and recorded, and abandoning the
-			// scan would leave every later breached session in this pass
-			// unthrottled over an undelivered message.
-			if err := s.enqueueThrottledNotice(ctx, sess); err != nil {
-				log.Error().Err(err).Int("sub_id", sess.SubscriberID).
-					Msg("fup: enqueue throttle notification failed; throttle itself was applied")
-			}
+		switch {
+		case c.IsRelease():
+			fupThrottleReleased.Inc()
+		case c.IsTightening():
+			fupTierTightened.Inc()
+		default:
+			fupBreachDetected.Inc()
+		}
+
+		payload, err := json.Marshal(CoAPayload{SubscriberID: c.SubscriberID, NasIP: c.NasIP})
+		if err != nil {
+			log.Error().Err(err).Int("sub_id", c.SubscriberID).Msg("fup: marshal CoA payload failed")
+			continue
+		}
+		task := jobqueue.NewTask(TaskTypeCoA, payload,
+			jobqueue.Queue(QueueNetCommands),
+			jobqueue.MaxRetry(5),
+			jobqueue.Retention(24*time.Hour))
+		if _, err := s.client.EnqueueContext(ctx, task); err != nil {
+			return fmt.Errorf("fup: enqueue CoA for sub %d: %w", c.SubscriberID, err)
+		}
+		coaEnqueued.Inc()
+
+		log.Info().Int("sub_id", c.SubscriberID).Str("username", c.Username).
+			Str("from", c.AppliedRate).Str("to", c.TargetRate).
+			Int64("bytes_used", c.BytesUsed).Int64("topped_up", c.ToppedUpBytes).
+			Msg("fup: throttle changed")
+
+		// A release is a different event to the subscriber than a throttle,
+		// and telling somebody their speed was reduced when it was just
+		// restored is worse than saying nothing. Only the throttling
+		// direction is announced here; restoration after a top-up is
+		// announced by the purchase path, which knows what was bought.
+		if c.IsRelease() {
+			continue
+		}
+		// A failure here is logged, not returned: the throttle has already
+		// been applied and recorded, and abandoning the scan would leave
+		// every later session in this pass unthrottled over an undelivered
+		// message.
+		if err := s.enqueueThrottledNotice(ctx, SessionStats{
+			SubscriberID: c.SubscriberID,
+			Username:     c.Username,
+			NasIP:        c.NasIP,
+			FUPThreshold: c.TargetThreshold,
+			BytesUsed:    c.BytesUsed,
+			FUPThrottle:  c.TargetRate,
+		}); err != nil {
+			log.Error().Err(err).Int("sub_id", c.SubscriberID).
+				Msg("fup: enqueue throttle notification failed; throttle itself was applied")
 		}
 	}
 	return nil
