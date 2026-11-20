@@ -63,7 +63,16 @@ func (db *itFUPDB) SetFUPAppliedRate(_ context.Context, subscriberID int, rate s
 	if db.appliedRates == nil {
 		db.appliedRates = map[int]string{}
 	}
+	if db.fupActiveOn == nil {
+		db.fupActiveOn = map[int]bool{}
+	}
 	db.appliedRates[subscriberID] = rate
+	// The real store writes fup_active in the same UPDATE (FR-CAT-003), so
+	// the fake does too. Letting them diverge here would make this fake
+	// model a state the database cannot hold — and the tests asserting that
+	// the legacy boolean stays in step would pass or fail for reasons that
+	// have nothing to do with the code under test.
+	db.fupActiveOn[subscriberID] = rate != ""
 	return nil
 }
 
