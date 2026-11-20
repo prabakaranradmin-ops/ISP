@@ -99,6 +99,13 @@ type PlanProfileRow struct {
 type DeviceStore interface {
 	ListNASDevices(ctx context.Context) ([]DeviceRow, error)
 	ListPlanNASProfiles(ctx context.Context) ([]PlanProfileRow, error)
+	// ListEnabledReplyAttributes returns every enabled per-plan reply
+	// attribute (FR-CAT-004), for every plan and vendor. Loaded whole on
+	// each refresh for the same reason the device and profile maps are: the
+	// set is operational scale — a handful of attributes across tens of
+	// plans — and a per-packet query on the authentication path would spend
+	// NFR-PERF-001's 15ms budget on data that changes a few times a year.
+	ListEnabledReplyAttributes(ctx context.Context) ([]ReplyAttribute, error)
 }
 
 func planVendorKey(planID int, vendor Vendor) string {
@@ -119,6 +126,13 @@ type Resolver struct {
 	mu           sync.RWMutex
 	byIP         map[string]Device
 	planProfiles map[string]string // planVendorKey -> profile name
+	// planReplyAttrs holds the already-encoded attributes per plan and
+	// vendor (FR-CAT-004). Encoded at refresh time rather than per packet:
+	// the encoding can fail (a value stored before the dictionary knew
+	// better, or edited by hand), and discovering that on the hot path
+	// would mean doing the work and logging the failure once per
+	// authentication instead of once per minute.
+	planReplyAttrs map[string][]Attr
 
 	store          DeviceStore
 	keyStore       crypto.KeyStore
@@ -136,6 +150,7 @@ func NewResolver(store DeviceStore, keyStore crypto.KeyStore, defaultSecret []by
 	return &Resolver{
 		byIP:           make(map[string]Device),
 		planProfiles:   make(map[string]string),
+		planReplyAttrs: make(map[string][]Attr),
 		store:          store,
 		keyStore:       keyStore,
 		defaultSecret:  defaultSecret,
@@ -176,6 +191,10 @@ func (r *Resolver) Refresh(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("nas: list plan profiles: %w", err)
 	}
+	replyRows, err := r.store.ListEnabledReplyAttributes(ctx)
+	if err != nil {
+		return fmt.Errorf("nas: list plan reply attributes: %w", err)
+	}
 
 	next := make(map[string]Device, len(rows))
 	for _, row := range rows {
@@ -213,11 +232,64 @@ func (r *Resolver) Refresh(ctx context.Context) error {
 		nextProfiles[planVendorKey(row.PlanID, Vendor(row.Vendor))] = row.ProfileName
 	}
 
+	// Encode here so a bad value costs one log line a minute rather than
+	// one per authentication, and so the hot path only ever copies a slice.
+	// A failed attribute is skipped and counted; the rest of the plan's
+	// attributes still go out, because one malformed extra attribute must
+	// not cost a subscriber their other settings.
+	nextReply := make(map[string][]Attr, len(replyRows))
+	for _, row := range replyRows {
+		// Checked here as well as in the store's WHERE clause. "Enabled"
+		// is the operator's switch for taking an attribute out of the
+		// packet without losing its value, and it should hold wherever the
+		// rows came from rather than depending on one query remembering to
+		// filter.
+		if !row.Enabled {
+			continue
+		}
+		def, err := LookupAttribute(row.Vendor, row.Name)
+		if err != nil {
+			nasAttributeBuildErrorsTotal.WithLabelValues(string(row.Vendor), "reply_unknown").Inc()
+			log.Error().Err(err).Int("plan_id", row.PlanID).Str("attribute", row.Name).
+				Msg("nas: stored reply attribute is not in the dictionary, not sending it")
+			continue
+		}
+		attr, err := EncodeAttribute(def, row.Value)
+		if err != nil {
+			nasAttributeBuildErrorsTotal.WithLabelValues(string(row.Vendor), "reply_encode").Inc()
+			log.Error().Err(err).Int("plan_id", row.PlanID).Str("attribute", row.Name).
+				Msg("nas: stored reply attribute cannot be encoded, not sending it")
+			continue
+		}
+		key := planVendorKey(row.PlanID, row.Vendor)
+		nextReply[key] = append(nextReply[key], attr)
+	}
+
 	r.mu.Lock()
 	r.byIP = next
 	r.planProfiles = nextProfiles
+	r.planReplyAttrs = nextReply
 	r.mu.Unlock()
 	return nil
+}
+
+// ResolveReplyAttributes returns the extra attributes planID carries for
+// vendor (FR-CAT-004), ready to add to an Access-Accept.
+//
+// Returns a copy, because the caller adds these to a packet and the cached
+// slice is shared by every concurrent authentication for that plan — handing
+// out the backing array would let one request's packet construction be seen
+// by another.
+func (r *Resolver) ResolveReplyAttributes(planID int, vendor Vendor) []Attr {
+	r.mu.RLock()
+	cached := r.planReplyAttrs[planVendorKey(planID, vendor)]
+	r.mu.RUnlock()
+	if len(cached) == 0 {
+		return nil
+	}
+	out := make([]Attr, len(cached))
+	copy(out, cached)
+	return out
 }
 
 // ResolveProfile returns the pre-provisioned QoS profile/role name planID
@@ -279,6 +351,16 @@ func (r *Resolver) ResolveAddr(addr net.Addr) Device {
 }
 
 func hostFromAddr(addr net.Addr) (string, error) {
+	// A nil address takes the same path as an unparseable one: ResolveAddr
+	// already has a defined answer for "I cannot tell which NAS this is"
+	// (the fallback device, counted as unclassified), and panicking here
+	// would turn a missing field into a dead RADIUS worker. The production
+	// server always sets RemoteAddr, so this is a guard rather than a live
+	// case — but addr.String() on a nil interface panics, and that is too
+	// sharp an edge to leave on the authentication path.
+	if addr == nil {
+		return "", fmt.Errorf("nas: no remote address on the request")
+	}
 	if udpAddr, ok := addr.(*net.UDPAddr); ok {
 		return udpAddr.IP.String(), nil
 	}

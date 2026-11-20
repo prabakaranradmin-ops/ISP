@@ -248,6 +248,8 @@ func run(ctx context.Context) error {
 		// Reusable bandwidth profiles (FR-CAT-002) live on the same store as
 		// the rest of the router estate.
 		Bandwidth: database.NAS(),
+		// Per-plan RADIUS reply attributes (FR-CAT-004), same store.
+		ReplyAttributes: database.NAS(),
 		// Payment-gateway orders and callbacks (FR-PAY-001), recorded
 		// whether or not they credit a wallet.
 		GatewayLog: database.GatewayLog(),
@@ -436,6 +438,7 @@ func run(ctx context.Context) error {
 		PlanChanges: apiHandler,
 		IPPools:     apiHandler,
 		Bandwidth:   apiHandler,
+		ReplyAttrs:  apiHandler,
 		Audit:       database.Audit(),
 		AuthLog:     database.AuthLog(),
 		GatewayLog:  database.GatewayLog(),

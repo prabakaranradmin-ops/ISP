@@ -257,6 +257,8 @@ type HandlerDeps struct {
 	IPPools IPPoolManager
 	// Bandwidth manages the reusable bandwidth profiles (FR-CAT-002).
 	Bandwidth BandwidthManager
+	// ReplyAttrs manages per-plan RADIUS reply attributes (FR-CAT-004).
+	ReplyAttrs ReplyAttrManager
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeManager
 	// Products manages the product catalogue and the charges attached to
@@ -324,6 +326,7 @@ type Handler struct {
 	planChanges        PlanChangeManager
 	ipPools            IPPoolManager
 	bandwidth          BandwidthManager
+	replyAttrs         ReplyAttrManager
 	audit              AuditReader
 	authLog            AuthLogReader
 	gatewayLog         GatewayLogReader
@@ -382,6 +385,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		planChanges:        deps.PlanChanges,
 		ipPools:            deps.IPPools,
 		bandwidth:          deps.Bandwidth,
+		replyAttrs:         deps.ReplyAttrs,
 		audit:              deps.Audit,
 		authLog:            deps.AuthLog,
 		gatewayLog:         deps.GatewayLog,
@@ -486,6 +490,15 @@ var sections = []Section{
 	// not reach over the network's address space.
 	{"auth-log", "Auth Log", "/staff/auth-log",
 		[]string{"isp_owner", "noc_engineer", "csr", "technician"}, false},
+	// Per-plan RADIUS reply attributes (FR-CAT-004). Same reach as Routers
+	// and IP Pools, not as Catalogue: these are RADIUS attributes — an
+	// address list, a NAS-side pool, a session timeout — and they carry no
+	// price. That is the distinction from a bandwidth profile (FR-CAT-002),
+	// which sets the speed a plan delivers and so reaches billing staff:
+	// getting an address list wrong breaks a firewall rule, while getting a
+	// speed wrong changes what a customer was sold.
+	{"plan-attributes", "RADIUS Attributes", "/staff/plan-attributes",
+		[]string{"isp_owner", "noc_engineer"}, false},
 	// Same reach as Routers: a cross-device view of the same estate, not a
 	// new kind of access.
 	{"network", "Network Map", "/staff/network",
@@ -700,6 +713,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// page, where the operator can see who they are giving it to.
 	mux.Handle("GET /staff/ip-pools", h.authed(h.IPPools))
 	mux.Handle("GET /staff/auth-log", h.authed(h.AuthLog))
+	mux.Handle("GET /staff/plan-attributes", h.authed(h.PlanAttributes))
+	mux.Handle("POST /staff/plan-attributes", h.authed(h.requireCSRF(h.SetPlanAttributeForm)))
+	mux.Handle("POST /staff/plan-attributes/{id}/enabled", h.authed(h.requireCSRF(h.TogglePlanAttributeForm)))
+	mux.Handle("POST /staff/plan-attributes/{id}/delete", h.authed(h.requireCSRF(h.DeletePlanAttributeForm)))
 	mux.Handle("POST /staff/ip-pools", h.authed(h.requireCSRF(h.CreatePoolForm)))
 	mux.Handle("POST /staff/ip-pools/{id}/delete", h.authed(h.requireCSRF(h.DeletePoolForm)))
 	mux.Handle("POST /staff/ip-pool-exclusions", h.authed(h.requireCSRF(h.AddExclusionForm)))

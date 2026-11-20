@@ -88,6 +88,15 @@ const SCREENS = [
     allow: ['owner', 'billing'],
     deny: ['noc', 'csr', 'tech'],
   },
+  {
+    key: 'plan-attributes',
+    url: '/staff/plan-attributes',
+    heading: 'RADIUS attributes',
+    // Network tier, not billing: these attributes carry no price, unlike a
+    // bandwidth profile, which sets the speed a plan delivers.
+    allow: ['owner', 'noc'],
+    deny: ['billing', 'csr', 'tech'],
+  },
 ] as const;
 
 test.describe('The new console screens load in a browser', () => {
@@ -294,8 +303,14 @@ test.describe('Bandwidth profiles (FR-CAT-002)', () => {
     await page.getByRole('button', { name: 'Add profile' }).click();
 
     await expect(page.getByText(name)).toBeVisible();
-    // 50 Mbps in, 50M out — not 50 bps and not 50,000,000 M.
-    await expect(page.getByText('50M/25M 100M/50M 40M/20M 10/10 4')).toBeVisible();
+    // Scoped to this run's own row. The rate limit string is not unique —
+    // every run of this test produces the same one — so asserting it page
+    // -wide matches every profile left by an earlier run.
+    //
+    // 50 Mbps typed in the form, "50M" on the wire: not 50 bps, and not
+    // 50,000,000 M.
+    await expect(page.locator('tr', { hasText: name }))
+      .toContainText('50M/25M 100M/50M 40M/20M 10/10 4');
     await snap(page, 'bandwidth-profiles');
   });
 
@@ -322,6 +337,67 @@ test.describe('Bandwidth profiles (FR-CAT-002)', () => {
   test('a CSR is not offered the form at all', async ({ page }) => {
     await signIn(page, 'csr');
     const res = await page.request.get('/staff/bandwidth');
+    expect(res.status()).toBe(403);
+  });
+});
+
+test.describe('Per-plan RADIUS attributes (FR-CAT-004)', () => {
+  test('an attribute can be added and is shown as being sent', async ({ page }) => {
+    await signIn(page, 'noc');
+    await page.goto('/staff/plan-attributes?vendor=mikrotik');
+
+    const list = `e2e-${Date.now()}`;
+    await page.selectOption('form[action="/staff/plan-attributes"] select[name="attribute"]',
+      'Mikrotik-Address-List');
+    await page.locator('form[action="/staff/plan-attributes"] input[name="value"]').fill(list);
+    await page.getByRole('button', { name: /Add to/ }).click();
+
+    await expect(page.getByText(list)).toBeVisible();
+    // The row says it reaches the router, which is the only thing the
+    // operator actually cares about.
+    await expect(page.locator('tr', { hasText: list }).getByText('sent')).toBeVisible();
+  });
+
+  // The dictionary's whole purpose, asserted through the browser: a value a
+  // router would silently ignore is refused here with a reason.
+  test('a wrongly typed value is refused with a reason, not a 500', async ({ page }) => {
+    await signIn(page, 'noc');
+    await page.goto('/staff/plan-attributes?vendor=mikrotik');
+
+    await page.selectOption('form[action="/staff/plan-attributes"] select[name="attribute"]',
+      'Session-Timeout');
+    await page.locator('form[action="/staff/plan-attributes"] input[name="value"]').fill('an hour');
+    await page.getByRole('button', { name: /Add to/ }).click();
+
+    // "takes a whole number" is the dictionary's wording; the form's own
+    // hint says "A whole number for uint32 attributes", so matching the
+    // bare phrase would hit both and trip strict mode.
+    await expect(page.getByText(/takes a whole number/)).toBeVisible();
+    const body = (await page.textContent('body')) ?? '';
+    expect(body).not.toContain('Internal Server Error');
+    expect(body).not.toContain('SQLSTATE');
+  });
+
+  // An attribute the bandwidth builder sends must not be offered at all,
+  // but must still be explained — an operator who cannot see why it is
+  // missing assumes the dictionary is incomplete.
+  test('the attribute the plan shaping sends is explained but not offered', async ({ page }) => {
+    await signIn(page, 'noc');
+    await page.goto('/staff/plan-attributes?vendor=mikrotik');
+
+    const options = await page
+      .locator('form[action="/staff/plan-attributes"] select[name="attribute"] option')
+      .allInnerTexts();
+    expect(options.join('|')).not.toContain('Mikrotik-Rate-Limit');
+
+    await page.getByText('What each attribute does').click();
+    await expect(page.getByText('Not available here').first()).toBeVisible();
+    await snap(page, 'plan-attributes');
+  });
+
+  test('billing staff cannot reach the screen at all', async ({ page }) => {
+    await signIn(page, 'billing');
+    const res = await page.request.get('/staff/plan-attributes');
     expect(res.status()).toBe(403);
   });
 });

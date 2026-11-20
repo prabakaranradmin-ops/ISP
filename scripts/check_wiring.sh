@@ -124,6 +124,12 @@ COMPONENTS=(
     # readable 503 — so an unwired store is a feature that looks present and
     # does nothing, which is exactly what this script is for.
     "CreateBandwidthProfile:bandwidth profile management from the console (FR-CAT-002)"
+    # Per-plan reply attributes (FR-CAT-004). The resolver loads these on its
+    # periodic refresh, and if that load were dropped the attributes would
+    # still be creatable, listable and validated against the dictionary while
+    # reaching no router at all — which is the exact shape of defect this
+    # script exists to catch.
+    "ListEnabledReplyAttributes:per-plan RADIUS reply attribute loading (FR-CAT-004)"
 )
 
 if [ "${1:-}" = "--list" ]; then

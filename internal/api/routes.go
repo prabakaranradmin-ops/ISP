@@ -107,6 +107,7 @@ type Handler struct {
 	planChanges     PlanChangeStore
 	ipPools         IPPoolStore
 	bandwidth       BandwidthProfileStore
+	replyAttrs      ReplyAttributeStore
 	gatewayLog      GatewayLogStore
 	diagnostics     DiagnosticsStore
 	billingRuns     BillingRunStore
@@ -184,6 +185,8 @@ type HandlerDeps struct {
 	IPPools IPPoolStore
 	// Bandwidth is the reusable bandwidth profile store (FR-CAT-002).
 	Bandwidth BandwidthProfileStore
+	// ReplyAttributes is the per-plan RADIUS reply attribute store (FR-CAT-004).
+	ReplyAttributes ReplyAttributeStore
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeStore
 	// Products manages the product catalogue and the charges attached to
@@ -265,6 +268,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		planChanges:      deps.PlanChanges,
 		ipPools:          deps.IPPools,
 		bandwidth:        deps.Bandwidth,
+		replyAttrs:       deps.ReplyAttributes,
 		gatewayLog:       deps.GatewayLog,
 		diagnostics:      deps.Diagnostics,
 		billingRuns:      deps.BillingRuns,

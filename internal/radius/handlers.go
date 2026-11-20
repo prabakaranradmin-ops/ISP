@@ -167,6 +167,22 @@ func (d *RadiusDaemon) applyRateLimit(resp *radius.Packet, sub *Subscriber, r *r
 	for _, a := range attrs {
 		resp.Add(a.Type, a.Value)
 	}
+
+	// The plan's extra reply attributes (FR-CAT-004), added after the
+	// bandwidth attribute rather than before. Order is not significant to a
+	// NAS, but it keeps the packet readable in a capture: the shaping first,
+	// then whatever the operator added on top.
+	//
+	// Nothing here can fail: the resolver validated and encoded these at
+	// refresh time, so a bad value was logged and dropped a minute ago
+	// rather than costing this subscriber their authentication. The
+	// dictionary also refuses any attribute a bandwidth builder sends, so
+	// these cannot compete with the attributes added above.
+	if d.nasResolver != nil {
+		for _, a := range d.nasResolver.ResolveReplyAttributes(sub.PlanID, vendor) {
+			resp.Add(a.Type, a.Value)
+		}
+	}
 }
 
 // applyStaticIP attaches Framed-IP-Address when the subscriber holds a

@@ -79,9 +79,9 @@ by one.
 | | |
 |---|---|
 | Go packages | 35 total; **24 have tests** |
-| Wiring check | **29/29** components have a production caller (2026-11-20) |
-| Migrations | **65** applied (`001`–`065`) |
-| Browser tests | **118**, all passing (2026-11-20) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts` and `e2e/console-logs-catalogue.spec.ts` |
+| Wiring check | **30/30** components have a production caller (2026-11-20) |
+| Migrations | **66** applied (`001`–`066`) |
+| Browser tests | **124**, all passing (2026-11-20) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts` and `e2e/console-logs-catalogue.spec.ts` |
 | Lint | **6** findings on default tags, **116** with `--build-tags=integration`; none introduced by recent work, all untriaged |
 | DB integration suite | ~700s in Docker, **1000-1500s on the bundled native cluster**; carry `-timeout 45m` |
 | NFR-PERF-001 (RADIUS auth p99 ≤15ms) | **PASS at 13.224ms**, 5,000 req/s, 30s, 0 errors — `run_nfr_tests.sh`, 2026-08-16 |
@@ -344,8 +344,8 @@ bash scripts/run_db_tests.sh -timeout 45m   # ~700s in Docker, up to 1500s nativ
                                             # (Docker down? see "Running the
                                             #  DB suite with Docker down")
 golangci-lint run --build-tags=integration ./...   # 116 known, none recent
-./scripts/check_wiring.sh                   # 29/29 wired
-npx playwright test e2e/staff.spec.ts e2e/portal.spec.ts     e2e/console-logs-catalogue.spec.ts      # 118 browser tests
+./scripts/check_wiring.sh                   # 30/30 wired
+npx playwright test e2e/staff.spec.ts e2e/portal.spec.ts     e2e/console-logs-catalogue.spec.ts      # 124 browser tests
 ```
 
 **Never run the DB integration suite and Playwright against the same

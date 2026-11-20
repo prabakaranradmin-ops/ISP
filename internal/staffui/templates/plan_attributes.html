@@ -1,0 +1,141 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>RADIUS attributes</h1>
+
+<p class="muted">Extra attributes sent in a plan's Access-Accept, on top of the speed its bandwidth profile
+  sets. Use these to put a plan's subscribers in a router address list, allocate from a pool configured on
+  the router, or cut a trial plan's sessions after a fixed time.</p>
+<p class="muted">Every attribute is checked against what this system knows how to send.
+  <strong>A router silently ignores an attribute it does not understand</strong>, so a misspelled name or a
+  wrongly typed value would leave you with a plan that looks configured and does nothing &mdash; which is
+  why an unknown attribute is refused here rather than stored.</p>
+
+{{with $d}}
+<div class="card">
+  <form method="get" action="/staff/plan-attributes" class="formgrid">
+    <label>Plan
+      <select name="plan_id" onchange="this.form.submit()">
+        {{range .Plans}}<option value="{{.ID}}"{{if eq .ID $d.PlanID}} selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+    </label>
+    <label>Router vendor
+      <select name="vendor" onchange="this.form.submit()">
+        {{range .Vendors}}<option value="{{.}}"{{if eq . $d.Vendor}} selected{{end}}>{{.}}</option>{{end}}
+      </select>
+      <span class="muted small">Attributes are sent only to routers of the vendor they are set for.</span>
+    </label>
+    <button type="submit" class="primary">Show</button>
+  </form>
+</div>
+
+{{if not .Plans}}
+<div class="card"><p class="empty">No plans yet. Add a plan in the catalogue first.</p></div>
+{{else}}
+
+<div class="card table-card">
+  <h3>{{.PlanName}}</h3>
+  <table>
+    <thead><tr>
+      <th>Vendor</th><th>Attribute</th><th>Value</th><th>Status</th>
+      {{if .CanManage}}<th></th>{{end}}
+    </tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr{{if not .Enabled}} class="retired"{{end}}>
+        <td class="num">{{.Vendor}}</td>
+        <td>
+          {{.Name}}
+          {{with .Help}}<br><span class="muted small">{{.}}</span>{{end}}
+        </td>
+        <td class="num">{{.Value}}</td>
+        <td>
+          {{if .Unknown}}
+            {{/* Stored, but the dictionary no longer defines it, so the
+                 resolver drops it. Said plainly: the row would otherwise
+                 look configured and do nothing. */}}
+            <span class="pill bad">not sent</span>
+            <br><span class="muted small">This system no longer knows how to send this attribute, so it is
+              being skipped. Remove it, or set one that is offered below.</span>
+          {{else if .Enabled}}
+            <span class="pill ok">sent</span>
+            {{if .Unverified}}<br><span class="muted small">The attribute number for this one has not been
+              confirmed against real hardware &mdash; check it reaches your router before relying on it.</span>{{end}}
+          {{else}}
+            <span class="pill neutral">switched off</span>
+            <br><span class="muted small">Kept, but not sent.</span>
+          {{end}}
+        </td>
+        {{if $d.CanManage}}
+        <td class="actions">
+          <form method="post" action="/staff/plan-attributes/{{.ID}}/enabled" class="inline">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="hidden" name="plan_id" value="{{.PlanID}}">
+            <input type="hidden" name="vendor" value="{{.Vendor}}">
+            <input type="hidden" name="enabled" value="{{if .Enabled}}false{{else}}true{{end}}">
+            <button type="submit">{{if .Enabled}}Switch off{{else}}Switch on{{end}}</button>
+          </form>
+          <form method="post" action="/staff/plan-attributes/{{.ID}}/delete" class="inline"
+                onsubmit="return confirm('Remove {{.Name}} from this plan?')">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="hidden" name="plan_id" value="{{.PlanID}}">
+            <input type="hidden" name="vendor" value="{{.Vendor}}">
+            <button type="submit" class="danger">Remove</button>
+          </form>
+        </td>
+        {{end}}
+      </tr>
+    {{else}}
+      <tr><td colspan="{{if .CanManage}}5{{else}}4{{end}}" class="empty">
+        This plan sends no extra attributes. Its speed still comes from its bandwidth profile or rate limit.
+      </td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{if .CanManage}}
+<div class="card">
+  <h3>Add an attribute for a {{.Vendor}} router</h3>
+  <form method="post" action="/staff/plan-attributes" class="formgrid">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <input type="hidden" name="plan_id" value="{{.PlanID}}">
+    <input type="hidden" name="vendor" value="{{.Vendor}}">
+    <label>Attribute
+      <select name="attribute">
+        {{range .Options}}
+          {{if not .Reserved}}<option value="{{.Name}}">{{.Name}} ({{.Kind}})</option>{{end}}
+        {{end}}
+      </select>
+    </label>
+    <label>Value <input name="value" required>
+      <span class="muted small">A whole number for uint32 attributes, text for string ones.</span>
+    </label>
+    <button type="submit" class="primary">Add to {{.PlanName}}</button>
+  </form>
+
+  <details>
+    <summary>What each attribute does</summary>
+    <table>
+      <thead><tr><th>Attribute</th><th>Type</th><th>What it does</th></tr></thead>
+      <tbody>
+      {{range .Options}}
+        <tr{{if .Reserved}} class="retired"{{end}}>
+          <td class="num">{{.Name}}</td>
+          <td class="num small">{{.Kind}}</td>
+          <td class="small">
+            {{.Help}}
+            {{if .Reserved}}<br><span class="muted"><strong>Not available here:</strong>
+              {{.ReservedBecause}}.</span>{{end}}
+            {{if and .Unverified (not .Reserved)}}<br><span class="muted">The attribute number for this one
+              has not been confirmed against real hardware.</span>{{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </details>
+</div>
+{{end}}
+{{end}}
+{{end}}
+{{end}}

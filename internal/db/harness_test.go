@@ -127,6 +127,10 @@ var truncateOrder = []string{
 	"radius_verifier_cache",
 	"subscribers",
 	"plans",
+	// Migration 066. Before plans would be taken by its own CASCADE
+	// anyway, but listed so a test that only touches attributes still
+	// starts clean.
+	"plan_reply_attributes",
 	// Migration 065. After plans, because plans.bandwidth_profile_id
 	// references it: listed earlier, the CASCADE would reach plans and
 	// everything behind it before the tables above had been cleared in

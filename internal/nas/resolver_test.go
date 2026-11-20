@@ -9,12 +9,18 @@ import (
 )
 
 type stubDeviceStore struct {
-	devices  []DeviceRow
-	profiles []PlanProfileRow
+	devices    []DeviceRow
+	profiles   []PlanProfileRow
+	replyAttrs []ReplyAttribute
+	replyErr   error
 }
 
 func (s *stubDeviceStore) ListNASDevices(context.Context) ([]DeviceRow, error) {
 	return s.devices, nil
+}
+
+func (s *stubDeviceStore) ListEnabledReplyAttributes(context.Context) ([]ReplyAttribute, error) {
+	return s.replyAttrs, s.replyErr
 }
 
 func (s *stubDeviceStore) ListPlanNASProfiles(context.Context) ([]PlanProfileRow, error) {
