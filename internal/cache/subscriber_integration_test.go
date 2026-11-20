@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/nas"
 	"github.com/maaransoft/isp-bss-oss/internal/radius"
 )
 
@@ -381,5 +382,52 @@ func TestFR_AAA_002_SubscriberCache_DBErrorPropagates(t *testing.T) {
 	}
 	if cached(c, "sub4242") {
 		t.Error("a failed DB lookup must not be cached")
+	}
+}
+
+// A plan's bandwidth profile (FR-CAT-002) must survive the cache, for the
+// same reason the override and static-address fields must: a subscriber who
+// reconnects within the TTL would otherwise be served a cache hit carrying
+// only the ceiling, and would silently lose the burst they are paying for
+// until the entry expired. The symptom is a speed that depends on how
+// recently the customer last connected, which is close to undiagnosable
+// from the outside.
+func TestFR_CAT_002_SubscriberCache_BandwidthProfileRoundTrips(t *testing.T) {
+	sub := sampleAuthSubscriber()
+	sub.Shaping = &nas.Shaping{
+		Name: "Retail burst", MaxDownBPS: 50_000_000, MaxUpBPS: 25_000_000,
+		MinDownBPS: 10_000_000, MinUpBPS: 5_000_000,
+		BurstDownBPS: 100_000_000, BurstUpBPS: 50_000_000,
+		BurstThresholdDown: 40_000_000, BurstThresholdUp: 20_000_000,
+		BurstTimeSeconds: 10, Priority: 4,
+	}
+	db := &fakeAuthDB{sub: sub}
+	c := newSubscriberCache(t, db, time.Minute)
+
+	if _, err := c.GetSubscriberByUsername(context.Background(), "sub4242"); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+	got, err := c.GetSubscriberByUsername(context.Background(), "sub4242")
+	if err != nil {
+		t.Fatalf("cached lookup: %v", err)
+	}
+	if got.Shaping == nil {
+		t.Fatal("the bandwidth profile was lost through the cache: a cached " +
+			"authentication would send the ceiling with no burst")
+	}
+
+	// Compared through the rendered attribute rather than field by field,
+	// because the attribute is what the NAS actually receives — a field
+	// that survives but renders differently is still the wrong speed.
+	want, err := sub.Shaping.MikrotikRateLimit()
+	if err != nil {
+		t.Fatalf("render expected: %v", err)
+	}
+	gotRL, err := got.Shaping.MikrotikRateLimit()
+	if err != nil {
+		t.Fatalf("render cached: %v", err)
+	}
+	if gotRL != want {
+		t.Errorf("the cached profile renders differently:\n got %q\nwant %q", gotRL, want)
 	}
 }

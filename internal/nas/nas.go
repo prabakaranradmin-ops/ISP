@@ -42,6 +42,38 @@ const (
 type RateProfile struct {
 	RateLimitString string // e.g. "50M/50M" — plans.rate_limit_string
 	ProfileName     string // pre-provisioned NAS-side policy name, from plan_nas_profiles
+
+	// Shaping is the plan's bandwidth profile when it has one (FR-CAT-002,
+	// migration 065). Nil means the plan shapes from RateLimitString, which
+	// is the case for every plan that predates profiles and for the ones
+	// created without going near the catalogue — hotspot vouchers and the
+	// demo seed both do. Nil is therefore a supported steady state, not a
+	// migration window.
+	//
+	// Builders must not read this field directly. Use the two accessors
+	// below: the burst form is a MikroTik queue dialect and is unparseable
+	// by the integer-VSA vendors, so reaching it from the wrong builder
+	// would stop authentication on every Huawei and ZTE NAS in the estate.
+	Shaping *Shaping
+}
+
+// mikrotikRateLimit is the string the MikroTik dialect should send: the full
+// positional burst form when the plan has a profile, and the plan's own
+// rate_limit_string when it does not.
+func (p RateProfile) mikrotikRateLimit() (string, error) {
+	if p.Shaping == nil {
+		return p.RateLimitString, nil
+	}
+	return p.Shaping.MikrotikRateLimit()
+}
+
+// plainRateLimit is the string every other rate-carrying dialect should
+// parse: the ceiling alone, never the burst form.
+func (p RateProfile) plainRateLimit() string {
+	if p.Shaping == nil {
+		return p.RateLimitString
+	}
+	return p.Shaping.PlainRateLimit()
 }
 
 // Attr is a single (type, value) RADIUS attribute pair, ready for

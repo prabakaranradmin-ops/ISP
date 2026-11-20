@@ -245,6 +245,9 @@ func run(ctx context.Context) error {
 		// a pool is part of the router estate, even though an assignment
 		// can carry a catalogue charge.
 		IPPools: database.NAS(),
+		// Reusable bandwidth profiles (FR-CAT-002) live on the same store as
+		// the rest of the router estate.
+		Bandwidth: database.NAS(),
 		// Payment-gateway orders and callbacks (FR-PAY-001), recorded
 		// whether or not they credit a wallet.
 		GatewayLog: database.GatewayLog(),
@@ -432,6 +435,7 @@ func run(ctx context.Context) error {
 		Products:    apiHandler,
 		PlanChanges: apiHandler,
 		IPPools:     apiHandler,
+		Bandwidth:   apiHandler,
 		Audit:       database.Audit(),
 		AuthLog:     database.AuthLog(),
 		GatewayLog:  database.GatewayLog(),

@@ -1,0 +1,146 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Bandwidth profiles</h1>
+
+<p class="muted">A profile is the shaping a plan delivers: the ceiling, an optional committed floor, an optional
+  burst, and the queue priority. Plans share profiles, so an operator runs a handful of these against dozens of
+  tariffs that differ only in price, quota and validity. <strong>Editing a profile re-shapes every plan on it</strong>
+  &mdash; each subscriber from their next authentication, not immediately.</p>
+
+{{with $d}}
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Name</th>
+      <th class="right">Ceiling</th>
+      <th class="right">Committed</th>
+      <th>Burst</th>
+      <th class="right">Priority</th>
+      <th class="right">Plans</th>
+      <th>What the router receives</th>
+      {{if .CanManage}}<th></th>{{end}}
+    </tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr{{if not .Active}} class="retired"{{end}}>
+        <td>
+          {{.Name}}
+          {{if not .Active}}<br><span class="pill neutral">retired</span>{{end}}
+        </td>
+        <td class="num right">{{.MaxDownMbps}} / {{.MaxUpMbps}} Mbps</td>
+        <td class="num right">
+          {{if .HasFloor}}{{.MinDownMbps}} / {{.MinUpMbps}} Mbps{{else}}<span class="muted">none</span>{{end}}
+        </td>
+        <td class="small">
+          {{if .HasBurst}}
+            {{.BurstDownMbps}} / {{.BurstUpMbps}} Mbps
+            <br><span class="muted">above {{.BurstThresholdDownMbps}} / {{.BurstThresholdUpMbps}} Mbps,
+              for {{.BurstTimeSeconds}}s</span>
+          {{else}}<span class="muted">none</span>{{end}}
+        </td>
+        <td class="num right">{{.Priority}}</td>
+        <td class="num right">
+          {{if .InUseByPlans}}{{.InUseByPlans}}{{else}}<span class="muted">0</span>{{end}}
+        </td>
+        <td class="num small">
+          {{if .RenderError}}
+            {{/* A stored row that cannot render means every plan on it fails
+                 to authenticate, so it is said plainly here. */}}
+            <span class="pill bad">cannot be sent</span>
+            <br><span class="muted">{{.RenderError}}</span>
+          {{else}}{{.RateLimit}}{{end}}
+        </td>
+        {{if $d.CanManage}}
+        <td class="actions">
+          <details>
+            <summary>Edit</summary>
+            <form method="post" action="/staff/bandwidth/{{.ID}}" class="formgrid">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <label>Name <input name="name" value="{{.Name}}" required></label>
+              <label>Max down (Mbps) <input name="max_down" value="{{.MaxDownMbps}}" required></label>
+              <label>Max up (Mbps) <input name="max_up" value="{{.MaxUpMbps}}" required></label>
+              <label>Committed down (Mbps) <input name="min_down" value="{{.MinDownMbps}}" placeholder="none"></label>
+              <label>Committed up (Mbps) <input name="min_up" value="{{.MinUpMbps}}" placeholder="none"></label>
+              <label>Burst down (Mbps) <input name="burst_down" value="{{.BurstDownMbps}}" placeholder="none"></label>
+              <label>Burst up (Mbps) <input name="burst_up" value="{{.BurstUpMbps}}" placeholder="none"></label>
+              <label>Burst threshold down (Mbps)
+                <input name="burst_threshold_down" value="{{.BurstThresholdDownMbps}}" placeholder="none"></label>
+              <label>Burst threshold up (Mbps)
+                <input name="burst_threshold_up" value="{{.BurstThresholdUpMbps}}" placeholder="none"></label>
+              <label>Burst for (seconds) <input name="burst_time_seconds" value="{{.BurstTimeSeconds}}"></label>
+              <label>Queue priority <input name="priority" value="{{.Priority}}">
+                <span class="muted small">1 is served first, 8 last.</span>
+              </label>
+              <button type="submit" class="primary">Save, re-shaping {{.InUseByPlans}} plan(s)</button>
+            </form>
+
+            <form method="post" action="/staff/bandwidth/{{.ID}}/active" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="active" value="{{if .Active}}false{{else}}true{{end}}">
+              <button type="submit">{{if .Active}}Retire{{else}}Offer again{{end}}</button>
+              <span class="muted small">
+                {{if .Active}}Takes it out of the dropdowns. The plans already on it keep shaping from it.
+                {{else}}Puts it back in the dropdowns.{{end}}
+              </span>
+            </form>
+
+            {{if not .InUseByPlans}}
+            <form method="post" action="/staff/bandwidth/{{.ID}}/delete" class="inline"
+                  onsubmit="return confirm('Delete {{.Name}}? No plan uses it, so nothing re-shapes.')">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <button type="submit" class="danger">Delete</button>
+            </form>
+            {{else}}
+            <p class="muted small">No delete: {{.InUseByPlans}} plan(s) use this. Retire it instead &mdash;
+              deleting it would re-shape those subscribers with nothing to explain why.</p>
+            {{end}}
+          </details>
+        </td>
+        {{end}}
+      </tr>
+    {{else}}
+      <tr><td colspan="{{if .CanManage}}8{{else}}7{{end}}" class="empty">
+        No bandwidth profiles yet. Plans without one shape from their own rate limit, exactly as before.
+      </td></tr>
+    {{end}}
+    </tbody>
+  </table>
+
+  <p>
+    {{if .IncludeRetired}}<a href="/staff/bandwidth">Hide retired profiles</a>
+    {{else}}<a href="/staff/bandwidth?retired=true">Show retired profiles too</a>{{end}}
+  </p>
+</div>
+
+{{if .CanManage}}
+<div class="card">
+  <h3>Add a profile</h3>
+  <p class="muted small">Rates are in Mbps, the unit on the tariff sheet. Leave the burst and committed fields
+    empty for a plain ceiling &mdash; which renders exactly the rate limit plans already carry, so adopting it
+    changes nothing a subscriber would notice.</p>
+  <form method="post" action="/staff/bandwidth" class="formgrid">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Name <input name="name" placeholder="Retail burst" required></label>
+    <label>Max down (Mbps) <input name="max_down" placeholder="50" required></label>
+    <label>Max up (Mbps) <input name="max_up" placeholder="50" required></label>
+    <label>Committed down (Mbps) <input name="min_down" placeholder="optional"></label>
+    <label>Committed up (Mbps) <input name="min_up" placeholder="optional"></label>
+    <label>Burst down (Mbps) <input name="burst_down" placeholder="optional"></label>
+    <label>Burst up (Mbps) <input name="burst_up" placeholder="optional"></label>
+    <label>Burst threshold down (Mbps) <input name="burst_threshold_down" placeholder="optional">
+      <span class="muted small">The rate above which the burst clock starts.</span>
+    </label>
+    <label>Burst threshold up (Mbps) <input name="burst_threshold_up" placeholder="optional"></label>
+    <label>Burst for (seconds) <input name="burst_time_seconds" placeholder="10"></label>
+    <label>Queue priority <input name="priority" value="8">
+      <span class="muted small">1 is served first, 8 last.</span>
+    </label>
+    <button type="submit" class="primary">Add profile</button>
+  </form>
+  <p class="muted small">Burst is a MikroTik queue behaviour. Routers that take an integer rate (Huawei, ZTE)
+    receive the ceiling alone, and routers that take the name of a policy (Cisco, Juniper, the wireless
+    controllers) are unaffected by this screen &mdash; their shaping is configured on the router itself.</p>
+</div>
+{{end}}
+{{end}}
+{{end}}

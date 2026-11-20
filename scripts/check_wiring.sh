@@ -119,6 +119,11 @@ COMPONENTS=(
     # unwired it silently records nothing — so a subscriber who could not
     # pay leaves no trace, which is the case the log exists for.
     "portalHandler.SetGatewayLogger:gateway order logging from the portal (FR-PAY-001)"
+    # Bandwidth profiles (FR-CAT-002). The console screen and the API service
+    # layer both compile with no store wired, and the screen then answers a
+    # readable 503 — so an unwired store is a feature that looks present and
+    # does nothing, which is exactly what this script is for.
+    "CreateBandwidthProfile:bandwidth profile management from the console (FR-CAT-002)"
 )
 
 if [ "${1:-}" = "--list" ]; then

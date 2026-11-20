@@ -17,11 +17,15 @@ const (
 
 type huaweiBuilder struct{}
 
+// Note plainRateLimit, not the burst form: huaweiRateAttrs parses the
+// string into two integer VSAs, and the positional burst form does not
+// parse. Burst is a MikroTik queue behaviour with no Huawei equivalent
+// expressible over RADIUS.
 func (huaweiBuilder) BuildAccept(p RateProfile) ([]Attr, error) {
-	return huaweiRateAttrs(p.RateLimitString)
+	return huaweiRateAttrs(p.plainRateLimit())
 }
 func (huaweiBuilder) BuildCoA(p RateProfile) ([]Attr, error) {
-	return huaweiRateAttrs(p.RateLimitString)
+	return huaweiRateAttrs(p.plainRateLimit())
 }
 
 func huaweiRateAttrs(rateLimit string) ([]Attr, error) {

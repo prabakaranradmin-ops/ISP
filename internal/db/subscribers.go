@@ -7,6 +7,7 @@ import (
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/health"
+	"github.com/maaransoft/isp-bss-oss/internal/nas"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
 	"github.com/maaransoft/isp-bss-oss/internal/radius"
 	"github.com/shopspring/decimal"
@@ -34,9 +35,19 @@ func (s *RadiusStore) GetSubscriberByUsername(ctx context.Context, username stri
 		       COALESCE(s.fup_active, FALSE), s.plan_id, s.nt_hash,
 		       COALESCE(s.speed_override_rate_limit, ''), s.speed_override_expires_at,
 		       p.volume_gb,
-		       COALESCE(host(a.address), '')
+		       COALESCE(host(a.address), ''),
+		       -- The plan's bandwidth profile (FR-CAT-002), or NULLs when it
+		       -- has none. LEFT, because a plan without a profile is a
+		       -- supported steady state and must still authenticate.
+		       b.name, b.max_down_bps, b.max_up_bps, b.min_down_bps, b.min_up_bps,
+		       b.burst_down_bps, b.burst_up_bps,
+		       b.burst_threshold_down, b.burst_threshold_up,
+		       b.burst_time_seconds, b.priority
 		FROM subscribers s
 		JOIN plans p ON p.id = s.plan_id
+		-- Joined on a primary key from an indexed foreign key, so this adds
+		-- a single index lookup to a query NFR-PERF-001 holds to a 15ms p99.
+		LEFT JOIN bandwidth_profiles b ON b.id = p.bandwidth_profile_id
 		-- The static address this subscriber holds, if any (FR-NET-005).
 		-- LEFT, so the overwhelming majority who hold none still
 		-- authenticate; served by uq_static_ip_subscriber, the partial
@@ -48,12 +59,25 @@ func (s *RadiusStore) GetSubscriberByUsername(ctx context.Context, username stri
 		       ON a.subscriber_id = s.id AND a.status = 'active'
 		WHERE s.username = $1`
 
-	var sub radius.Subscriber
+	var (
+		sub radius.Subscriber
+		// Every profile column is nullable in the result because the join is
+		// LEFT, so they are scanned into pointers and assembled only when
+		// the plan actually has a profile.
+		bwName                         *string
+		maxDown, maxUp, minDown, minUp *int64
+		burstDown, burstUp             *int64
+		burstThreshDown, burstThreshUp *int64
+		burstTime, priority            *int
+	)
 	err := s.pool.QueryRow(ctx, q, username).Scan(
 		&sub.ID, &sub.Username, &sub.PasswordHash, &sub.Status,
 		&sub.RateLimitStr, &sub.FUPThrottle, &sub.FUPActive, &sub.PlanID, &sub.NTHash,
 		&sub.SpeedOverrideRateLimit, &sub.SpeedOverrideExpiresAt,
 		&sub.VolumeGB, &sub.StaticIP,
+		&bwName, &maxDown, &maxUp, &minDown, &minUp,
+		&burstDown, &burstUp, &burstThreshDown, &burstThreshUp,
+		&burstTime, &priority,
 	)
 	if isNoRows(err) {
 		// A missing subscriber is a normal reject, not a failure: handleAuth
@@ -63,7 +87,39 @@ func (s *RadiusStore) GetSubscriberByUsername(ctx context.Context, username stri
 	if err != nil {
 		return nil, fmt.Errorf("db: get subscriber by username %q: %w", username, err)
 	}
+	// bwName is non-NULL exactly when the join matched, so it is the single
+	// test for "this plan has a profile" — checking a rate instead would
+	// treat a profile with a zero field as absent.
+	if bwName != nil {
+		sub.Shaping = &nas.Shaping{
+			Name:               *bwName,
+			MaxDownBPS:         derefInt64(maxDown),
+			MaxUpBPS:           derefInt64(maxUp),
+			MinDownBPS:         derefInt64(minDown),
+			MinUpBPS:           derefInt64(minUp),
+			BurstDownBPS:       derefInt64(burstDown),
+			BurstUpBPS:         derefInt64(burstUp),
+			BurstThresholdDown: derefInt64(burstThreshDown),
+			BurstThresholdUp:   derefInt64(burstThreshUp),
+			BurstTimeSeconds:   derefInt(burstTime),
+			Priority:           derefInt(priority),
+		}
+	}
 	return &sub, nil
+}
+
+func derefInt64(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // ── API ─────────────────────────────────────────────────────────────────────

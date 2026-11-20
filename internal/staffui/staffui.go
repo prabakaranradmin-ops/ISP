@@ -255,6 +255,8 @@ type HandlerDeps struct {
 	Audit AuditReader
 	// IPPools manages IP pools and static addresses (FR-NET-005).
 	IPPools IPPoolManager
+	// Bandwidth manages the reusable bandwidth profiles (FR-CAT-002).
+	Bandwidth BandwidthManager
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeManager
 	// Products manages the product catalogue and the charges attached to
@@ -321,6 +323,7 @@ type Handler struct {
 	products           ProductManager
 	planChanges        PlanChangeManager
 	ipPools            IPPoolManager
+	bandwidth          BandwidthManager
 	audit              AuditReader
 	authLog            AuthLogReader
 	gatewayLog         GatewayLogReader
@@ -378,6 +381,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		products:           deps.Products,
 		planChanges:        deps.PlanChanges,
 		ipPools:            deps.IPPools,
+		bandwidth:          deps.Bandwidth,
 		audit:              deps.Audit,
 		authLog:            deps.AuthLog,
 		gatewayLog:         deps.GatewayLog,
@@ -445,6 +449,14 @@ var sections = []Section{
 	// API's billingOrCSR gate on GET /products.
 	{"products", "Products & Charges", "/staff/products",
 		[]string{"isp_owner", "billing_admin", "csr"}, false},
+	// Bandwidth profiles (FR-CAT-002) sit with Catalogue and share its
+	// reach exactly. A profile sets the speed the plans on it deliver, so
+	// editing one changes what every subscriber on those plans was sold.
+	// Not widened to noc_engineer: the fields are network engineering, but
+	// the decision is commercial, and the NOC sees the rendered result on
+	// the Routers and Sessions screens either way.
+	{"bandwidth", "Bandwidth Profiles", "/staff/bandwidth",
+		[]string{"isp_owner", "billing_admin"}, false},
 	// Router hardware is network-ops territory, same reach as LEA Lookup
 	// below: the owner and whoever configures the NAS estate, not billing
 	// or the front desk.
@@ -635,6 +647,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/leads/{id}/convert", h.authed(h.ConvertLeadPage))
 	mux.Handle("POST /staff/leads/{id}/convert", h.authed(h.requireCSRF(h.ConvertLeadForm)))
 	mux.Handle("GET /staff/catalogue", h.authed(h.Catalogue))
+	mux.Handle("GET /staff/bandwidth", h.authed(h.Bandwidth))
+	mux.Handle("POST /staff/bandwidth", h.authed(h.requireCSRF(h.CreateBandwidthForm)))
+	mux.Handle("POST /staff/bandwidth/{id}", h.authed(h.requireCSRF(h.UpdateBandwidthForm)))
+	mux.Handle("POST /staff/bandwidth/{id}/active", h.authed(h.requireCSRF(h.SetBandwidthActiveForm)))
+	mux.Handle("POST /staff/bandwidth/{id}/delete", h.authed(h.requireCSRF(h.DeleteBandwidthForm)))
 	mux.Handle("POST /staff/catalogue/plans", h.authed(h.requireCSRF(h.CreatePlan)))
 	mux.Handle("POST /staff/catalogue/gst", h.authed(h.requireCSRF(h.CreateGSTRate)))
 

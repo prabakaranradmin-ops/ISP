@@ -18,11 +18,19 @@ const (
 type mikrotikBuilder struct{}
 
 func (mikrotikBuilder) BuildAccept(p RateProfile) ([]Attr, error) {
-	return mikrotikRateLimitAttrs(p.RateLimitString)
+	rl, err := p.mikrotikRateLimit()
+	if err != nil {
+		return nil, fmt.Errorf("nas: mikrotik: %w", err)
+	}
+	return mikrotikRateLimitAttrs(rl)
 }
 
 func (mikrotikBuilder) BuildCoA(p RateProfile) ([]Attr, error) {
-	return mikrotikRateLimitAttrs(p.RateLimitString)
+	rl, err := p.mikrotikRateLimit()
+	if err != nil {
+		return nil, fmt.Errorf("nas: mikrotik: %w", err)
+	}
+	return mikrotikRateLimitAttrs(rl)
 }
 
 func mikrotikRateLimitAttrs(rateLimit string) ([]Attr, error) {

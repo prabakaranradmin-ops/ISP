@@ -79,9 +79,9 @@ by one.
 | | |
 |---|---|
 | Go packages | 35 total; **24 have tests** |
-| Wiring check | **22/22** components have a production caller |
-| Migrations | 35 applied (`001`–`035`) |
-| Browser tests | **45**, all passing (`npx playwright test`, run 2026-08-16) |
+| Wiring check | **29/29** components have a production caller (2026-11-20) |
+| Migrations | **65** applied (`001`–`065`) |
+| Browser tests | **118**, all passing (2026-11-20) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts` and `e2e/console-logs-catalogue.spec.ts` |
 | Lint | **6** findings on default tags, **116** with `--build-tags=integration`; none introduced by recent work, all untriaged |
 | DB integration suite | ~700s in Docker, **1000-1500s on the bundled native cluster**; carry `-timeout 45m` |
 | NFR-PERF-001 (RADIUS auth p99 ≤15ms) | **PASS at 13.224ms**, 5,000 req/s, 30s, 0 errors — `run_nfr_tests.sh`, 2026-08-16 |
@@ -344,9 +344,23 @@ bash scripts/run_db_tests.sh -timeout 45m   # ~700s in Docker, up to 1500s nativ
                                             # (Docker down? see "Running the
                                             #  DB suite with Docker down")
 golangci-lint run --build-tags=integration ./...   # 116 known, none recent
-./scripts/check_wiring.sh                   # 20/20 wired
-npx playwright test                         # 45 browser tests
+./scripts/check_wiring.sh                   # 29/29 wired
+npx playwright test e2e/staff.spec.ts e2e/portal.spec.ts     e2e/console-logs-catalogue.spec.ts      # 118 browser tests
 ```
+
+**Never run the DB integration suite and Playwright against the same
+cluster.** The `internal/db` harness TRUNCATEs its tables, so an integration
+run wipes `staff_users` and every browser test then fails at sign-in with no
+server-side error — about 5.5s per test, which reads exactly like a newly
+broken screen rather than a missing seed. This cost two full browser runs on
+2026-11-20. Reset between them with `DROP DATABASE` + `goose up` +
+`scripts/seed_local.sql`, never with a `TRUNCATE` loop: truncating everything
+also removes the reference data migrations seed (`sla_policies` and
+`category_priority_defaults` from 023), and ticket creation then fails for
+every subscriber, because `resolveTicketSLA` refuses to file a ticket it
+cannot attach an SLA to. The specs also hardcode subscriber 1, so the seed
+has to run against reset sequences or `test_user` lands on a different id and
+a dozen tests assert against the wrong subscriber.
 
 The DB suite **must** carry a generous `-timeout`. Go's 10-minute default
 kills it partway, and so does 25m on the native cluster.

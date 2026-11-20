@@ -14,8 +14,10 @@ const (
 
 type zteBuilder struct{}
 
-func (zteBuilder) BuildAccept(p RateProfile) ([]Attr, error) { return zteRateAttrs(p.RateLimitString) }
-func (zteBuilder) BuildCoA(p RateProfile) ([]Attr, error)    { return zteRateAttrs(p.RateLimitString) }
+// plainRateLimit for the same reason as Huawei above: these are integer
+// VSAs and the burst form does not parse.
+func (zteBuilder) BuildAccept(p RateProfile) ([]Attr, error) { return zteRateAttrs(p.plainRateLimit()) }
+func (zteBuilder) BuildCoA(p RateProfile) ([]Attr, error)    { return zteRateAttrs(p.plainRateLimit()) }
 
 func zteRateAttrs(rateLimit string) ([]Attr, error) {
 	in, out, err := parseRateLimitString(rateLimit)

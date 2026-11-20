@@ -106,6 +106,7 @@ type Handler struct {
 	products        ProductStore
 	planChanges     PlanChangeStore
 	ipPools         IPPoolStore
+	bandwidth       BandwidthProfileStore
 	gatewayLog      GatewayLogStore
 	diagnostics     DiagnosticsStore
 	billingRuns     BillingRunStore
@@ -181,6 +182,8 @@ type HandlerDeps struct {
 	GatewayLog GatewayLogStore
 	// IPPools manages IP pools and static addresses (FR-NET-005).
 	IPPools IPPoolStore
+	// Bandwidth is the reusable bandwidth profile store (FR-CAT-002).
+	Bandwidth BandwidthProfileStore
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeStore
 	// Products manages the product catalogue and the charges attached to
@@ -261,6 +264,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		products:         deps.Products,
 		planChanges:      deps.PlanChanges,
 		ipPools:          deps.IPPools,
+		bandwidth:        deps.Bandwidth,
 		gatewayLog:       deps.GatewayLog,
 		diagnostics:      deps.Diagnostics,
 		billingRuns:      deps.BillingRuns,

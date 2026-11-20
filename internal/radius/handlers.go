@@ -144,7 +144,7 @@ func (d *RadiusDaemon) handleAuth(ctx context.Context, w radius.ResponseWriter, 
 func (d *RadiusDaemon) applyRateLimit(resp *radius.Packet, sub *Subscriber, r *radius.Request) {
 	applyStaticIP(resp, sub)
 
-	rateLimit := effectiveRateLimit(sub)
+	rateLimit, shaping := effectiveRateLimit(sub)
 
 	vendor := nas.VendorMikrotik
 	profileName := ""
@@ -154,7 +154,8 @@ func (d *RadiusDaemon) applyRateLimit(resp *radius.Packet, sub *Subscriber, r *r
 		profileName = d.nasResolver.ResolveProfile(sub.PlanID, vendor)
 	}
 
-	attrs, err := nas.BuildAcceptAttrs(vendor, nas.RateProfile{RateLimitString: rateLimit, ProfileName: profileName})
+	attrs, err := nas.BuildAcceptAttrs(vendor, nas.RateProfile{
+		RateLimitString: rateLimit, ProfileName: profileName, Shaping: shaping})
 	if err != nil {
 		// Not a reject: the subscriber is legitimate and should still get
 		// online. They connect without a bandwidth attribute — the same
@@ -217,8 +218,14 @@ func (d *RadiusDaemon) recordAuthFailure(ctx context.Context, username string) {
 
 // RateLimitForSubscriber returns the effective rate-limit string (respects
 // a speed override, then FUP, then the plan rate).
+//
+// Deliberately drops the bandwidth profile: this is the plain-string form
+// for callers that only need a rate to display or log. A caller building an
+// Access-Accept or CoA must use effectiveRateLimit and pass the profile on,
+// or the subscriber silently loses their burst.
 func RateLimitForSubscriber(sub *Subscriber) string {
-	return effectiveRateLimit(sub)
+	rl, _ := effectiveRateLimit(sub)
+	return rl
 }
 
 // effectiveRateLimit picks the rate an Access-Accept or CoA should carry.
@@ -229,15 +236,27 @@ func RateLimitForSubscriber(sub *Subscriber) string {
 // here too because Access-Accept is built from the cached *Subscriber, not
 // a fresh DB round trip, so the expiry check has to happen against
 // time.Now() rather than the database's own now().
-func effectiveRateLimit(sub *Subscriber) string {
+// It returns the plain rate-limit string and, when the plan's own shaping
+// applies, the bandwidth profile behind it (FR-CAT-002).
+//
+// A profile is returned only in the last case. An override and a FUP throttle
+// are deliberate temporary states expressed as a plain "down/up" rate, and
+// returning the plan's burst alongside one of them would hand the subscriber
+// the burst their throttle exists to take away.
+func effectiveRateLimit(sub *Subscriber) (string, *nas.Shaping) {
 	if sub.SpeedOverrideRateLimit != "" &&
 		(sub.SpeedOverrideExpiresAt == nil || sub.SpeedOverrideExpiresAt.After(time.Now())) {
-		return sub.SpeedOverrideRateLimit
+		return sub.SpeedOverrideRateLimit, nil
 	}
 	if sub.FUPActive && sub.FUPThrottle != "" {
-		return sub.FUPThrottle
+		return sub.FUPThrottle, nil
 	}
-	return sub.RateLimitStr
+	if sub.Shaping != nil {
+		// RateLimitStr is still carried as the fallback the non-MikroTik
+		// dialects parse if the profile cannot render.
+		return sub.RateLimitStr, sub.Shaping
+	}
+	return sub.RateLimitStr, nil
 }
 
 // BruteForceKey returns the Redis key used for brute-force rate limiting.

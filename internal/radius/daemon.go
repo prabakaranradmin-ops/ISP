@@ -197,6 +197,16 @@ type Subscriber struct {
 	SpeedOverrideRateLimit string
 	SpeedOverrideExpiresAt *time.Time
 	PlanID                 int // resolves a policy-reference vendor's QoS profile name (FR-NAS-001, MDS §4.11)
+	// Shaping is the plan's bandwidth profile when it has one (FR-CAT-002).
+	// Nil means the plan shapes from RateLimitStr, which is the case for
+	// every plan that predates profiles and for plans created outside the
+	// catalogue — a supported steady state, not a migration window.
+	//
+	// It sits at the same precedence as RateLimitStr, below both a speed
+	// override and an active FUP throttle: those are deliberate temporary
+	// states and must still win over the plan's own shaping. See
+	// effectiveRateLimit.
+	Shaping *nas.Shaping
 	// NTHash is MD4(UTF-16LE(password)), present only for subscribers
 	// enrolled for EAP-MSCHAPv2 (FR-AAA-006, migration 029). Nil means PAP
 	// against PasswordHash is the only method available to them, which is

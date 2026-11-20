@@ -127,6 +127,11 @@ var truncateOrder = []string{
 	"radius_verifier_cache",
 	"subscribers",
 	"plans",
+	// Migration 065. After plans, because plans.bandwidth_profile_id
+	// references it: listed earlier, the CASCADE would reach plans and
+	// everything behind it before the tables above had been cleared in
+	// their intended order.
+	"bandwidth_profiles",
 	// Migration 034 seeds nas_devices with explicit ids, so it must be reset
 	// between tests or the second test to seed id=1 collides. plan_nas_profiles
 	// references it and is taken by CASCADE.

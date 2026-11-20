@@ -8,6 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"github.com/maaransoft/isp-bss-oss/internal/localcache"
+	"github.com/maaransoft/isp-bss-oss/internal/nas"
 	"github.com/maaransoft/isp-bss-oss/internal/radius"
 )
 
@@ -63,6 +64,12 @@ type cachedSubscriber struct {
 	// no Framed-IP-Address, and the NAS would hand them a dynamic address
 	// instead of the one they are paying for.
 	StaticIP string
+	// Shaping mirrors radius.Subscriber.Shaping (FR-CAT-002), for the same
+	// reason as the fields above: a subscriber on a plan with a burst
+	// profile who reconnects within the TTL would otherwise be served a
+	// cache hit carrying only the ceiling, and would silently lose the
+	// burst they are paying for until the entry expired.
+	Shaping *nas.Shaping
 	// NotFound records a negative result, so a flood of requests for a username
 	// that does not exist cannot turn into a flood of database queries.
 	NotFound bool
@@ -120,6 +127,7 @@ func (c *SubscriberCache) GetSubscriberByUsername(ctx context.Context, username 
 			SpeedOverrideExpiresAt: entry.SpeedOverrideExpiresAt,
 			NTHash:                 entry.NTHash,
 			StaticIP:               entry.StaticIP,
+			Shaping:                entry.Shaping,
 		}, nil
 	}
 	subscriberCacheMisses.Inc()
@@ -152,6 +160,7 @@ func (c *SubscriberCache) cacheResult(key string, sub *radius.Subscriber, userna
 			SpeedOverrideExpiresAt: sub.SpeedOverrideExpiresAt,
 			NTHash:                 sub.NTHash,
 			StaticIP:               sub.StaticIP,
+			Shaping:                sub.Shaping,
 		}
 	}
 
