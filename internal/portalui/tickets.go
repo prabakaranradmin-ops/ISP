@@ -5,6 +5,7 @@ import (
 
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
+	"github.com/rs/zerolog/log"
 )
 
 type ticketsListData struct {
@@ -63,6 +64,17 @@ func (h *Handler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 			Description:  description,
 		})
 		if err != nil {
+			// The subscriber is told to try again, which for most causes is
+			// the right advice. But the common cause is not transient at
+			// all: CreateTicket refuses to file a ticket it cannot attach an
+			// SLA to, so a missing sla_policies or
+			// category_priority_defaults row makes every ticket fail with
+			// this message forever. Without this line the only symptom is a
+			// subscriber who cannot raise a ticket and a request logged as
+			// 200, which is a long way from the configuration gap that
+			// caused it.
+			log.Error().Err(err).Int("subscriber_id", subID).Str("category", category).
+				Msg("portalui: filing a ticket failed")
 			h.renderTicketsList(w, r, subID, "Failed to file the ticket. Please try again.")
 			return
 		}
