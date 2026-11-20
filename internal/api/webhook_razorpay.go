@@ -50,29 +50,60 @@ func (h *Handler) RazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 		// missing feature degrading gracefully, it is an open money-crediting
 		// endpoint. Refuse outright instead.
 		log.Error().Msg("api: razorpay webhook called but RAZORPAY_WEBHOOK_SECRET is not configured")
+		// Recorded even though nothing could be authenticated: a callback
+		// arrived and whatever it described was not credited, which is
+		// the single most reconciliation-relevant thing that can happen
+		// here (FR-PAY-001).
+		h.recordGatewayCallback(r.Context(), billing.GatewayEvent{
+			Status: billing.GatewayUnconfigured,
+			Detail: "a callback arrived while RAZORPAY_WEBHOOK_SECRET was not set, so it could not be authenticated",
+		})
 		http.Error(w, "webhook not configured", http.StatusServiceUnavailable)
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRazorpayWebhookBody))
 	if err != nil {
+		h.recordGatewayCallback(r.Context(), billing.GatewayEvent{
+			Status: billing.GatewayRejected, Detail: "the request body could not be read",
+		})
 		http.Error(w, "cannot read body", http.StatusBadRequest)
 		return
 	}
 
 	if err := billing.ValidateRazorpaySignature(body, r.Header.Get("X-Razorpay-Signature"), h.razorpayWebhookSecret); err != nil {
 		log.Warn().Err(err).Msg("api: rejected Razorpay webhook")
+		// The signature itself is deliberately not recorded: it is a
+		// credential-shaped value and authenticity has already been
+		// decided. That it failed is the fact worth keeping.
+		h.recordGatewayCallback(r.Context(), billing.GatewayEvent{
+			Status: billing.GatewayRejected, Detail: "failed the signature check",
+		})
 		http.Error(w, "invalid signature", http.StatusBadRequest)
 		return
 	}
 
 	var payload razorpayWebhookPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
+		h.recordGatewayCallback(r.Context(), billing.GatewayEvent{
+			Status: billing.GatewayRejected,
+			Detail: "authentic, but the payload could not be decoded",
+		})
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
 
 	if payload.Event != "payment.captured" {
+		// Acknowledged and recorded. "Whether or not it credits a wallet"
+		// (FR-PAY-001) includes the events this system deliberately does
+		// nothing about: a reconciliation needs to see that the callback
+		// arrived and was a no-op, not infer it from silence.
+		h.recordGatewayCallback(r.Context(), billing.GatewayEvent{
+			Event:            payload.Event,
+			GatewayPaymentID: payload.Payload.Payment.Entity.ID,
+			Status:           billing.GatewayIgnored,
+			Detail:           "this system acts only on payment.captured",
+		})
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -85,6 +116,14 @@ func (h *Handler) RazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 		// one. Acknowledge so Razorpay does not retry something a retry
 		// cannot fix, but log loudly since a payment is now unmatched.
 		log.Error().Str("payment_id", entity.ID).Msg("api: razorpay webhook missing subscriber_id note")
+		// Money taken and credited to nobody. The row most worth having.
+		h.recordGatewayCallback(r.Context(), billing.GatewayEvent{
+			Event:            payload.Event,
+			GatewayPaymentID: entity.ID,
+			Amount:           decimal.NewFromInt(entity.Amount).Div(decimal.NewFromInt(100)),
+			Status:           billing.GatewayUnmatched,
+			Detail:           "captured, but the subscriber_id note was missing or unreadable",
+		})
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -100,6 +139,11 @@ func (h *Handler) RazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Error().Err(err).Str("payment_id", entity.ID).Int("subscriber_id", subscriberID).
 			Msg("api: razorpay webhook credit failed")
+		h.recordGatewayCallback(r.Context(), billing.GatewayEvent{
+			Event: payload.Event, GatewayPaymentID: entity.ID,
+			SubscriberID: subscriberID, Amount: amount,
+			Status: billing.GatewayFailed, Detail: err.Error(),
+		})
 		// Non-2xx tells Razorpay to retry — appropriate here since the
 		// signature already proved authenticity and the failure is likely our
 		// database being unavailable, not bad input.
@@ -124,6 +168,22 @@ func (h *Handler) RazorpayWebhook(w http.ResponseWriter, r *http.Request) {
 	// Emitted only after the wallet credit committed. Publishing before it
 	// would tell a partner money arrived that a rollback then unwound.
 	h.emit(r.Context(), partner.EventPaymentReceived, subscriberID)
+
+	// Recorded as credited whether this was the first capture or a
+	// retried callback.
+	//
+	// Not distinguished, deliberately: Recharge is idempotent on
+	// transaction_token (FR-BIL-005) and returns the original transaction
+	// for a repeat, with no error and no signal that it was one — so
+	// telling them apart here would mean an extra lookup on the money
+	// path, and a racy one. Both outcomes are true: the money is in the
+	// wallet. A retried callback shows as a second credited row sharing
+	// one payment id, which idx_pgw_payment exists to surface.
+	h.recordGatewayCallback(r.Context(), billing.GatewayEvent{
+		Event: payload.Event, GatewayPaymentID: entity.ID,
+		SubscriberID: subscriberID, Amount: amount,
+		Status: billing.GatewayCredited,
+	})
 
 	w.WriteHeader(http.StatusOK)
 }

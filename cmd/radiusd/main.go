@@ -22,6 +22,7 @@ import (
 
 	"github.com/maaransoft/isp-bss-oss/internal/envfile"
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
+	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/maaransoft/isp-bss-oss/internal/winservice"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
@@ -109,6 +110,16 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("connect to PostgreSQL: %w", err)
 	}
 	defer database.Close()
+
+	// FR-OBS-006: persist the audit entries middleware.Audit already
+	// logs, to the append-only staff_audit_log. Wired in both binaries
+	// because both audit — an action taken through the API and one taken
+	// by a background pass are equally part of the trail.
+	//
+	// A failure to persist is logged and swallowed inside Audit: the log
+	// line is written first and unconditionally, so an audit write must
+	// never be able to fail the action it is recording.
+	middleware.SetAuditSink(database.Audit())
 	log.Info().Msg("radiusd: PostgreSQL connected")
 
 	// The task queue (CoA/PoD, notifications, webhooks, report exports)
@@ -215,6 +226,34 @@ func run(ctx context.Context) error {
 	// lookups and the portal's usage history all read — without it they each
 	// query an empty table and quietly do nothing.
 	daemon.SetAccountingStore(database.FUP())
+	// FR-NET-004: every authentication attempt is logged — who, from which
+	// NAS and MAC, accepted or rejected, and why. The password is never
+	// recorded, in any form.
+	//
+	// Buffered and batched, because this writes on the path NFR-PERF-001
+	// holds to a 15ms p99 at 5,000 requests a second: the daemon's cost
+	// is one non-blocking channel send, and a full buffer drops the row
+	// rather than making a subscriber wait for their own log entry.
+	authLogger := radius.NewAuthLogger(database.AuthLog())
+	daemon.SetAuthLogger(authLogger)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		log.Info().Msg("radiusd: authentication log writer started")
+		authLogger.Run(ctx)
+		log.Info().Msg("radiusd: authentication log writer stopped")
+	}()
+
+	// Bounded retention for that log (FR-NET-004). Without it the table
+	// grows until it is the largest thing in the database.
+	authLogPurge := radius.NewAuthLogPurgeScanner(database.AuthLog(), radius.AuthLogRetention)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		log.Info().Msg("radiusd: authentication log purge started")
+		authLogPurge.Run(ctx)
+		log.Info().Msg("radiusd: authentication log purge stopped")
+	}()
 	// Voucher-backed hotspot sessions have no subscriber row, so they cannot go
 	// in session history; they are metered on their grant instead (FR-HSP-001).
 	daemon.SetGrantUsageDB(database.Hotspot())

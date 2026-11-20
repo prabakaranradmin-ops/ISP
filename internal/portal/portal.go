@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
@@ -56,6 +57,41 @@ type PortalNotificationQuerier interface {
 type PortalTicketQuerier interface {
 	ListTickets(ctx context.Context, subscriberID int) ([]TicketEntry, error)
 	CreateTicket(ctx context.Context, t TicketCreateRequest) (*TicketEntry, error)
+}
+
+// GatewayLogger records payment-gateway orders (FR-PAY-001). Satisfied
+// by *db.GatewayLogStore.
+//
+// Optional: nil records nothing and the portal behaves exactly as before.
+// A recording failure never fails the request it describes — an order
+// that was created has been created whether or not its row was written.
+type GatewayLogger interface {
+	RecordGatewayEvent(ctx context.Context, e billing.GatewayEvent) error
+}
+
+// SetGatewayLogger attaches gateway order logging.
+func (h *Handler) SetGatewayLogger(l GatewayLogger) { h.gatewayLog = l }
+
+// recordGatewayOrder writes one order outcome.
+//
+// A detached context with its own deadline: the caller has already
+// decided its response, and the order it describes has already happened
+// either way.
+func (h *Handler) recordGatewayOrder(e billing.GatewayEvent) {
+	if h.gatewayLog == nil {
+		return
+	}
+	e.Kind = billing.GatewayKindOrder
+	e.Event = "order.create"
+	if e.Gateway == "" {
+		e.Gateway = billing.DefaultGateway
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
+	defer cancel()
+	if err := h.gatewayLog.RecordGatewayEvent(ctx, e); err != nil {
+		log.Error().Err(err).Str("status", e.Status).Int("subscriber_id", e.SubscriberID).
+			Msg("portal: gateway order could not be recorded; the log line above is the only record")
+	}
 }
 
 // RazorpayOrderCreator creates a Razorpay order and returns a payment link.
@@ -168,6 +204,7 @@ type Handler struct {
 	notifications PortalNotificationQuerier
 	tickets       PortalTicketQuerier
 	razorpay      RazorpayOrderCreator
+	gatewayLog    GatewayLogger
 	jwtSecret     string
 }
 
@@ -347,6 +384,11 @@ func (h *Handler) Renew(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.razorpay == nil {
+		h.recordGatewayOrder(billing.GatewayEvent{
+			SubscriberID: subID, Amount: amount,
+			Status: billing.GatewayUnconfigured,
+			Detail: "a subscriber tried to pay while no payment gateway was configured",
+		})
 		writeJSON(w, http.StatusServiceUnavailable, errBody("ERR_UNAVAILABLE", "payment gateway not configured"))
 		return
 	}
@@ -354,9 +396,21 @@ func (h *Handler) Renew(w http.ResponseWriter, r *http.Request) {
 	orderID, paymentLink, err := h.razorpay.CreateOrder(r.Context(), subID, amount)
 	if err != nil {
 		log.Error().Err(err).Msg("portal: razorpay create order failed")
+		// Recorded (FR-PAY-001): a subscriber who says "I tried to pay and
+		// it wouldn't let me" leaves no other trace, and a run of these
+		// is a gateway outage nobody would otherwise see.
+		h.recordGatewayOrder(billing.GatewayEvent{
+			SubscriberID: subID, Amount: amount,
+			Status: billing.GatewayFailed, Detail: err.Error(),
+		})
 		writeJSON(w, http.StatusBadGateway, errBody("ERR_GATEWAY", "payment gateway error"))
 		return
 	}
+
+	h.recordGatewayOrder(billing.GatewayEvent{
+		SubscriberID: subID, Amount: amount, GatewayOrderID: orderID,
+		Status: billing.GatewayCreated,
+	})
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"order_id":     orderID,

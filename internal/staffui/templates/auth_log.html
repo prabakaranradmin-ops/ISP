@@ -1,0 +1,87 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Authentication log</h1>
+
+<p class="muted">Every attempt to get on the network: who, from which router and MAC, accepted or rejected, and if
+  rejected, why. This is the answer to &ldquo;it was working yesterday&rdquo;.
+  Kept for {{$d.Retention}} days, then deleted &mdash; it is an operational log, not an archive.
+  <strong>No password is recorded</strong>, in any form.</p>
+
+{{with $d}}
+{{if .Summary}}
+<div class="card">
+  <h3>Rejections in the last {{.SummaryHours}} hours</h3>
+  <p class="muted small">Which failure is happening, which is usually the question. A hundred of one reason and a
+    hundred of another are different incidents with different causes.</p>
+  <table>
+    <thead><tr><th class="right">Count</th><th>Reason</th><th>What it usually means</th><th></th></tr></thead>
+    <tbody>
+    {{range .Summary}}
+      <tr>
+        <td class="num right">{{.Count}}</td>
+        <td>{{.Label}}</td>
+        <td class="muted small">{{.Advice}}</td>
+        <td><a href="/staff/auth-log?result=reject&amp;reason={{.Reason}}">Show these</a></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+<div class="card">
+  <form method="get" action="/staff/auth-log" class="formgrid">
+    <label>Username <input name="username" value="{{.Username}}" placeholder="any"></label>
+    <label>Result
+      <select name="result">
+        <option value="">Any</option>
+        <option value="reject"{{if eq .Result "reject"}} selected{{end}}>Rejected</option>
+        <option value="accept"{{if eq .Result "accept"}} selected{{end}}>Accepted</option>
+      </select>
+    </label>
+    <label>Reason
+      <select name="reason">
+        <option value="">Any</option>
+        {{range .Reasons}}<option value="{{.Key}}"{{if eq .Key $d.Reason}} selected{{end}}>{{.Label}}</option>{{end}}
+      </select>
+    </label>
+    <label>From <input type="date" name="from" value="{{.From}}"></label>
+    <label>To <input type="date" name="to" value="{{.To}}">
+      <span class="muted small">Inclusive.</span>
+    </label>
+    <button type="submit" class="primary">Filter</button>
+  </form>
+  {{if or .Username .Result .Reason .From .To}}
+  <p><a href="/staff/auth-log">Clear the filter</a></p>
+  {{end}}
+</div>
+
+<div class="card table-card">
+  <table>
+    <thead><tr><th>When</th><th>Username</th><th>Router</th><th>MAC</th><th>Method</th><th>Result</th></tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr>
+        <td class="num">{{datetime .CreatedAt}}</td>
+        <td>{{.Username}}</td>
+        <td class="num">{{.NASIP}}</td>
+        <td class="num">{{.MAC}}</td>
+        <td>{{.AuthMethod}}</td>
+        <td>
+          {{if .Accepted}}<span class="pill ok">accepted</span>
+          {{else}}<span class="pill bad">rejected</span>
+            {{with .ReasonLabel}}<br><span class="muted small">{{.}}</span>{{end}}
+          {{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">
+        {{if or $d.Username $d.Result $d.Reason $d.From $d.To}}No attempts match that filter.
+        {{else}}No authentication attempts recorded yet.{{end}}
+      </td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}

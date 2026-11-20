@@ -186,9 +186,25 @@ func auditLog(r *http.Request, role string) {
 // and its target. Handlers for POST/PATCH/DELETE routes should call this once
 // the action has succeeded.
 func Audit(ctx context.Context, action, target string, detail map[string]any) {
+	correlationID := newCorrelationID()
+
+	// Persisted as well as logged (FR-OBS-006), when a sink is wired.
+	//
+	// After the log line, never instead of it: the line is the authority,
+	// and a sink that fails must leave the record intact. See
+	// SetAuditSink for why a failure here cannot fail the caller.
+	defer persistAudit(ctx, AuditEntry{
+		CorrelationID: correlationID,
+		ActorID:       SubjectFromContext(ctx),
+		ActorRole:     RoleFromContext(ctx),
+		Action:        action,
+		Target:        target,
+		Detail:        detail,
+	})
+
 	event := log.Info().
 		Bool("audit", true).
-		Str("correlation_id", newCorrelationID()).
+		Str("correlation_id", correlationID).
 		Str("actor_id", SubjectFromContext(ctx)).
 		Str("actor_role", RoleFromContext(ctx)).
 		Str("action", action).

@@ -102,6 +102,23 @@ COMPONENTS=(
     # just left until the entry expires — the upgrade they paid for simply
     # not arriving, with nothing anywhere reporting a problem.
     "autoRenewalScanner.SetSubscriberCache:auth-cache invalidation after a scheduled plan change (FR-BIL-023)"
+    # FR-OBS-006. Unwired, middleware.Audit keeps writing its log line and
+    # the append-only table stays empty — the feature looks present (the
+    # screen renders, the migration applied) and records nothing. Nothing
+    # fails, which is exactly why this needs a wiring check rather than a
+    # test.
+    "middleware.SetAuditSink:audit persistence to the append-only trail (FR-OBS-006)"
+    # FR-NET-004. Two halves, both silent if unwired: without the logger
+    # the daemon authenticates exactly as before and records nothing, and
+    # without the purge the table grows until it is the largest thing in
+    # the database. Neither failure announces itself.
+    "daemon.SetAuthLogger:authentication attempt logging (FR-NET-004)"
+    "NewAuthLogPurgeScanner:bounded retention for the authentication log (FR-NET-004)"
+    # FR-PAY-001. The webhook side is wired through HandlerDeps and would
+    # fail a compile if absent; the portal's order side is a setter, and
+    # unwired it silently records nothing — so a subscriber who could not
+    # pay leaves no trace, which is the case the log exists for.
+    "portalHandler.SetGatewayLogger:gateway order logging from the portal (FR-PAY-001)"
 )
 
 if [ "${1:-}" = "--list" ]; then

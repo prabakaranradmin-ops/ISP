@@ -106,6 +106,7 @@ type Handler struct {
 	products        ProductStore
 	planChanges     PlanChangeStore
 	ipPools         IPPoolStore
+	gatewayLog      GatewayLogStore
 	diagnostics     DiagnosticsStore
 	billingRuns     BillingRunStore
 	receipts        ReceiptStore
@@ -176,6 +177,8 @@ type HandlerDeps struct {
 	Dunning          DunningSettingsStore
 	// Proformas issues and converts proforma invoices (FR-BIL-018).
 	Proformas ProformaStore
+	// GatewayLog records payment-gateway orders and callbacks (FR-PAY-001).
+	GatewayLog GatewayLogStore
 	// IPPools manages IP pools and static addresses (FR-NET-005).
 	IPPools IPPoolStore
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
@@ -258,6 +261,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		products:         deps.Products,
 		planChanges:      deps.PlanChanges,
 		ipPools:          deps.IPPools,
+		gatewayLog:       deps.GatewayLog,
 		diagnostics:      deps.Diagnostics,
 		billingRuns:      deps.BillingRuns,
 		receipts:         deps.Receipts,
@@ -557,6 +561,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		staffRead(http.HandlerFunc(h.ListSubscriberStaticIPsHTTP)))
 	mux.Handle("POST /api/v1/static-ips/{id}/release",
 		nocOrBilling(http.HandlerFunc(h.ReleaseStaticIPHTTP)))
+
+	// Payment-gateway order and callback log (FR-PAY-001). Billing tier:
+	// every row is about money arriving, and the rows that matter most are
+	// the ones where it arrived and reached nobody.
+	mux.Handle("GET /api/v1/gateway-events",
+		admin(http.HandlerFunc(h.ListGatewayEventsHTTP)))
 
 	// Hotspot administration (FR-HSP-001..002 | MDS §4.23).
 	//

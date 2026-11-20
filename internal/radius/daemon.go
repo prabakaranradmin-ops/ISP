@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
 	"layeh.com/radius"
+	"layeh.com/radius/rfc2865"
 
 	"github.com/maaransoft/isp-bss-oss/internal/localcache"
 	"github.com/maaransoft/isp-bss-oss/internal/nas"
@@ -116,14 +117,48 @@ const unregisteredNAS = "unregistered"
 // and MAB: updating the global total but not the per-NAS one at any single
 // site would leave FR-OBS-005's failure rate quietly wrong for that path, and
 // wrong in the direction that under-reports failures.
-func (d *RadiusDaemon) authAccepted(r *radius.Request) {
+func (d *RadiusDaemon) authAccepted(r *radius.Request, method string) {
 	radiusAuthAccept.Inc()
 	d.recordAuthOutcome(r, true)
+	d.logAttempt(r, ResultAccept, "", method)
 }
 
-func (d *RadiusDaemon) authRejected(r *radius.Request) {
+// authRejected counts and logs a rejection.
+//
+// The reason is a required argument rather than defaulted, because each
+// call site is the only place that knows why it is rejecting — and the
+// reason is the single most useful column in the log FR-NET-004 asks for.
+// A default would have thrown that away at every site.
+func (d *RadiusDaemon) authRejected(r *radius.Request, reason, method string) {
 	radiusAuthReject.Inc()
 	d.recordAuthOutcome(r, false)
+	d.logAttempt(r, ResultReject, reason, method)
+}
+
+// logAttempt assembles one AuthAttempt from the request.
+//
+// Reads User-Name and Calling-Station-Id off the packet rather than taking
+// them as arguments, so a caller cannot pass the wrong subscriber's name —
+// and so that no call site has the password in scope at the moment it
+// records the attempt.
+func (d *RadiusDaemon) logAttempt(r *radius.Request, result, reason, method string) {
+	if d.authLog == nil || r == nil || r.Packet == nil {
+		return
+	}
+	nasIP := ""
+	if r.RemoteAddr != nil {
+		if host, _, err := net.SplitHostPort(r.RemoteAddr.String()); err == nil {
+			nasIP = host
+		}
+	}
+	d.logAuthAttempt(AuthAttempt{
+		Username:     rfc2865.UserName_GetString(r.Packet),
+		NASIP:        nasIP,
+		MAC:          rfc2865.CallingStationID_GetString(r.Packet),
+		Result:       result,
+		RejectReason: reason,
+		AuthMethod:   method,
+	})
 }
 
 // recordAuthOutcome counts one authentication result against its NAS.
@@ -200,6 +235,9 @@ type RadiusDaemon struct {
 	acctDB        AccountingStore
 	grantUsageDB  GrantUsageDB
 	liveSessions  LiveSessionWriter
+	// authLog buffers authentication attempts for FR-NET-004. Optional:
+	// nil records nothing and authenticates exactly as before.
+	authLog *AuthLogger
 }
 
 // DefaultAcctAddr is the RFC 2866 accounting port. Authentication and

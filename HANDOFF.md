@@ -83,7 +83,7 @@ by one.
 | Migrations | 35 applied (`001`–`035`) |
 | Browser tests | **45**, all passing (`npx playwright test`, run 2026-08-16) |
 | Lint | **6** findings on default tags, **116** with `--build-tags=integration`; none introduced by recent work, all untriaged |
-| DB integration suite | ~700s; **must** be run with `-timeout 25m` |
+| DB integration suite | ~700s in Docker, **1000-1500s on the bundled native cluster**; carry `-timeout 45m` |
 | NFR-PERF-001 (RADIUS auth p99 ≤15ms) | **PASS at 13.224ms**, 5,000 req/s, 30s, 0 errors — `run_nfr_tests.sh`, 2026-08-16 |
 | NFR-PERF-002 (API p99 ≤200ms) | **PASS**, 49.01ms at 500 VUs |
 | NFR-BIZ-001 (unbilled query ≤60s @20k subs) | **PASS**, 12.2ms |
@@ -340,7 +340,7 @@ where `gcc` resolves if race detection matters for what you are changing.
 ```bash
 gofmt -l internal/ cmd/ && go build ./... && go vet -tags=integration ./...
 go test -count=1 ./...                      # 31 packages with tests
-bash scripts/run_db_tests.sh -timeout 25m   # ~700s against real PostgreSQL
+bash scripts/run_db_tests.sh -timeout 45m   # ~700s in Docker, up to 1500s native
                                             # (Docker down? see "Running the
                                             #  DB suite with Docker down")
 golangci-lint run --build-tags=integration ./...   # 116 known, none recent
@@ -348,8 +348,30 @@ golangci-lint run --build-tags=integration ./...   # 116 known, none recent
 npx playwright test                         # 45 browser tests
 ```
 
-The DB suite **must** carry `-timeout 25m`. It runs ~700s and Go's 10-minute
-default kills it partway, which reads as a hang rather than a timeout.
+The DB suite **must** carry a generous `-timeout`. Go's 10-minute default
+kills it partway, and so does 25m on the native cluster.
+
+`internal/db` alone measured 920s, 1035s, 1146s, 1169s and then **1500s**
+across one session as tests were added — the bundled-PostgreSQL cluster
+(see "Running the DB suite with Docker down") is roughly 2x slower than the
+Docker one the old 25m figure was chosen for, and the suite only grows.
+`-timeout 45m` is the current recommendation.
+
+**A timeout looks exactly like a test failure and is not one.** Go reports
+it as a bare `FAIL <package> <duration>s` with no failing test named, and
+the duration is the giveaway: `FAIL internal/db 1500.271s` under
+`-timeout 25m` is the timeout firing at 1500s, not an assertion. Check the
+duration against the timeout before hunting for a defect.
+
+Two things that make a timeout more likely, both avoidable:
+
+- **Do not run other work against the machine while the suite runs.**
+  Builds, `go test ./...`, goose and psql all contend for the same CPU and
+  the same database, and the suite is what loses.
+- **Do not filter the suite's output through `grep` when you need to
+  diagnose a failure.** `grep -E "^(ok|FAIL|---)"` discards the panic line
+  a timeout prints and the `--- FAIL` lines a real failure prints, which
+  turns a 25-minute run into two. Redirect to a file and grep the file.
 
 `check_wiring.sh` exists because three components once shipped complete,
 tested, and never called. It is a grep, not a test, and it caught what the
@@ -389,7 +411,17 @@ execution, across several sessions:
   directions, which is the check that could not have been fooled
 
 When a check could plausibly pass for the wrong reason, break it
-deliberately and confirm it fails. Every negative control run so far has
+deliberately and confirm it fails. And check *which* assertion the control
+fired on: a control that fails on the first of several assertions has said
+nothing about the rest.
+
+The audit trail's append-only test (FR-OBS-006) ran four privilege checks
+in one transaction. A failed statement aborts a Postgres transaction, so
+once the UPDATE was denied, the DELETE and TRUNCATE assertions were passing
+on "current transaction is aborted" rather than on "permission denied" —
+and the negative control passed too, because it tripped the first check and
+never reached them. Each statement now gets its own transaction and each
+assertion requires the error text to say `permission denied`. Every negative control run so far has
 found something — including two of the entries above, which were *test*
 defects found only because the control was run.
 

@@ -21,6 +21,7 @@ import (
 
 	"github.com/maaransoft/isp-bss-oss/internal/envfile"
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
+	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/maaransoft/isp-bss-oss/internal/winservice"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
@@ -111,6 +112,16 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("connect to PostgreSQL: %w", err)
 	}
 	defer database.Close()
+
+	// FR-OBS-006: persist the audit entries middleware.Audit already
+	// logs, to the append-only staff_audit_log. Wired in both binaries
+	// because both audit — an action taken through the API and one taken
+	// by a background pass are equally part of the trail.
+	//
+	// A failure to persist is logged and swallowed inside Audit: the log
+	// line is written first and unconditionally, so an audit write must
+	// never be able to fail the action it is recording.
+	middleware.SetAuditSink(database.Audit())
 	log.Info().Msg("api: PostgreSQL connected")
 
 	keyStore, err := crypto.LoadKeyStore(cfg.AESKeyStoreURL)
@@ -234,6 +245,9 @@ func run(ctx context.Context) error {
 		// a pool is part of the router estate, even though an assignment
 		// can carry a catalogue charge.
 		IPPools: database.NAS(),
+		// Payment-gateway orders and callbacks (FR-PAY-001), recorded
+		// whether or not they credit a wallet.
+		GatewayLog: database.GatewayLog(),
 		// Payment receipts (FR-BIL-021), headed with the supplier's name.
 		Receipts:   database.Billing(),
 		ReceiptPDF: receiptPDF,
@@ -301,6 +315,10 @@ func run(ctx context.Context) error {
 		razorpayClient,
 		cfg.PortalJWTSecret,
 	)
+	// FR-PAY-001: the orders the portal asks the gateway for, recorded
+	// whether or not one is created — a subscriber who says "it wouldn't
+	// let me pay" otherwise leaves no trace at all.
+	portalHandler.SetGatewayLogger(database.GatewayLog())
 
 	portalUIHandler := portalui.NewHandler(portalui.Deps{
 		Subscribers:    database.Portal(),
@@ -414,6 +432,9 @@ func run(ctx context.Context) error {
 		Products:    apiHandler,
 		PlanChanges: apiHandler,
 		IPPools:     apiHandler,
+		Audit:       database.Audit(),
+		AuthLog:     database.AuthLog(),
+		GatewayLog:  database.GatewayLog(),
 		// Counter payments and cheque bounces through the API's own path.
 		Payments: apiHandler,
 	})

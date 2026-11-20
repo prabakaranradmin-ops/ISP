@@ -164,17 +164,37 @@ func TestBuildNav(t *testing.T) {
 	})
 
 	t.Run("a one-item group collapses into that item's own link", func(t *testing.T) {
-		// A CSR's Subscribers group holds only "subscribers" (no catalogue)
-		// and Network only "sessions": each should read as a plain link
-		// named after the section, not a one-item menu. Finance holds two
-		// (Invoices & Payments, Billing) and so stays a menu.
-		nav := buildNav(AllowedSections("csr", false), "")
-		want := []string{"Dashboard", "Subscribers", "Finance", "Service", "Sessions"}
+		// A franchise partner sees exactly two sections, one in the
+		// Subscribers group and one in Finance, so both groups collapse to
+		// plain links named after the section rather than one-item menus.
+		//
+		// This used to be asserted on a CSR, whose Network group held only
+		// Sessions. It no longer does — the authentication log
+		// (FR-NET-004) is in that group and a CSR can read it — so the
+		// scenario moved to a role that still has single-item groups
+		// rather than being weakened to fit.
+		nav := buildNav(AllowedSections("lco", false), "")
+		want := []string{"My Subscribers", "My P&L"}
 		if got := labels(nav); strings.Join(got, ",") != strings.Join(want, ",") {
 			t.Fatalf("labels: want %v, got %v", want, got)
 		}
-		if n := len(nav[4].Items); n != 1 || nav[4].Items[0].Key != "sessions" {
-			t.Errorf("Network should collapse to the sessions link, got %+v", nav[4])
+		for i, key := range []string{"my-subscribers", "my-pnl"} {
+			if n := len(nav[i].Items); n != 1 || nav[i].Items[0].Key != key {
+				t.Errorf("entry %d should collapse to the %s link, got %+v", i, key, nav[i])
+			}
+		}
+	})
+
+	t.Run("a group with more than one item stays a menu", func(t *testing.T) {
+		// A CSR's Network group holds Sessions and the authentication log,
+		// and Finance holds Invoices & Payments and Billing.
+		nav := buildNav(AllowedSections("csr", false), "")
+		want := []string{"Dashboard", "Subscribers", "Finance", "Service", "Network"}
+		if got := labels(nav); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("labels: want %v, got %v", want, got)
+		}
+		if n := len(nav[4].Items); n != 2 {
+			t.Errorf("a two-item Network must stay a menu, got %+v", nav[4])
 		}
 		if n := len(nav[2].Items); n != 2 {
 			t.Errorf("a two-item Finance must stay a menu, got %+v", nav[2])

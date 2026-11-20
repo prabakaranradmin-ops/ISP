@@ -1,0 +1,67 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Audit trail</h1>
+
+<p class="muted">Every state-changing action any operator has taken, as it was recorded at the time: who, what,
+  which target, and the detail the action carried. Background passes appear too, as
+  <span class="num">system:&hellip;</span> actors.
+  The table is <strong>append-only</strong> — the services hold INSERT and SELECT on it and nothing else, so
+  entries cannot be edited or removed from here, by anyone, including you.</p>
+
+{{with $d}}
+<div class="card">
+  <form method="get" action="/staff/audit" class="formgrid">
+    <label>Actor
+      <select name="actor">
+        <option value="">Anyone</option>
+        {{range .Actors}}<option value="{{.}}"{{if eq . $d.Actor}} selected{{end}}>{{.}}</option>{{end}}
+      </select>
+    </label>
+    <label>Action
+      <select name="action">
+        <option value="">Anything</option>
+        {{range .Actions}}<option value="{{.}}"{{if eq . $d.Action}} selected{{end}}>{{.}}</option>{{end}}
+      </select>
+    </label>
+    <label>From <input type="date" name="from" value="{{.From}}"></label>
+    <label>To <input type="date" name="to" value="{{.To}}">
+      <span class="muted small">Inclusive — entries on this day are shown.</span>
+    </label>
+    <button type="submit" class="primary">Filter</button>
+  </form>
+  {{if or .Actor .Action .From .To}}
+  <p><a href="/staff/audit">Clear the filter</a></p>
+  {{end}}
+</div>
+
+<div class="card table-card">
+  {{if .Total}}
+  <p class="muted small">
+    {{if .Capped}}Showing the most recent {{.Shown}} of {{.Total}} matching entries. Narrow the dates to see
+      further back.{{else}}{{.Total}} matching entr{{if eq .Total 1}}y{{else}}ies{{end}}.{{end}}
+  </p>
+  {{end}}
+  <table>
+    <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr>
+        <td class="num">{{datetime .CreatedAt}}<br><span class="muted small">{{.CorrelationID}}</span></td>
+        <td>{{.ActorID}}{{with .ActorRole}}<br><span class="muted small">{{.}}</span>{{end}}</td>
+        <td class="num">{{.Action}}</td>
+        <td>{{.Target}}</td>
+        <td>
+          {{range .DetailLines}}<div class="muted small">{{.}}</div>{{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="5" class="empty">
+        {{if or $d.Actor $d.Action $d.From $d.To}}No entries match that filter.
+        {{else}}No audit entries yet. They are written as staff actions happen.{{end}}
+      </td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}

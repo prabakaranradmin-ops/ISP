@@ -143,7 +143,7 @@ func (d *RadiusDaemon) handleMAB(ctx context.Context, w radius.ResponseWriter, r
 		mabRefusedNASTotal.Inc()
 		mabAttemptsTotal.WithLabelValues("nas_not_enabled").Inc()
 		w.Write(r.Response(radius.CodeAccessReject)) //nolint:errcheck,gosec
-		d.authRejected(r)
+		d.authRejected(r, RejectNoMABDevice, MethodMAB)
 		return true
 	}
 	device := d.nasResolver.ResolveAddr(r.RemoteAddr)
@@ -153,7 +153,7 @@ func (d *RadiusDaemon) handleMAB(ctx context.Context, w radius.ResponseWriter, r
 		log.Warn().Str("nas", device.IP).Str("mac", username).
 			Msg("radius: MAB request from a NAS without allow_mab — refused")
 		w.Write(r.Response(radius.CodeAccessReject)) //nolint:errcheck,gosec
-		d.authRejected(r)
+		d.authRejected(r, RejectNoMABDevice, MethodMAB)
 		return true
 	}
 
@@ -165,13 +165,13 @@ func (d *RadiusDaemon) handleMAB(ctx context.Context, w radius.ResponseWriter, r
 		log.Error().Err(err).Str("mac", mac).Msg("radius: MAB lookup failed")
 		mabAttemptsTotal.WithLabelValues("error").Inc()
 		w.Write(r.Response(radius.CodeAccessReject)) //nolint:errcheck,gosec
-		d.authRejected(r)
+		d.authRejected(r, RejectInternalError, MethodMAB)
 		return true
 	}
 	if sub == nil {
 		mabAttemptsTotal.WithLabelValues("unknown_mac").Inc()
 		w.Write(r.Response(radius.CodeAccessReject)) //nolint:errcheck,gosec
-		d.authRejected(r)
+		d.authRejected(r, RejectUnknownUser, MethodMAB)
 		return true
 	}
 
@@ -180,7 +180,7 @@ func (d *RadiusDaemon) handleMAB(ctx context.Context, w radius.ResponseWriter, r
 	if !AuthorisesService(sub.Status) {
 		mabAttemptsTotal.WithLabelValues("suspended").Inc()
 		w.Write(r.Response(radius.CodeAccessReject)) //nolint:errcheck,gosec
-		d.authRejected(r)
+		d.authRejected(r, RejectNotAuthorised, MethodMAB)
 		return true
 	}
 
@@ -192,7 +192,7 @@ func (d *RadiusDaemon) handleMAB(ctx context.Context, w radius.ResponseWriter, r
 	d.applyRateLimit(resp, sub, r)
 
 	mabAttemptsTotal.WithLabelValues("accepted").Inc()
-	d.authAccepted(r)
+	d.authAccepted(r, MethodMAB)
 	w.Write(resp) //nolint:errcheck,gosec
 	return true
 }

@@ -246,6 +246,13 @@ type HandlerDeps struct {
 	// Dunning sets grace extensions and the dunning schedule
 	// (FR-BIL-016/017). The API handler.
 	Dunning DunningManager
+	// GatewayLog reads the payment-gateway order and callback log
+	// (FR-PAY-001).
+	GatewayLog GatewayLogReader
+	// AuthLog reads the RADIUS authentication attempt log (FR-NET-004).
+	AuthLog AuthLogReader
+	// Audit reads the append-only staff audit trail (FR-OBS-006).
+	Audit AuditReader
 	// IPPools manages IP pools and static addresses (FR-NET-005).
 	IPPools IPPoolManager
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
@@ -314,6 +321,9 @@ type Handler struct {
 	products           ProductManager
 	planChanges        PlanChangeManager
 	ipPools            IPPoolManager
+	audit              AuditReader
+	authLog            AuthLogReader
+	gatewayLog         GatewayLogReader
 	diagnostics        DiagnosticsRunner
 	billingRuns        BillingRunReader
 	receipts           ReceiptRenderer
@@ -368,6 +378,9 @@ func NewHandler(deps HandlerDeps) *Handler {
 		products:           deps.Products,
 		planChanges:        deps.PlanChanges,
 		ipPools:            deps.IPPools,
+		audit:              deps.Audit,
+		authLog:            deps.AuthLog,
+		gatewayLog:         deps.GatewayLog,
 		diagnostics:        deps.Diagnostics,
 		billingRuns:        deps.BillingRuns,
 		receipts:           deps.Receipts,
@@ -454,6 +467,13 @@ var sections = []Section{
 	// charge that follows it is a billing act.
 	{"ip-pools", "IP Pools", "/staff/ip-pools",
 		[]string{"isp_owner", "noc_engineer"}, false},
+	// Authentication log (FR-NET-004). NOC and the front desk both:
+	// "why can't this customer get online" is the single most common
+	// support call, and the answer is in here. Deliberately wider than
+	// IP Pools above — reading why an authentication failed is diagnosis,
+	// not reach over the network's address space.
+	{"auth-log", "Auth Log", "/staff/auth-log",
+		[]string{"isp_owner", "noc_engineer", "csr", "technician"}, false},
 	// Same reach as Routers: a cross-device view of the same estate, not a
 	// new kind of access.
 	{"network", "Network Map", "/staff/network",
@@ -467,6 +487,13 @@ var sections = []Section{
 	// Owner-only: who has console access at all, and at what level, is an
 	// owner-level decision by definition.
 	{"accounts", "Staff Accounts", "/staff/accounts",
+		[]string{"isp_owner"}, false},
+	// Owner-only, as FR-OBS-006 specifies: the trail names every action
+	// every operator has taken, which is a record about the staff as much
+	// as about the subscribers. Append-only in the database (migration
+	// 062) rather than merely read-only here, so the owner cannot quietly
+	// edit it either.
+	{"audit", "Audit Trail", "/staff/audit",
 		[]string{"isp_owner"}, false},
 	// Owner-only, same reasoning as Revenue: onboarding a partner and seeing
 	// the consolidated commission P&L across every partner is a business
@@ -504,6 +531,11 @@ var sections = []Section{
 	// Whether last night's renewals went through, and who was charged
 	// without being renewed: billing staff, same reach as the ledger.
 	{"billing-runs", "Billing Runs", "/staff/billing-runs",
+		[]string{"isp_owner", "billing_admin"}, false},
+	// Every row is money arriving from the gateway, and the rows that
+	// matter are the ones where it arrived and reached nobody: billing
+	// staff, same reach as the ledger (FR-PAY-001).
+	{"gateway-log", "Gateway Log", "/staff/gateway-log",
 		[]string{"isp_owner", "billing_admin"}, false},
 	// Technicians handle hardware day to day (issue/return); NOC engineers
 	// track it against the network estate; purchases and device-type
@@ -592,6 +624,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/dunning", h.authed(h.DunningSettings))
 	mux.Handle("GET /staff/diagnostics", h.authed(h.BillingDiagnostics))
 	mux.Handle("GET /staff/billing-runs", h.authed(h.BillingRuns))
+	mux.Handle("GET /staff/gateway-log", h.authed(h.GatewayLog))
 	mux.Handle("GET /staff/billing-runs/{id}", h.authed(h.BillingRun))
 	mux.Handle("POST /staff/dunning", h.authed(h.requireCSRF(h.SaveDunningForm)))
 	mux.Handle("POST /staff/subscribers/{id}/proforma", h.authed(h.requireCSRF(h.IssueProformaForm)))
@@ -649,6 +682,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// its own screen; assigning an address happens on the subscriber's
 	// page, where the operator can see who they are giving it to.
 	mux.Handle("GET /staff/ip-pools", h.authed(h.IPPools))
+	mux.Handle("GET /staff/auth-log", h.authed(h.AuthLog))
 	mux.Handle("POST /staff/ip-pools", h.authed(h.requireCSRF(h.CreatePoolForm)))
 	mux.Handle("POST /staff/ip-pools/{id}/delete", h.authed(h.requireCSRF(h.DeletePoolForm)))
 	mux.Handle("POST /staff/ip-pool-exclusions", h.authed(h.requireCSRF(h.AddExclusionForm)))
@@ -695,6 +729,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/tasks/approvals/{id}/approve", h.authed(h.requireCSRF(h.ApproveTaskRequest)))
 	mux.Handle("POST /staff/tasks/approvals/{id}/reject", h.authed(h.requireCSRF(h.RejectTaskRequest)))
 	mux.Handle("GET /staff/accounts", h.authed(h.StaffAccounts))
+	mux.Handle("GET /staff/audit", h.authed(h.Audit))
 	mux.Handle("POST /staff/accounts/new", h.authed(h.requireCSRF(h.CreateStaffAccount)))
 	mux.Handle("POST /staff/accounts/{id}/update", h.authed(h.requireCSRF(h.UpdateStaffAccount)))
 	// Available to every signed-in role, not owner-only: anyone should be

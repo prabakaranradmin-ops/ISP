@@ -22,6 +22,22 @@ import (
 // empty state regardless of what ran before it.
 var truncateOrder = []string{
 	"lea_audit_log",
+	// Migration 062. Nothing truncated here references it, so CASCADE
+	// never reaches it and entries would accumulate across tests —
+	// listed for the same reason products and cpe_device_types are.
+	//
+	// TRUNCATE works because the harness connects as the owner; bss_app,
+	// which the services run as, is refused (see
+	// TestFR_OBS_006_TheTrailIsAppendOnlyAgainstTheApplicationRole).
+	"staff_audit_log",
+	// Migration 063. Nothing truncated here references it, so it would
+	// otherwise accumulate across tests — and this is the one table in
+	// the suite that takes a row per authentication.
+	"radius_auth_log",
+	// Migration 064. References subscribers, so CASCADE would reach it —
+	// listed for the order this slice documents, and because a leaked row
+	// would show up in another test's reconciliation counts.
+	"payment_gateway_log",
 	"collections_forecast",
 	"revenue_snapshots",
 	"lco_ledger",

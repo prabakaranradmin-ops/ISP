@@ -20,13 +20,27 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 	}{
 		// Dashboard leads every ISP-wide list because Home redirects to the
 		// first allowed section; that order is part of what is pinned here.
-		{"isp_owner", true, []string{"dashboard", "subscribers", "leads", "billing", "tickets", "invoices", "revenue", "catalogue", "products", "sessions", "cpe", "nas", "ip-pools", "network", "lea", "demo", "accounts", "franchise", "procurement", "ledger", "dunning", "diagnostics", "billing-runs", "inventory", "reports", "announcements", "logs", "tasks"}},
-		{"noc_engineer", true, []string{"dashboard", "subscribers", "sessions", "cpe", "nas", "ip-pools", "network", "lea", "inventory", "logs", "tasks"}},
-		{"billing_admin", false, []string{"dashboard", "subscribers", "leads", "billing", "invoices", "catalogue", "products", "sessions", "procurement", "ledger", "dunning", "diagnostics", "billing-runs", "inventory", "reports", "announcements", "logs", "tasks"}},
+		{"isp_owner", true, []string{"dashboard", "subscribers", "leads", "billing", "tickets", "invoices", "revenue", "catalogue", "products", "sessions", "cpe", "nas", "ip-pools", "auth-log", "network", "lea", "demo", "accounts", "audit", "franchise", "procurement", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "inventory", "reports", "announcements", "logs", "tasks"}},
+		{"noc_engineer", true, []string{"dashboard", "subscribers", "sessions", "cpe", "nas", "ip-pools", "auth-log", "network", "lea", "inventory", "logs", "tasks"}},
+		{"billing_admin", false, []string{"dashboard", "subscribers", "leads", "billing", "invoices", "catalogue", "products", "sessions", "procurement", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "inventory", "reports", "announcements", "logs", "tasks"}},
 		// Catalogue is deliberately absent for csr and technician: editing a
 		// tariff re-prices every subscriber on it and a GST change alters
 		// every invoice raised afterwards, which is not reach either role
 		// needs to answer a call or fix a line.
+		//
+		// Gateway Log (FR-PAY-001) is billing tier, same reach as the
+		// ledger: every row is money arriving from the gateway, and the
+		// ones that matter are where it arrived and reached nobody.
+		//
+		// Auth Log (FR-NET-004) is deliberately wider than IP Pools: "why
+		// can't this customer get online" is the commonest support call,
+		// and the answer is in it. Reading why an authentication failed is
+		// diagnosis, not reach over the network's address space — which is
+		// why a technician and a CSR have it and neither has IP Pools.
+		//
+		// Audit Trail (FR-OBS-006) is owner-only and appears for no other
+		// role: the trail names every action every operator has taken, so
+		// it is a record about the staff as much as about the subscribers.
 		//
 		// IP Pools (FR-NET-005) is NOC tier, like Routers: a pool
 		// describes the network's address space. Billing staff are absent
@@ -42,8 +56,8 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 		// catalogue, and attaching or ending a charge, are gated again
 		// inside the screen to owner/billing (canManageProducts), so what a
 		// CSR gains here is reading, not pricing.
-		{"csr", false, []string{"dashboard", "subscribers", "leads", "billing", "tickets", "invoices", "products", "sessions", "logs", "tasks"}},
-		{"technician", false, []string{"dashboard", "subscribers", "leads", "tickets", "sessions", "cpe", "inventory", "tasks"}},
+		{"csr", false, []string{"dashboard", "subscribers", "leads", "billing", "tickets", "invoices", "products", "sessions", "auth-log", "logs", "tasks"}},
+		{"technician", false, []string{"dashboard", "subscribers", "leads", "tickets", "sessions", "cpe", "auth-log", "inventory", "tasks"}},
 		// Franchise-scoped roles get their own restricted pair, never the
 		// ISP-wide sections above (not even the Dashboard, whose counts span
 		// every partner's subscribers) — a franchise partner's reach is My

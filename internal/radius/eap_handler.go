@@ -108,7 +108,7 @@ func (d *RadiusDaemon) eapStart(ctx context.Context, w radius.ResponseWriter, r 
 		log.Error().Err(err).Str("username", username).Msg("radius: EAP brute-force check failed")
 	} else if blocked {
 		d.writeEAPReject(w, r, pkt.Identifier)
-		d.authRejected(r)
+		d.authRejected(r, RejectLockedOut, MethodEAP)
 		return
 	}
 
@@ -271,7 +271,7 @@ func (d *RadiusDaemon) eapFinish(ctx context.Context, w radius.ResponseWriter, r
 
 	d.writeWithMessageAuthenticator(w, resp)
 	eapSessionsCompleted.WithLabelValues("accept").Inc()
-	d.authAccepted(r)
+	d.authAccepted(r, MethodEAP)
 }
 
 // eapFail ends a conversation with an MS-CHAPv2 Failure inside an
@@ -321,7 +321,7 @@ func (d *RadiusDaemon) writeEAPReject(w radius.ResponseWriter, r *radius.Request
 		log.Error().Err(err).Msg("radius: could not set EAP-Message on the reject")
 	}
 	d.writeWithMessageAuthenticator(w, resp)
-	d.authRejected(r)
+	d.authRejected(r, RejectEAPFailed, MethodEAP)
 }
 
 // writeWithMessageAuthenticator adds the Message-Authenticator attribute

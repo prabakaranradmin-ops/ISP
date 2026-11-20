@@ -1,0 +1,106 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Gateway log</h1>
+
+<p class="muted">Every payment link this system asked the gateway for, and every callback the gateway sent back
+  &mdash; <strong>whether or not it credited a wallet</strong>. A successful payment leaves a wallet ledger entry;
+  this is where the rest of the conversation lives, including the callbacks that credited nobody.
+  No signature, secret or raw request body is kept.</p>
+
+{{with $d}}
+{{if .Summary}}
+<div class="card">
+  <h3>The last {{.SummaryHours}} hours</h3>
+  {{if .Problems}}
+  <p class="alert warn"><strong>{{.Problems}}</strong> event(s) in this window need attention: money the gateway
+    accepted that did not reach a wallet, or callbacks that could not be authenticated.
+    <a href="/staff/gateway-log?problems=true">Show just those</a>.</p>
+  {{else}}
+  <p class="alert ok">Nothing needs attention in this window: every authenticated payment reached a wallet.</p>
+  {{end}}
+  <table>
+    <thead><tr><th class="right">Count</th><th>Outcome</th><th>What it means</th><th></th></tr></thead>
+    <tbody>
+    {{range .Summary}}
+      <tr>
+        <td class="num right">{{.Count}}</td>
+        <td>{{if .NeedsAttention}}<span class="pill bad">{{.Label}}</span>{{else}}{{.Label}}{{end}}</td>
+        <td class="muted small">{{.Advice}}</td>
+        <td><a href="/staff/gateway-log?status={{.Status}}">Show these</a></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+<div class="card">
+  <form method="get" action="/staff/gateway-log" class="formgrid">
+    <label>Outcome
+      <select name="status">
+        <option value="">Any</option>
+        {{range .Statuses}}<option value="{{.Key}}"{{if eq .Key $d.Status}} selected{{end}}>{{.Label}}</option>{{end}}
+      </select>
+    </label>
+    <label>Kind
+      <select name="kind">
+        <option value="">Any</option>
+        <option value="callback"{{if eq .Kind "callback"}} selected{{end}}>Callback from the gateway</option>
+        <option value="order"{{if eq .Kind "order"}} selected{{end}}>Payment link we created</option>
+      </select>
+    </label>
+    <label>Gateway payment id
+      <input name="payment_id" value="{{.PaymentID}}" placeholder="pay_...">
+      <span class="muted small">What support quotes back at you.</span>
+    </label>
+    <label>From <input type="date" name="from" value="{{.From}}"></label>
+    <label>To <input type="date" name="to" value="{{.To}}">
+      <span class="muted small">Inclusive.</span>
+    </label>
+    <button type="submit" class="primary">Filter</button>
+  </form>
+  {{if or .Status .Kind .PaymentID .From .To .ProblemsOnly}}
+  <p><a href="/staff/gateway-log">Clear the filter</a></p>
+  {{end}}
+</div>
+
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>When</th><th>Kind</th><th>Event</th><th>Gateway ids</th>
+      <th>Subscriber</th><th class="right">Amount</th><th>Outcome</th>
+    </tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr>
+        <td class="num">{{datetime .CreatedAt}}</td>
+        <td>{{.Kind}}</td>
+        <td class="num">{{.Event}}</td>
+        <td class="num">
+          {{with .GatewayPaymentID}}{{.}}{{end}}
+          {{with .GatewayOrderID}}<br><span class="muted small">{{.}}</span>{{end}}
+        </td>
+        <td>
+          {{if .SubscriberID}}<a href="/staff/subscribers/{{.SubscriberID}}">{{if .Username}}{{.Username}}{{else}}#{{.SubscriberID}}{{end}}</a>
+          {{else}}<span class="muted">none</span>{{end}}
+        </td>
+        <td class="num right">{{if .Amount}}&#8377;{{money .Amount}}{{end}}</td>
+        <td>
+          {{if .Credited}}<span class="pill ok">{{.StatusLabel}}</span>
+          {{else if .NeedsAttention}}<span class="pill bad">{{.StatusLabel}}</span>
+          {{else}}<span class="pill neutral">{{.StatusLabel}}</span>{{end}}
+          {{with .Detail}}<br><span class="muted small">{{.}}</span>{{end}}
+          {{if .NeedsAttention}}{{with .Advice}}<br><span class="muted small">{{.}}</span>{{end}}{{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">
+        {{if or $d.Status $d.Kind $d.PaymentID $d.From $d.To $d.ProblemsOnly}}No events match that filter.
+        {{else}}No gateway events recorded yet.{{end}}
+      </td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}
