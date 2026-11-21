@@ -110,6 +110,9 @@ type Handler struct {
 	replyAttrs      ReplyAttributeStore
 	fupPolicies     FUPPolicyStore
 	collection      CollectionStore
+	docArchives     DocumentArchiveStore
+	docRetriever    DocumentRetriever
+	docArchiver     InvoiceArchiver
 	gatewayLog      GatewayLogStore
 	diagnostics     DiagnosticsStore
 	billingRuns     BillingRunStore
@@ -193,6 +196,13 @@ type HandlerDeps struct {
 	FUPPolicies FUPPolicyStore
 	// Collection is the field payment collection store (FR-COL-001).
 	Collection CollectionStore
+	// DocArchives, DocRetriever and DocArchiver are the archived-document
+	// read and write seams (FR-DOC-003). All three come from the same
+	// *archive.Archiver and *db.ArchiveStore in production; separate fields
+	// so the console cannot reach the purge sweep through the read path.
+	DocArchives  DocumentArchiveStore
+	DocRetriever DocumentRetriever
+	DocArchiver  InvoiceArchiver
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeStore
 	// Products manages the product catalogue and the charges attached to
@@ -277,6 +287,9 @@ func NewHandler(deps HandlerDeps) *Handler {
 		replyAttrs:       deps.ReplyAttributes,
 		fupPolicies:      deps.FUPPolicies,
 		collection:       deps.Collection,
+		docArchives:      deps.DocArchives,
+		docRetriever:     deps.DocRetriever,
+		docArchiver:      deps.DocArchiver,
 		gatewayLog:       deps.GatewayLog,
 		diagnostics:      deps.Diagnostics,
 		billingRuns:      deps.BillingRuns,

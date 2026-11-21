@@ -89,6 +89,14 @@ const SCREENS = [
     deny: ['noc', 'csr', 'tech'],
   },
   {
+    key: 'documents',
+    url: '/staff/documents',
+    heading: 'Archived documents',
+    // Billing and the owner only: the archive holds KYC scans.
+    allow: ['owner', 'billing'],
+    deny: ['noc', 'csr', 'tech'],
+  },
+  {
     key: 'collections',
     url: '/staff/collections',
     heading: 'Collections',
@@ -354,6 +362,80 @@ test.describe('Bandwidth profiles (FR-CAT-002)', () => {
     await signIn(page, 'csr');
     const res = await page.request.get('/staff/bandwidth');
     expect(res.status()).toBe(403);
+  });
+});
+
+test.describe('Archived documents (FR-DOC-003)', () => {
+  // The screen has to be honest when there is nothing archived, and say how
+  // a document comes to be there — an empty table with no explanation reads
+  // as a broken page.
+  test('the screen explains an empty archive and how documents get there', async ({ page }) => {
+    await signIn(page, 'billing');
+    await page.goto('/staff/documents?subscriber_id=1');
+
+    await expect(page.getByRole('heading', { name: 'Archived documents', level: 1 })).toBeVisible();
+    // The claim that makes this archival rather than copying.
+    await expect(page.getByText(/Every read is verified/)).toBeVisible();
+    // And that there is no unverified way out of it.
+    await expect(page.getByText(/not a control/)).toBeVisible();
+
+    const body = (await page.textContent('body')) ?? '';
+    // Either documents are listed, or the emptiness is explained. Both are
+    // correct; silence is not.
+    const listed = body.includes('Invoice ');
+    if (!listed) {
+      await expect(page.getByText(/Nothing archived for this subscriber yet/)).toBeVisible();
+      await expect(page.getByText(/KYC document archival is not wired/)).toBeVisible();
+    }
+    await snap(page, 'documents');
+  });
+
+  // Invoices are archived when their PDF renders, so opening one puts a
+  // verified copy on this screen. That round trip is the whole feature, and
+  // it is the one thing no unit test can show: the render hook, the store
+  // and the per-subscriber join all have to line up.
+  test('rendering an invoice PDF puts a verified copy on the screen', async ({ page }) => {
+    await signIn(page, 'billing');
+
+    // Find an invoice belonging to a subscriber, through the invoices screen.
+    await page.goto('/staff/invoices');
+    const pdfLink = page.locator('a[href*="/pdf"]').first();
+    if ((await pdfLink.count()) === 0) {
+      test.skip(true, 'no invoice in the seeded data to render');
+    }
+    const href = await pdfLink.getAttribute('href');
+    // Rendering is what archives it.
+    const rendered = await page.request.get(href!);
+    expect(rendered.status(), 'the invoice PDF did not render').toBe(200);
+
+    // The archive is keyed per subscriber, and the seed's test_user is 1.
+    await page.goto('/staff/documents?subscriber_id=1');
+    const body = (await page.textContent('body')) ?? '';
+    if (!body.includes('Invoice ')) {
+      // Archival is off on this deployment (ARCHIVE_DIR unset), which the
+      // screen says plainly rather than pretending.
+      expect(body).toContain('Nothing archived for this subscriber yet');
+      test.skip(true, 'ARCHIVE_DIR is not set, so nothing is archived');
+    }
+
+    // A listed document offers both actions, and the integrity check is
+    // offered separately from the download so confirming a copy is intact
+    // does not pull a customer's documents down.
+    await expect(page.getByRole('button', { name: /Check it is intact/ }).first()).toBeVisible();
+    await expect(page.locator('a[href*="/download"]').first()).toBeVisible();
+
+    // And the check reports the copy is intact.
+    await page.getByRole('button', { name: /Check it is intact/ }).first().click();
+    await expect(page.getByText(/checksum matches/)).toBeVisible();
+  });
+
+  test('the front desk and the field cannot reach it', async ({ page }) => {
+    for (const role of ['csr', 'tech'] as const) {
+      await signIn(page, role);
+      const res = await page.request.get('/staff/documents');
+      expect(res.status(), `${role} opening /staff/documents`).toBe(403);
+      await page.getByRole('button', { name: 'Sign out' }).click();
+    }
   });
 });
 

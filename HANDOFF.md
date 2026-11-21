@@ -79,9 +79,9 @@ by one.
 | | |
 |---|---|
 | Go packages | 35 total; **24 have tests** |
-| Wiring check | **32/32** components have a production caller (2026-11-20) |
+| Wiring check | **33/33** components have a production caller (2026-11-21) |
 | Migrations | **68** applied (`001`–`068`) |
-| Browser tests | **137**, all passing (2026-11-21) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts` and `e2e/console-logs-catalogue.spec.ts` |
+| Browser tests | **142**, all passing (2026-11-21) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts` and `e2e/console-logs-catalogue.spec.ts` |
 | Lint | **6** findings on default tags, **116** with `--build-tags=integration`; none introduced by recent work, all untriaged |
 | DB integration suite | ~700s in Docker, **1000-1500s on the bundled native cluster**; carry `-timeout 45m` |
 | NFR-PERF-001 (RADIUS auth p99 ≤15ms) | **PASS at 13.224ms**, 5,000 req/s, 30s, 0 errors — `run_nfr_tests.sh`, 2026-08-16 |
@@ -167,17 +167,21 @@ settled the question in seconds.
 
 ## Known gaps worth knowing about
 
-- **The archive `Store` interface has no retrieval method.** `Put` and
-  `Delete` only — there is currently no code path to read an archived
-  document back out and re-verify it. Found 2026-08-16 while writing
-  NFR-DUR-002 into the SRS: the checksum is real and verified at write time
-  (`archive.LocalStore.Put` hashes while streaming), but "verify on
-  retrieval" can't be tested because there is no retrieval. For a compliance
-  feature holding 8-year GST invoices and 5-year KYC documents, this matters
-  more than it would elsewhere — nobody can currently prove to an auditor
-  that a specific archived document is intact without going around the
-  application and hashing the file on disk by hand. Adding `Store.Get` and a
-  restore/verify path is the natural next slice.
+- **Closed 2026-11-21 (FR-DOC-003): archived documents can now be retrieved
+  and verified.** This entry used to say the archive `Store` had `Put`/
+  `Delete` only and no way to read a document back. `Store.Get` and
+  `Archiver.Retrieve` — which hashes what it read and refuses bytes that
+  disagree with the recorded checksum — were in fact added with FR-DOC-001.
+  What stayed missing until now was a caller: only `cmd/radiusd` built an
+  `Archiver`, and only the purge sweep used it, so the archive could delete
+  documents and never read one back. An auditor still could not be shown
+  that a specific document was intact without hashing the file by hand.
+  `cmd/api` now builds one, invoices are archived when their PDF renders,
+  and the console's Documents screen verifies on every read.
+  `scripts/check_wiring.sh` tracks the retrieval path so it cannot lose its
+  caller again — which is the lesson here: a capability with no caller is
+  indistinguishable from an absent one, and this gap survived three months
+  of the code to close it already existing.
 - **`scripts/seed_local.sql` publishes demo credentials.** Bcrypt hashes for
   five staff accounts, with the password named in `TESTERS_MANUAL.md`
   (`staffpassword`). Same category as the existing `testpassword` subscriber
@@ -344,8 +348,8 @@ bash scripts/run_db_tests.sh -timeout 45m   # ~700s in Docker, up to 1500s nativ
                                             # (Docker down? see "Running the
                                             #  DB suite with Docker down")
 golangci-lint run --build-tags=integration ./...   # 116 known, none recent
-./scripts/check_wiring.sh                   # 32/32 wired
-npx playwright test e2e/staff.spec.ts e2e/portal.spec.ts     e2e/console-logs-catalogue.spec.ts      # 137 browser tests
+./scripts/check_wiring.sh                   # 33/33 wired
+npx playwright test e2e/staff.spec.ts e2e/portal.spec.ts     e2e/console-logs-catalogue.spec.ts      # 142 browser tests
 ```
 
 **Run `scripts/refresh_e2e_session.sh` before a browser suite.** Eight tests

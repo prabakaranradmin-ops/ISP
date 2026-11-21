@@ -1,0 +1,69 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Archived documents</h1>
+
+<p class="muted">Durable copies of a subscriber's invoices and KYC documents, held outside the database with a
+  SHA-256 checksum recorded from the bytes as written.</p>
+<p class="muted"><strong>Every read is verified.</strong> A document is re-hashed when it is fetched and
+  compared against the checksum taken when it was archived &mdash; so a copy that has been altered or damaged
+  since is refused rather than handed over. There is deliberately no way to download one without that check:
+  a warning next to a successful download is not a control.</p>
+
+{{with $d}}
+<div class="card">
+  <form method="get" action="/staff/documents" class="formgrid">
+    <label>Subscriber id
+      <input name="subscriber_id" value="{{if .SubscriberID}}{{.SubscriberID}}{{end}}" placeholder="e.g. 42" required>
+      <span class="muted small">Documents are held per subscriber. Open a subscriber from the directory to
+        find their id.</span>
+    </label>
+    <button type="submit" class="primary">Show documents</button>
+  </form>
+</div>
+
+{{if .SubscriberID}}
+<div class="card table-card">
+  <h3>Subscriber #{{.SubscriberID}} &mdash; {{len .Rows}} archived document(s)</h3>
+  <table>
+    <thead><tr>
+      <th>Document</th><th>Dated</th><th>Archived</th><th class="right">Size</th>
+      <th>Keep until</th><th>Where</th><th></th>
+    </tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr>
+        <td>{{.Title}}</td>
+        <td class="num small">{{.SubjectOn}}</td>
+        <td class="num small">{{.ArchivedOn}}</td>
+        <td class="num right">{{.SizeLabel}}</td>
+        <td class="num small">
+          {{if .RetainUntil}}{{.RetainUntil}}
+          {{else}}<span class="muted">indefinitely</span>{{end}}
+        </td>
+        <td class="num small">{{.StorageBackend}}</td>
+        <td class="actions">
+          <form method="post" action="/staff/documents/{{.ID}}/verify" class="inline">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="hidden" name="subscriber_id" value="{{.SubscriberID}}">
+            <button type="submit">Check it is intact</button>
+          </form>
+          <a class="button" href="/staff/documents/{{.ID}}/download?subscriber_id={{.SubscriberID}}">Download</a>
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">
+        Nothing archived for this subscriber yet. Invoices are archived when their PDF is first generated,
+        so opening an invoice once will put a copy here. KYC document archival is not wired on this
+        deployment.
+      </td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="muted small">A purged document is not listed: once its retention period ends the bytes are
+    deleted, and only the record that it was held and disposed of on schedule remains.</p>
+</div>
+{{else}}
+<div class="card"><p class="empty">Enter a subscriber id above to see what has been archived for them.</p></div>
+{{end}}
+{{end}}
+{{end}}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/maaransoft/isp-bss-oss/internal/archive"
 )
 
@@ -133,4 +135,108 @@ func (s *ArchiveStore) GetArchive(ctx context.Context, docKind string, entityID 
 		return nil, fmt.Errorf("db: get archive of %s %d: %w", docKind, entityID, err)
 	}
 	return &r, nil
+}
+
+// archiveColumns is the row shape every read here scans.
+const archiveColumns = `
+	id, doc_kind, entity_id, storage_backend, storage_url,
+	checksum_sha256, size_bytes, archived_at, retain_until, purged_at`
+
+func scanArchive(row pgx.Row, r *archive.Record) error {
+	return row.Scan(&r.ID, &r.DocKind, &r.EntityID, &r.StorageBackend, &r.StorageURL,
+		&r.ChecksumSHA256, &r.SizeBytes, &r.ArchivedAt, &r.RetainUntil, &r.PurgedAt)
+}
+
+// GetArchiveByID returns one live archive row — FR-DOC-003.
+//
+// Addressed by the archive's own id rather than by kind and entity, because
+// the console browses a list and then asks for a specific row from it. A
+// purged row is reported as absent rather than returned: its bytes are gone,
+// so handing back a record whose retrieval must fail would turn one clear
+// "that document has been purged" into a checksum error that reads like
+// corruption.
+func (s *ArchiveStore) GetArchiveByID(ctx context.Context, id int64) (*archive.Record, error) {
+	const q = `SELECT ` + archiveColumns + `
+		  FROM document_archives
+		 WHERE id = $1 AND purged_at IS NULL`
+
+	var r archive.Record
+	if err := scanArchive(s.pool.QueryRow(ctx, q, id), &r); err != nil {
+		if isNoRows(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("db: get archive %d: %w", id, err)
+	}
+	return &r, nil
+}
+
+// ListSubscriberArchives returns a subscriber's archived documents, newest
+// first — FR-DOC-003.
+//
+// document_archives has no subscriber_id: it stores a doc_kind and an
+// entity_id, and what that entity is differs per kind. So the subscriber is
+// resolved per kind by joining the table the entity actually lives in, which
+// is also what keeps the list honest — a row whose entity has been deleted
+// does not appear under a subscriber it can no longer be attributed to.
+//
+// Reports are deliberately absent: a report export belongs to the operator
+// who asked for it, not to a subscriber, and listing one under somebody's
+// name would imply it is about them.
+func (s *ArchiveStore) ListSubscriberArchives(ctx context.Context, subscriberID int) ([]archive.SubscriberDocument, error) {
+	const q = `
+		SELECT a.id, a.doc_kind, a.entity_id, a.storage_backend, a.storage_url,
+		       a.checksum_sha256, a.size_bytes, a.archived_at, a.retain_until, a.purged_at,
+		       i.created_at AS subject_at
+		  FROM document_archives a
+		  JOIN invoices i ON i.id = a.entity_id AND i.subscriber_id = $1
+		 WHERE a.doc_kind = 'invoice' AND a.purged_at IS NULL
+		UNION ALL
+		SELECT a.id, a.doc_kind, a.entity_id, a.storage_backend, a.storage_url,
+		       a.checksum_sha256, a.size_bytes, a.archived_at, a.retain_until, a.purged_at,
+		       k.created_at
+		  FROM document_archives a
+		  JOIN kyc_verifications k ON k.id = a.entity_id AND k.subscriber_id = $1
+		 WHERE a.doc_kind = 'kyc_document' AND a.purged_at IS NULL
+		 ORDER BY archived_at DESC`
+
+	rows, err := s.pool.Query(ctx, q, subscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list archives for subscriber %d: %w", subscriberID, err)
+	}
+	defer rows.Close()
+
+	var out []archive.SubscriberDocument
+	for rows.Next() {
+		var d archive.SubscriberDocument
+		d.SubscriberID = subscriberID
+		if err := rows.Scan(&d.ID, &d.DocKind, &d.EntityID, &d.StorageBackend, &d.StorageURL,
+			&d.ChecksumSHA256, &d.SizeBytes, &d.ArchivedAt, &d.RetainUntil, &d.PurgedAt,
+			&d.SubjectAt); err != nil {
+			return nil, fmt.Errorf("db: scan subscriber archive: %w", err)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// SubscriberForArchive resolves which subscriber an archive row belongs to,
+// or 0 when it belongs to none (a report).
+//
+// Read before serving a document, so a retrieval cannot be used to reach a
+// row by guessing its id and have it served under a subscriber it has
+// nothing to do with.
+func (s *ArchiveStore) SubscriberForArchive(ctx context.Context, id int64) (int, error) {
+	const q = `
+		SELECT COALESCE((SELECT i.subscriber_id
+		                   FROM document_archives a JOIN invoices i ON i.id = a.entity_id
+		                  WHERE a.id = $1 AND a.doc_kind = 'invoice'),
+		                (SELECT k.subscriber_id
+		                   FROM document_archives a JOIN kyc_verifications k ON k.id = a.entity_id
+		                  WHERE a.id = $1 AND a.doc_kind = 'kyc_document'),
+		                0)`
+	var subscriberID int
+	if err := s.pool.QueryRow(ctx, q, id).Scan(&subscriberID); err != nil {
+		return 0, fmt.Errorf("db: subscriber for archive %d: %w", id, err)
+	}
+	return subscriberID, nil
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -341,4 +342,78 @@ func sanitiseFilename(name string) string {
 		cleaned = cleaned[:100]
 	}
 	return cleaned
+}
+
+// ErrNotFound covers both "no such archive row" and "purged", which are the
+// same thing to a caller asking for bytes — FR-DOC-003.
+//
+// This and ErrNotTheirs live here rather than in internal/api because the
+// console has to tell them apart from a corrupt document and from a storage
+// failure, and it cannot import internal/api: *api.Handler is what satisfies
+// the console's interfaces, so the dependency runs the other way.
+var ErrNotFound = errors.New("archive: archived document not found")
+
+// ErrNotTheirs is returned when an archive row does not belong to the
+// subscriber it was requested under. Guessing an archive id must not serve
+// somebody else's KYC scan.
+var ErrNotTheirs = errors.New("archive: that document does not belong to this subscriber")
+
+// SubscriberDocument is one archived document attributed to a subscriber —
+// FR-DOC-003.
+//
+// document_archives stores only a doc_kind and an entity_id, so the
+// attribution is resolved per kind by the store. SubjectAt is when the thing
+// the document is about happened — the invoice's date, the KYC check's date —
+// which is what an operator looking for "the invoice from March" is
+// searching by, and is not the same as ArchivedAt.
+type SubscriberDocument struct {
+	Record
+	SubscriberID int
+	SubjectAt    time.Time
+}
+
+// Describe names a document the way an operator would ask for it.
+//
+// Lives here rather than in the console because the mapping from a doc_kind
+// to a human name is a property of the kinds this package defines, and two
+// screens naming the same kind differently is how an operator ends up
+// believing there are two sorts of document.
+func (r Record) Describe() string {
+	switch r.DocKind {
+	case KindInvoice:
+		// Matches the invoice numbering the rest of the system shows, so
+		// the archive can be matched against a customer's copy.
+		return fmt.Sprintf("Invoice %06d", r.EntityID)
+	case KindKYC:
+		return "KYC document"
+	case KindReport:
+		return fmt.Sprintf("Report export %d", r.EntityID)
+	default:
+		return fmt.Sprintf("%s %d", r.DocKind, r.EntityID)
+	}
+}
+
+// Retrievable reports whether this row's bytes can still be fetched. A purged
+// row keeps its metadata — what was held, and that it was disposed of on
+// schedule, is itself the record a retention audit asks for — but the bytes
+// are gone.
+func (r Record) Retrievable() bool { return r.PurgedAt == nil }
+
+// ArchiveInvoice stores an invoice PDF and returns the row it recorded.
+//
+// A named convenience over Archive for the same reason ArchiveReport is one:
+// the caller is serving a download and already holds the whole document, and
+// threading a bytes.Reader through the general path at that call site reads
+// worse than saying what is happening.
+//
+// Idempotent on the invoice: Archive's storage key is derived from the kind
+// and entity id, and RecordArchive upserts on the same pair, so re-rendering
+// an invoice overwrites its own copy instead of accumulating one per view.
+func (a *Archiver) ArchiveInvoice(ctx context.Context, invoiceID int, body []byte) (*Record, error) {
+	return a.Archive(ctx, Document{
+		Kind:     KindInvoice,
+		EntityID: invoiceID,
+		Filename: fmt.Sprintf("invoice-%06d.pdf", invoiceID),
+		Body:     bytes.NewReader(body),
+	})
 }

@@ -263,6 +263,8 @@ type HandlerDeps struct {
 	FUPPolicies FUPPolicyManager
 	// Collection manages field payment collection rounds (FR-COL-001).
 	Collection CollectionManager
+	// Documents reads archived documents and verifies them (FR-DOC-003).
+	Documents DocumentManager
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeManager
 	// Products manages the product catalogue and the charges attached to
@@ -333,6 +335,7 @@ type Handler struct {
 	replyAttrs         ReplyAttrManager
 	fupPolicies        FUPPolicyManager
 	collection         CollectionManager
+	documents          DocumentManager
 	audit              AuditReader
 	authLog            AuthLogReader
 	gatewayLog         GatewayLogReader
@@ -394,6 +397,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		replyAttrs:         deps.ReplyAttrs,
 		fupPolicies:        deps.FUPPolicies,
 		collection:         deps.Collection,
+		documents:          deps.Documents,
 		audit:              deps.Audit,
 		authLog:            deps.AuthLog,
 		gatewayLog:         deps.GatewayLog,
@@ -528,6 +532,13 @@ var sections = []Section{
 	// owner-level decision by definition.
 	{"accounts", "Staff Accounts", "/staff/accounts",
 		[]string{"isp_owner"}, false},
+	// Archived documents (FR-DOC-003). Billing and the owner: the archive
+	// holds invoice PDFs and KYC scans, which is the reach those already
+	// have. Deliberately not CSR or technician — a KYC scan is a
+	// customer's identity documents, and the DPDP Act's purpose-limitation
+	// principle is not satisfied by "the front desk might want to look".
+	{"documents", "Documents", "/staff/documents",
+		[]string{"isp_owner", "billing_admin"}, false},
 	// Owner-only, as FR-OBS-006 specifies: the trail names every action
 	// every operator has taken, which is a record about the staff as much
 	// as about the subscribers. Append-only in the database (migration
@@ -673,6 +684,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/billing-runs", h.authed(h.BillingRuns))
 	mux.Handle("GET /staff/gateway-log", h.authed(h.GatewayLog))
 	mux.Handle("GET /staff/collections", h.authed(h.Collections))
+	mux.Handle("GET /staff/documents", h.authed(h.Documents))
+	mux.Handle("GET /staff/documents/{id}/download", h.authed(h.DownloadDocument))
+	mux.Handle("POST /staff/documents/{id}/verify", h.authed(h.requireCSRF(h.VerifyDocument)))
 	mux.Handle("POST /staff/collections/assign", h.authed(h.requireCSRF(h.AssignCollectorForm)))
 	mux.Handle("POST /staff/collections/{id}/payment", h.authed(h.requireCSRF(h.RecordCollectionForm)))
 	mux.Handle("GET /staff/billing-runs/{id}", h.authed(h.BillingRun))

@@ -20,9 +20,9 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 	}{
 		// Dashboard leads every ISP-wide list because Home redirects to the
 		// first allowed section; that order is part of what is pinned here.
-		{"isp_owner", true, []string{"dashboard", "subscribers", "leads", "billing", "tickets", "invoices", "revenue", "catalogue", "products", "bandwidth", "fair-use", "sessions", "cpe", "nas", "ip-pools", "auth-log", "plan-attributes", "network", "lea", "demo", "accounts", "audit", "franchise", "procurement", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "collections", "inventory", "reports", "announcements", "logs", "tasks"}},
+		{"isp_owner", true, []string{"dashboard", "subscribers", "leads", "billing", "tickets", "invoices", "revenue", "catalogue", "products", "bandwidth", "fair-use", "sessions", "cpe", "nas", "ip-pools", "auth-log", "plan-attributes", "network", "lea", "demo", "accounts", "documents", "audit", "franchise", "procurement", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "collections", "inventory", "reports", "announcements", "logs", "tasks"}},
 		{"noc_engineer", true, []string{"dashboard", "subscribers", "sessions", "cpe", "nas", "ip-pools", "auth-log", "plan-attributes", "network", "lea", "inventory", "logs", "tasks"}},
-		{"billing_admin", false, []string{"dashboard", "subscribers", "leads", "billing", "invoices", "catalogue", "products", "bandwidth", "fair-use", "sessions", "procurement", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "collections", "inventory", "reports", "announcements", "logs", "tasks"}},
+		{"billing_admin", false, []string{"dashboard", "subscribers", "leads", "billing", "invoices", "catalogue", "products", "bandwidth", "fair-use", "sessions", "documents", "procurement", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "collections", "inventory", "reports", "announcements", "logs", "tasks"}},
 		// Catalogue is deliberately absent for csr and technician: editing a
 		// tariff re-prices every subscriber on it and a GST change alters
 		// every invoice raised afterwards, which is not reach either role

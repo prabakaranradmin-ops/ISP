@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
+	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 )
 
@@ -215,7 +216,25 @@ func (h *Handler) RenderInvoicePDF(ctx context.Context, invoiceID int) ([]byte, 
 	if detail == nil {
 		return nil, ErrInvoiceNotFound
 	}
-	return h.pdfGen.GeneratePDF(ctx, BuildInvoiceData(detail))
+	body, err := h.pdfGen.GeneratePDF(ctx, BuildInvoiceData(detail))
+	if err != nil {
+		return nil, err
+	}
+
+	// Keep a durable, checksummed copy (FR-DOC-001's write side for
+	// invoices, which FR-DOC-003's per-subscriber browse needs something to
+	// show). Rendering is the only moment the bytes exist, so it is the
+	// only place this can happen without generating the PDF twice.
+	//
+	// Best-effort and deliberately after the render: a subscriber must not
+	// be refused their invoice because archival storage is full or
+	// unconfigured. Logged rather than returned, because the caller is
+	// already committed to serving the download.
+	if err := h.ArchiveInvoicePDF(ctx, invoiceID, body); err != nil {
+		log.Warn().Err(err).Int("invoice_id", invoiceID).
+			Msg("api: invoice rendered but not archived; the download is unaffected")
+	}
+	return body, nil
 }
 
 // GetInvoicePDF handles GET /api/v1/invoices/{invoice_id}/pdf.

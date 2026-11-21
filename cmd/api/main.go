@@ -27,6 +27,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
+	"github.com/maaransoft/isp-bss-oss/internal/archive"
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/cache"
 	"github.com/maaransoft/isp-bss-oss/internal/config"
@@ -199,6 +200,25 @@ func run(ctx context.Context) error {
 	// authorisation middleware.
 	healthHandler := health.NewHandler(database.Health(), sessions)
 
+	// Document archival (FR-DOC-001) and its read side (FR-DOC-003). Only
+	// cmd/radiusd had an Archiver, which is why the retrieval and
+	// verify-on-read that internal/archive has had all along was
+	// unreachable: nothing in the API process could call it. Nil when
+	// ARCHIVE_DIR is unset, and every path that uses it answers a readable
+	// 503 rather than panicking.
+	var docArchiver *archive.Archiver
+	if cfg.ArchiveDir != "" {
+		archiveStore, err := archive.NewLocalStore(cfg.ArchiveDir)
+		if err != nil {
+			return fmt.Errorf("document archive storage: %w", err)
+		}
+		docArchiver = archive.NewArchiver(archiveStore, database.Archive())
+		log.Info().Str("dir", cfg.ArchiveDir).
+			Msg("api: document archival enabled; invoices are archived on render and retrievable with checksum verification")
+	} else {
+		log.Warn().Msg("api: ARCHIVE_DIR unset — documents are not archived and the Documents screen will say so")
+	}
+
 	apiHandler := api.NewHandler(api.HandlerDeps{
 		DB:       database.API(),
 		KYC:      database.API(),
@@ -248,6 +268,13 @@ func run(ctx context.Context) error {
 		// Reusable bandwidth profiles (FR-CAT-002) live on the same store as
 		// the rest of the router estate.
 		Bandwidth: database.NAS(),
+		// Archived documents (FR-DOC-003). The row reads come from the
+		// store; retrieval and the invoice write go through the Archiver,
+		// which is what performs the checksum comparison. Separate fields
+		// so the console's read path cannot reach the purge sweep.
+		DocArchives:  database.Archive(),
+		DocRetriever: docArchiverOrNil(docArchiver),
+		DocArchiver:  invoiceArchiverOrNil(docArchiver),
 		// Per-plan RADIUS reply attributes (FR-CAT-004), same store.
 		ReplyAttributes: database.NAS(),
 		// Multi-tier fair-use policies and data top-ups (FR-CAT-003) sit on
@@ -447,6 +474,7 @@ func run(ctx context.Context) error {
 		ReplyAttrs:  apiHandler,
 		FUPPolicies: apiHandler,
 		Collection:  apiHandler,
+		Documents:   apiHandler,
 		Audit:       database.Audit(),
 		AuthLog:     database.AuthLog(),
 		GatewayLog:  database.GatewayLog(),
@@ -682,4 +710,24 @@ func (s staffTicketStore) ListTickets(ctx context.Context, subscriberID int) ([]
 
 func (s staffTicketStore) UpdateTicketAdmin(ctx context.Context, ticketID int, status *string, assignedTo *int, priority *string) (*api.TicketRecord, error) {
 	return s.admin.UpdateTicketAdmin(ctx, ticketID, status, assignedTo, priority)
+}
+
+// docArchiverOrNil keeps a nil *archive.Archiver out of the interface field.
+//
+// Assigning a typed nil pointer to an interface yields a non-nil interface,
+// so the handler's `if h.docRetriever == nil` guard would pass and the call
+// would panic on a nil receiver. Returning an untyped nil is what makes
+// "archival is not configured" detectable at the other end.
+func docArchiverOrNil(a *archive.Archiver) api.DocumentRetriever {
+	if a == nil {
+		return nil
+	}
+	return a
+}
+
+func invoiceArchiverOrNil(a *archive.Archiver) api.InvoiceArchiver {
+	if a == nil {
+		return nil
+	}
+	return a
 }

@@ -142,6 +142,13 @@ COMPONENTS=(
     # scoped-write check lives behind the same store, so losing it would
     # also lose the assignment-as-permission rule.
     "ListCollectionRound:field collection rounds from the console (FR-COL-001)"
+    # Archived-document retrieval (FR-DOC-003). This is the component the
+    # check exists for: internal/archive has had Retrieve with verify-on-read
+    # since FR-DOC-001, fully unit-tested, and it had no production caller at
+    # all — NFR-DUR-002's gap stayed open while the code to close it sat
+    # there. Only the purge sweep was wired, so the archive could delete
+    # documents and never read one back.
+    "RetrieveSubscriberDocument:archived document retrieval with checksum verification (FR-DOC-003)"
 )
 
 if [ "${1:-}" = "--list" ]; then
