@@ -81,6 +81,10 @@ type DirectoryFilter struct {
 	// View is one of DirectoryViews, or "" for none. An unknown value is an
 	// error, not "everybody", so a broken tile link is visible as one.
 	View string
+	// GroupID narrows the list to one named subscriber group
+	// (FR-GRP-001); 0 means no restriction. An id rather than a name,
+	// because two retired groups may share a name with a live one.
+	GroupID int
 	// Limit caps the rows returned; <= 0 means the store's default.
 	Limit int
 }

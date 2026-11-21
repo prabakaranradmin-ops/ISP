@@ -30,8 +30,9 @@ import (
 // ── Stubs ───────────────────────────────────────────────────────────────────
 
 type stubReports struct {
-	mu    sync.Mutex
-	calls []*int // franchise scope each query received
+	mu     sync.Mutex
+	calls  []*int // franchise scope each query received
+	groups []*int // group filter each roster query received
 }
 
 func (s *stubReports) record(f *int) {
@@ -69,6 +70,19 @@ func (s *stubReports) FranchiseCollection(_ context.Context, _ int, f *int) ([]r
 	return []reporting.CollectionRow{{
 		FranchiseID: 1, FranchiseName: "North", FranchiseStatus: "active", Month: time.Now(),
 		Billed: decimal.NewFromInt(100), Collected: decimal.NewFromInt(90), Commission: decimal.Zero,
+	}}, nil
+}
+
+// SubscriberRoster records the group it was asked for as well as the scope,
+// because the group is the whole point of this report — FR-GRP-001.
+func (s *stubReports) SubscriberRoster(_ context.Context, group, f *int) ([]reporting.SubscriberRosterRow, error) {
+	s.record(f)
+	s.mu.Lock()
+	s.groups = append(s.groups, group)
+	s.mu.Unlock()
+	return []reporting.SubscriberRosterRow{{
+		SubscriberID: 1, Username: "a@isp", Status: "active", PlanName: "100 Mbps",
+		MobileNumber: "+919876543210", Groups: []string{"Anna Nagar"}, CreatedAt: time.Now(),
 	}}, nil
 }
 
@@ -374,5 +388,105 @@ func TestFR_RPT_002_DegradesWhenUnconfigured(t *testing.T) {
 	if rec := reportCall(t, reportsMux(&stubReports{}, nil, &stubTaskEnqueuer{}), http.MethodGet,
 		"/api/v1/reports/exports/1", hotspotStaffToken(t, "isp_owner"), ""); rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("no archive store: want 503, got %d", rec.Code)
+	}
+}
+
+// ── Group filtering — FR-GRP-001 ────────────────────────────────────────────
+
+func TestFR_GRP_001_TheRosterCanBeFilteredToAGroup(t *testing.T) {
+	reports := &stubReports{}
+	mux := reportsMux(reports, nil, nil)
+
+	rec := reportCall(t, mux, http.MethodGet,
+		"/api/v1/reports/"+reporting.ReportSubscribers+"?group_id=3",
+		hotspotStaffToken(t, "isp_owner"), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d — %s", rec.Code, rec.Body.String())
+	}
+
+	reports.mu.Lock()
+	groups := append([]*int(nil), reports.groups...)
+	reports.mu.Unlock()
+	if len(groups) != 1 {
+		t.Fatalf("the roster query ran %d times", len(groups))
+	}
+	if groups[0] == nil || *groups[0] != 3 {
+		t.Fatalf("the group filter reached the store as %v, want 3 — a dropped filter would "+
+			"return the whole base under a heading naming one group", groups[0])
+	}
+
+	// And the CSV path carries it too.
+	rec = reportCall(t, mux, http.MethodGet,
+		"/api/v1/reports/"+reporting.ReportSubscribers+"?group_id=3&format=csv",
+		hotspotStaffToken(t, "isp_owner"), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("CSV: want 200, got %d", rec.Code)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "group-3") {
+		t.Errorf("the download name does not name the group: %q", cd)
+	}
+}
+
+// 422 with an explanation, not a 500 and not a silently unfiltered report. The
+// check has to happen before the CSV headers go out, or the caller gets a 200
+// with an empty attachment.
+func TestFR_GRP_001_AGroupFilterOnAnAggregateReportIsRefused(t *testing.T) {
+	for _, report := range []string{reporting.ReportPlanMix, reporting.ReportGrowth,
+		reporting.ReportTicketResolution, reporting.ReportCollection} {
+		for _, format := range []string{"", "&format=csv"} {
+			t.Run(report+format, func(t *testing.T) {
+				reports := &stubReports{}
+				mux := reportsMux(reports, nil, nil)
+				rec := reportCall(t, mux, http.MethodGet,
+					"/api/v1/reports/"+report+"?group_id=3"+format,
+					hotspotStaffToken(t, "isp_owner"), "")
+
+				if rec.Code != http.StatusUnprocessableEntity {
+					t.Fatalf("want 422, got %d — %s", rec.Code, rec.Body.String())
+				}
+				if !strings.Contains(rec.Body.String(), reporting.ReportSubscribers) {
+					t.Errorf("the refusal does not say which report does support it: %s", rec.Body.String())
+				}
+				if n := len(reports.scopes()); n != 0 {
+					t.Errorf("%d quer(ies) ran for a refused request", n)
+				}
+			})
+		}
+	}
+}
+
+func TestFR_GRP_001_ABadGroupIdIsRejected(t *testing.T) {
+	for _, raw := range []string{"notanumber", "0", "-1"} {
+		reports := &stubReports{}
+		mux := reportsMux(reports, nil, nil)
+		rec := reportCall(t, mux, http.MethodGet,
+			"/api/v1/reports/"+reporting.ReportSubscribers+"?group_id="+raw,
+			hotspotStaffToken(t, "isp_owner"), "")
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("group_id=%q got %d, want 422", raw, rec.Code)
+		}
+		if n := len(reports.scopes()); n != 0 {
+			t.Errorf("group_id=%q reached the store", raw)
+		}
+	}
+}
+
+// A franchise-scoped caller may use a group, but the franchise predicate still
+// applies — a group is a label on your own customers, not a way past the
+// partition between partners.
+func TestFR_GRP_001_AGroupDoesNotWidenAFranchiseScope(t *testing.T) {
+	reports := &stubReports{}
+	mux := reportsMux(reports, nil, nil)
+
+	rec := reportCall(t, mux, http.MethodGet,
+		"/api/v1/reports/"+reporting.ReportSubscribers+"?group_id=3",
+		scopedToken(t, "lco", 7), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d — %s", rec.Code, rec.Body.String())
+	}
+
+	scopes := reports.scopes()
+	if len(scopes) != 1 || scopes[0] == nil || *scopes[0] != 7 {
+		t.Fatalf("the franchise scope reached the store as %v, want 7", scopes)
 	}
 }

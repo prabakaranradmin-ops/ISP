@@ -16,7 +16,7 @@ var _ api.AnnouncementQuerier = (*AnnouncementStore)(nil)
 
 const announcementColumns = `
 	id, title, body, channels, class,
-	segment_franchise_id, segment_plan_id, segment_status,
+	segment_franchise_id, segment_plan_id, segment_status, segment_group_id,
 	show_in_portal, status, recipient_count, created_by_username,
 	created_at, sent_at`
 
@@ -24,7 +24,7 @@ func scanAnnouncement(row interface{ Scan(dest ...any) error }) (*notifications.
 	var a notifications.Announcement
 	err := row.Scan(
 		&a.ID, &a.Title, &a.Body, &a.Channels, &a.Class,
-		&a.SegmentFranchiseID, &a.SegmentPlanID, &a.SegmentStatus,
+		&a.SegmentFranchiseID, &a.SegmentPlanID, &a.SegmentStatus, &a.SegmentGroupID,
 		&a.ShowInPortal, &a.Status, &a.RecipientCount, &a.CreatedBy,
 		&a.CreatedAt, &a.SentAt,
 	)
@@ -42,9 +42,9 @@ func (s *AnnouncementStore) CreateAnnouncement(ctx context.Context, a notificati
 		WITH ins AS (
 			INSERT INTO announcements (
 				title, body, channels, class,
-				segment_franchise_id, segment_plan_id, segment_status,
+				segment_franchise_id, segment_plan_id, segment_status, segment_group_id,
 				show_in_portal, created_by_username
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 			RETURNING *
 		)
 		SELECT ` + announcementColumns + ` FROM ins`
@@ -52,7 +52,7 @@ func (s *AnnouncementStore) CreateAnnouncement(ctx context.Context, a notificati
 	if len(a.SubscriberIDs) == 0 {
 		created, err := scanAnnouncement(s.pool.QueryRow(ctx, insertQ,
 			a.Title, a.Body, a.Channels, a.Class,
-			a.SegmentFranchiseID, a.SegmentPlanID, a.SegmentStatus,
+			a.SegmentFranchiseID, a.SegmentPlanID, a.SegmentStatus, a.SegmentGroupID,
 			a.ShowInPortal, a.CreatedBy))
 		if err != nil {
 			return nil, fmt.Errorf("db: create announcement: %w", err)
@@ -65,7 +65,7 @@ func (s *AnnouncementStore) CreateAnnouncement(ctx context.Context, a notificati
 		var err error
 		created, err = scanAnnouncement(tx.QueryRow(ctx, insertQ,
 			a.Title, a.Body, a.Channels, a.Class,
-			a.SegmentFranchiseID, a.SegmentPlanID, a.SegmentStatus,
+			a.SegmentFranchiseID, a.SegmentPlanID, a.SegmentStatus, a.SegmentGroupID,
 			a.ShowInPortal, a.CreatedBy))
 		if err != nil {
 			return fmt.Errorf("insert announcement: %w", err)
@@ -144,6 +144,9 @@ func (s *AnnouncementStore) ListPortalAnnouncements(ctx context.Context, subscri
 		        AND (a.segment_franchise_id IS NULL OR s.franchise_id = a.segment_franchise_id)
 		        AND (a.segment_plan_id      IS NULL OR s.plan_id      = a.segment_plan_id)
 		        AND (a.segment_status       IS NULL OR s.status       = a.segment_status)
+		        AND (a.segment_group_id     IS NULL OR EXISTS (
+		              SELECT 1 FROM subscriber_group_members m
+		               WHERE m.group_id = a.segment_group_id AND m.subscriber_id = s.id))
 		  )
 		ORDER BY a.created_at DESC
 		LIMIT 20`
@@ -215,13 +218,17 @@ func (s *AnnouncementStore) FinishAnnouncement(ctx context.Context, id int, stat
 // given at creation, otherwise the franchise/plan/status segment filters.
 //
 // Each NULL filter means "no restriction on this dimension", so a segment
-// announcement with all three unset addresses the whole base. Terminated
+// announcement with all four unset addresses the whole base. The group
+// dimension (FR-GRP-001) is applied here, in CountAnnouncementAudience and
+// in ListPortalAnnouncements — all three, deliberately: a group-targeted
+// announcement that sent by SMS but did not appear in the portal, or
+// counted a reach it did not have, is worse than one that did neither. Terminated
 // subscribers are excluded unconditionally from the segment path: they have
 // left, and a marketing broadcast to a former customer is at best noise and
 // at worst a compliance problem. An explicit recipient list is not filtered
 // the same way — the console picked those subscribers by hand, so their
 // current status is the operator's call, not this query's.
-func (s *AnnouncementStore) ListSegmentSubscriberIDs(ctx context.Context, announcementID int, franchiseID, planID *int, status *string) ([]int, error) {
+func (s *AnnouncementStore) ListSegmentSubscriberIDs(ctx context.Context, announcementID int, franchiseID, planID *int, status *string, groupID *int) ([]int, error) {
 	explicit, err := s.listExplicitRecipients(ctx, announcementID)
 	if err != nil {
 		return nil, err
@@ -231,14 +238,17 @@ func (s *AnnouncementStore) ListSegmentSubscriberIDs(ctx context.Context, announ
 	}
 
 	const q = `
-		SELECT id FROM subscribers
+		SELECT id FROM subscribers s
 		WHERE status <> 'terminated'
 		  AND ($1::int  IS NULL OR franchise_id = $1)
 		  AND ($2::int  IS NULL OR plan_id      = $2)
 		  AND ($3::text IS NULL OR status       = $3)
+		  AND ($4::int  IS NULL OR EXISTS (
+		        SELECT 1 FROM subscriber_group_members m
+		         WHERE m.group_id = $4 AND m.subscriber_id = s.id))
 		ORDER BY id`
 
-	rows, err := s.pool.Query(ctx, q, franchiseID, planID, status)
+	rows, err := s.pool.Query(ctx, q, franchiseID, planID, status, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("db: resolve announcement segment: %w", err)
 	}

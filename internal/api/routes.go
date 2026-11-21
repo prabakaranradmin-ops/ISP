@@ -107,6 +107,7 @@ type Handler struct {
 	planChanges     PlanChangeStore
 	ipPools         IPPoolStore
 	bandwidth       BandwidthProfileStore
+	groups          SubscriberGroupStore
 	replyAttrs      ReplyAttributeStore
 	fupPolicies     FUPPolicyStore
 	collection      CollectionStore
@@ -192,6 +193,9 @@ type HandlerDeps struct {
 	IPPools IPPoolStore
 	// Bandwidth is the reusable bandwidth profile store (FR-CAT-002).
 	Bandwidth BandwidthProfileStore
+
+	// Groups is the named subscriber group store (FR-GRP-001).
+	Groups SubscriberGroupStore
 	// ReplyAttributes is the per-plan RADIUS reply attribute store (FR-CAT-004).
 	ReplyAttributes ReplyAttributeStore
 	// FUPPolicies is the multi-tier fair-use policy and top-up store (FR-CAT-003).
@@ -290,6 +294,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		planChanges:      deps.PlanChanges,
 		ipPools:          deps.IPPools,
 		bandwidth:        deps.Bandwidth,
+		groups:           deps.Groups,
 		replyAttrs:       deps.ReplyAttributes,
 		fupPolicies:      deps.FUPPolicies,
 		collection:       deps.Collection,

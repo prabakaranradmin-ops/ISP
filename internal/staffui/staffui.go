@@ -257,6 +257,8 @@ type HandlerDeps struct {
 	IPPools IPPoolManager
 	// Bandwidth manages the reusable bandwidth profiles (FR-CAT-002).
 	Bandwidth BandwidthManager
+	// Groups manages named subscriber groups (FR-GRP-001).
+	Groups GroupManager
 	// ReplyAttrs manages per-plan RADIUS reply attributes (FR-CAT-004).
 	ReplyAttrs ReplyAttrManager
 	// FUPPolicies manages multi-tier fair-use policies (FR-CAT-003).
@@ -334,6 +336,7 @@ type Handler struct {
 	planChanges        PlanChangeManager
 	ipPools            IPPoolManager
 	bandwidth          BandwidthManager
+	groups             GroupManager
 	replyAttrs         ReplyAttrManager
 	fupPolicies        FUPPolicyManager
 	collection         CollectionManager
@@ -397,6 +400,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		planChanges:        deps.PlanChanges,
 		ipPools:            deps.IPPools,
 		bandwidth:          deps.Bandwidth,
+		groups:             deps.Groups,
 		replyAttrs:         deps.ReplyAttrs,
 		fupPolicies:        deps.FUPPolicies,
 		collection:         deps.Collection,
@@ -477,6 +481,16 @@ var sections = []Section{
 	// the Routers and Sessions screens either way.
 	{"bandwidth", "Bandwidth Profiles", "/staff/bandwidth",
 		[]string{"isp_owner", "billing_admin"}, false},
+	// Subscriber groups (FR-GRP-001) reach wider than the catalogue screens
+	// on purpose. A group is a label an operator puts on their own customers
+	// — a locality, an apartment block, the twenty on one feeder cable — and
+	// the people who know which customers belong together are the front desk
+	// and the NOC, not whoever sets tariffs. Nothing here changes a price or
+	// a speed; what it changes is who an announcement reaches, so every
+	// change is audited. Kept in step with canManageGroups by
+	// TestFR_GRP_001_TheSectionAndTheHandlerAgreeOnWhoCanManageGroups.
+	{"groups", "Subscriber Groups", "/staff/groups",
+		[]string{"isp_owner", "billing_admin", "csr", "noc_engineer"}, false},
 	// Fair-use policies (FR-CAT-003) sit with Bandwidth Profiles and share
 	// its reach: a policy decides the speed a plan delivers once a customer
 	// is over quota, which is part of what they were sold. Deliberately not
@@ -703,6 +717,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/leads/{id}/convert", h.authed(h.ConvertLeadPage))
 	mux.Handle("POST /staff/leads/{id}/convert", h.authed(h.requireCSRF(h.ConvertLeadForm)))
 	mux.Handle("GET /staff/catalogue", h.authed(h.Catalogue))
+	mux.Handle("GET /staff/reports/{report}", h.authed(h.ExportReportCSV))
+
+	mux.Handle("GET /staff/groups", h.authed(h.Groups))
+	mux.Handle("POST /staff/groups", h.authed(h.requireCSRF(h.CreateGroupForm)))
+	mux.Handle("POST /staff/groups/{id}", h.authed(h.requireCSRF(h.RenameGroupForm)))
+	mux.Handle("POST /staff/groups/{id}/active", h.authed(h.requireCSRF(h.SetGroupActiveForm)))
+	mux.Handle("POST /staff/groups/{id}/delete", h.authed(h.requireCSRF(h.DeleteGroupForm)))
+	mux.Handle("POST /staff/groups/{id}/members", h.authed(h.requireCSRF(h.GroupMembersForm)))
+
 	mux.Handle("GET /staff/bandwidth", h.authed(h.Bandwidth))
 	mux.Handle("GET /staff/fair-use", h.authed(h.FairUse))
 	mux.Handle("POST /staff/fair-use", h.authed(h.requireCSRF(h.SaveFUPPolicyForm)))

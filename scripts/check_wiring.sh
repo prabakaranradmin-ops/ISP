@@ -149,6 +149,15 @@ COMPONENTS=(
     # there. Only the purge sweep was wired, so the archive could delete
     # documents and never read one back.
     "RetrieveSubscriberDocument:archived document retrieval with checksum verification (FR-DOC-003)"
+
+    # Named subscriber groups (FR-GRP-001). Three entries rather than one,
+    # because the requirement is that a group filters lists, announcements
+    # AND reports, and each of those is a separate call site. A group that
+    # could be created and never used as a filter would satisfy none of
+    # them while every unit test passed.
+    "ListSubscriberGroups:named subscriber groups offered as a filter (FR-GRP-001)"
+    "AddToGroup:subscribers placed in a named group (FR-GRP-001)"
+    "SubscriberRoster:the group-filterable subscriber roster report (FR-GRP-001)"
 )
 
 if [ "${1:-}" = "--list" ]; then

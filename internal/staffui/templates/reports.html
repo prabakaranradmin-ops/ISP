@@ -8,9 +8,31 @@
   <a class="tab-btn {{if eq $d.Active "growth"}}on{{end}}" href="?report=growth">Growth &amp; churn</a>
   <a class="tab-btn {{if eq $d.Active "ticket-resolution"}}on{{end}}" href="?report=ticket-resolution">Ticket resolution</a>
   <a class="tab-btn {{if eq $d.Active "collection"}}on{{end}}" href="?report=collection">Collections</a>
+  <a class="tab-btn {{if eq $d.Active "subscribers"}}on{{end}}" href="?report=subscribers">Subscribers</a>
 </div>
 
-{{if ne $d.Active "plan-mix"}}
+{{/* Group filter — FR-GRP-001. Offered only for the report that can honour
+     it: the other four read pre-aggregated views in which no individual
+     subscriber survives to be matched against a membership, and a filter
+     that silently does not apply is worse than none. */}}
+{{if and $d.GroupFilterable $d.Groups}}
+<form class="searchbar" method="get">
+  <input type="hidden" name="report" value="{{$d.Active}}">
+  <label>Group
+    <select name="group_id" onchange="this.form.submit()">
+      <option value="">Everyone</option>
+      {{range $d.Groups}}<option value="{{.ID}}"{{if eq .ID $d.GroupID}} selected{{end}}>{{.Name}} ({{.Members}})</option>{{end}}
+    </select>
+  </label>
+  <noscript><button type="submit">Apply</button></noscript>
+  {{/* The console route, not /api/v1/reports/... — the API authenticates a
+       Bearer JWT and an operator has a session cookie, so the obvious link
+       returns 401. Both produce the same bytes via reporting.WriteCSV. */}}
+  <a class="btn" href="/staff/reports/subscribers.csv{{if $d.GroupID}}?group_id={{$d.GroupID}}{{end}}">Download CSV</a>
+</form>
+{{end}}
+
+{{if and (ne $d.Active "plan-mix") (ne $d.Active "subscribers")}}
 <form class="searchbar" method="get">
   <input type="hidden" name="report" value="{{$d.Active}}">
   <label>Months <input name="months" type="number" min="1" max="120" value="{{$d.Months}}"></label>
@@ -100,6 +122,37 @@
         <td class="right num">{{.PayingSubscribers}}</td>
       </tr>
     {{else}}<tr><td colspan="7" class="empty">No franchise activity in this window.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{if eq $d.Active "subscribers"}}
+<div class="card table-card">
+  <h3>Subscribers{{if $d.GroupID}} in this group{{end}}</h3>
+  <p class="muted small">One row per subscriber, terminated accounts excluded &mdash; so the count matches
+    the group's member count and the reach an announcement to it would have. Every group each subscriber
+    belongs to is listed, not only the one filtered on: somebody in &quot;Anna Nagar&quot; may also be in
+    &quot;Corporate&quot;, which is worth seeing before scheduling an outage.</p>
+  <table>
+    <thead><tr>
+      <th class="right">ID</th><th>Username</th><th>Status</th><th>Plan</th><th>Mobile</th>
+      <th>Groups</th><th>Since</th>
+    </tr></thead>
+    <tbody>
+    {{range $d.Roster}}
+      <tr>
+        <td class="right num">{{.SubscriberID}}</td>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td>{{humanize .Status}}</td>
+        <td>{{.PlanName}}</td>
+        <td class="small">{{.MobileNumber}}</td>
+        <td class="small">{{range $i, $g := .Groups}}{{if $i}}, {{end}}{{$g}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="small">{{.CreatedAt.Format "2 Jan 2006"}}</td>
+      </tr>
+    {{else}}<tr><td colspan="7" class="empty">
+      {{if $d.GroupID}}Nobody is in that group yet. Add members from Subscriber Groups, or from the
+      directory's group filter.{{else}}No subscribers yet.{{end}}
+    </td></tr>{{end}}
     </tbody>
   </table>
 </div>

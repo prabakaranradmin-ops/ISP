@@ -47,8 +47,10 @@ type AnnouncementInput struct {
 	SegmentFranchiseID *int
 	SegmentPlanID      *int
 	SegmentStatus      *string
-	ShowInPortal       bool
-	SubscriberIDs      []int
+	// SegmentGroupID addresses a named subscriber group (FR-GRP-001).
+	SegmentGroupID *int
+	ShowInPortal   bool
+	SubscriberIDs  []int
 }
 
 // ComposeAnnouncement validates and stores a draft. It never sends: a
@@ -74,8 +76,9 @@ func (h *Handler) ComposeAnnouncement(ctx context.Context, in AnnouncementInput)
 		return nil, announcementInvalid("an announcement needs at least one channel or show_in_portal")
 	}
 	if len(in.SubscriberIDs) > 0 {
-		if in.SegmentFranchiseID != nil || in.SegmentPlanID != nil || in.SegmentStatus != nil {
-			return nil, announcementInvalid("subscriber_ids cannot be combined with segment_franchise_id/segment_plan_id/segment_status")
+		if in.SegmentFranchiseID != nil || in.SegmentPlanID != nil || in.SegmentStatus != nil ||
+			in.SegmentGroupID != nil {
+			return nil, announcementInvalid("subscriber_ids cannot be combined with segment_franchise_id/segment_plan_id/segment_status/segment_group_id")
 		}
 		if len(in.SubscriberIDs) > maxBulkSubscribers {
 			return nil, announcementInvalid(fmt.Sprintf("subscriber_ids must not exceed %d per announcement", maxBulkSubscribers))
@@ -92,7 +95,8 @@ func (h *Handler) ComposeAnnouncement(ctx context.Context, in AnnouncementInput)
 	created, err := h.announcements.CreateAnnouncement(ctx, notifications.Announcement{
 		Title: in.Title, Body: in.Body, Channels: in.Channels, Class: class,
 		SegmentFranchiseID: in.SegmentFranchiseID, SegmentPlanID: in.SegmentPlanID,
-		SegmentStatus: in.SegmentStatus, ShowInPortal: in.ShowInPortal,
+		SegmentStatus: in.SegmentStatus, SegmentGroupID: in.SegmentGroupID,
+		ShowInPortal:  in.ShowInPortal,
 		SubscriberIDs: in.SubscriberIDs,
 		CreatedBy:     middleware.SubjectFromContext(ctx),
 	})
@@ -136,7 +140,7 @@ func (h *Handler) BroadcastAnnouncement(ctx context.Context, id int) (*SendResul
 		return nil, notifications.ErrAnnouncementNotDraft
 	}
 	recipients, err := h.announcements.ListSegmentSubscriberIDs(ctx, id,
-		claimed.SegmentFranchiseID, claimed.SegmentPlanID, claimed.SegmentStatus)
+		claimed.SegmentFranchiseID, claimed.SegmentPlanID, claimed.SegmentStatus, claimed.SegmentGroupID)
 	if err != nil {
 		// The claim already moved it out of draft; mark it failed so it is
 		// visibly stuck rather than silently sitting in 'sending' forever.

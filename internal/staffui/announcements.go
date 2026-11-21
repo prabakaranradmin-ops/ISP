@@ -10,6 +10,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/maaransoft/isp-bss-oss/internal/notifications"
+	"github.com/maaransoft/isp-bss-oss/internal/revenue"
 	"github.com/rs/zerolog/log"
 )
 
@@ -26,7 +27,7 @@ type AnnouncementManager interface {
 
 // AudienceCounter estimates a draft's reach. Satisfied by *db.ConsoleStore.
 type AudienceCounter interface {
-	CountAnnouncementAudience(ctx context.Context, franchiseID, planID *int, status *string) (int, error)
+	CountAnnouncementAudience(ctx context.Context, franchiseID, planID *int, status *string, groupID *int) (int, error)
 }
 
 var announcementChannels = []string{"whatsapp", "sms", "email", "push"}
@@ -36,8 +37,9 @@ type announcementRow struct {
 	// Audience is the current reach of a draft's segment, or -1 when it was
 	// addressed to a hand-picked list (whose size is not on the row) or the
 	// estimate could not be made.
-	Audience int
-	PlanName string
+	Audience  int
+	PlanName  string
+	GroupName string
 }
 
 type announcementsData struct {
@@ -47,6 +49,16 @@ type announcementsData struct {
 	Channels []string
 	Form     api.AnnouncementInput
 	FormPlan int
+	// Groups populates the segment dropdown (FR-GRP-001), active only: a
+	// retired group may not be addressed afresh, while announcements already
+	// addressed to one still reach exactly the same people.
+	Groups []revenue.SubscriberGroup
+	// FormGroup echoes the chosen group back into the form after a failed
+	// submission, like FormPlan.
+	FormGroup int
+	// GroupNames labels a sent announcement's segment on the list, so a row
+	// reads "Anna Nagar" rather than "group 4".
+	GroupNames map[int]string
 }
 
 // Announcements lists broadcasts and composes new drafts.
@@ -84,6 +96,26 @@ func (h *Handler) renderAnnouncements(w http.ResponseWriter, r *http.Request, s 
 			}
 		}
 	}
+	// Groups for the dropdown (active only) and for labelling the rows.
+	//
+	// The names map includes retired groups, unlike the dropdown: a sent
+	// announcement addressed to a group since retired still has to read as
+	// the group's name rather than an id, which is the one place the retired
+	// ones have to appear.
+	ad.GroupNames = map[int]string{}
+	if h.groups != nil {
+		if gs, err := h.groups.ListSubscriberGroups(r.Context(), true); err == nil {
+			for _, g := range gs {
+				ad.GroupNames[g.ID] = g.Name
+				if g.Active {
+					ad.Groups = append(ad.Groups, g)
+				}
+			}
+		} else {
+			log.Error().Err(err).Msg("staffui: list groups for announcement segment failed")
+		}
+	}
+
 	list, err := h.announcer.AnnouncementList(r.Context(), nil)
 	if err != nil {
 		log.Error().Err(err).Msg("staffui: list announcements failed")
@@ -96,8 +128,11 @@ func (h *Handler) renderAnnouncements(w http.ResponseWriter, r *http.Request, s 
 		if a.SegmentPlanID != nil {
 			row.PlanName = planNames[*a.SegmentPlanID]
 		}
+		if a.SegmentGroupID != nil {
+			row.GroupName = ad.GroupNames[*a.SegmentGroupID]
+		}
 		if a.Status == notifications.AnnouncementDraft && h.audience != nil {
-			if n, err := h.audience.CountAnnouncementAudience(r.Context(), a.SegmentFranchiseID, a.SegmentPlanID, a.SegmentStatus); err == nil {
+			if n, err := h.audience.CountAnnouncementAudience(r.Context(), a.SegmentFranchiseID, a.SegmentPlanID, a.SegmentStatus, a.SegmentGroupID); err == nil {
 				row.Audience = n
 			}
 		}
@@ -131,9 +166,18 @@ func (h *Handler) ComposeAnnouncementForm(w http.ResponseWriter, r *http.Request
 			in.SegmentPlanID, formPlan = &id, id
 		}
 	}
+	formGroup := 0
+	if v := r.PostFormValue("segment_group_id"); v != "" {
+		id, err := strconv.Atoi(v)
+		if err != nil || id <= 0 {
+			h.renderAnnouncements(w, r, s, announcementsData{Form: in, FormPlan: formPlan}, "", "Choose a group from the list.")
+			return
+		}
+		in.SegmentGroupID, formGroup = &id, id
+	}
 	if v := r.PostFormValue("segment_status"); v != "" {
 		if !inStrings(SubscriberStatuses, v) {
-			h.renderAnnouncements(w, r, s, announcementsData{Form: in, FormPlan: formPlan}, "", "Choose a status from the list.")
+			h.renderAnnouncements(w, r, s, announcementsData{Form: in, FormPlan: formPlan, FormGroup: formGroup}, "", "Choose a status from the list.")
 			return
 		}
 		in.SegmentStatus = &v
@@ -147,7 +191,7 @@ func (h *Handler) ComposeAnnouncementForm(w http.ResponseWriter, r *http.Request
 		} else {
 			log.Error().Err(err).Msg("staffui: compose announcement failed")
 		}
-		h.renderAnnouncements(w, r, s, announcementsData{Form: in, FormPlan: formPlan}, "", msg)
+		h.renderAnnouncements(w, r, s, announcementsData{Form: in, FormPlan: formPlan, FormGroup: formGroup}, "", msg)
 		return
 	}
 	http.Redirect(w, r, "/staff/announcements?created=1", http.StatusSeeOther)

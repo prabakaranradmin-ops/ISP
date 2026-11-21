@@ -121,7 +121,7 @@ func TestFR_ANN_001_SegmentAddressesExactlyTheIntendedSubscribers(t *testing.T) 
 	const segmentOnly = 0
 
 	t.Run("no filters addresses everyone except terminated", func(t *testing.T) {
-		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, nil, nil, nil)
+		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, nil, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("ListSegmentSubscriberIDs: %v", err)
 		}
@@ -136,7 +136,7 @@ func TestFR_ANN_001_SegmentAddressesExactlyTheIntendedSubscribers(t *testing.T) 
 	})
 
 	t.Run("franchise filter narrows to that partner", func(t *testing.T) {
-		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, &f1, nil, nil)
+		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, &f1, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("ListSegmentSubscriberIDs: %v", err)
 		}
@@ -147,7 +147,7 @@ func TestFR_ANN_001_SegmentAddressesExactlyTheIntendedSubscribers(t *testing.T) 
 
 	t.Run("plan filter narrows to that plan", func(t *testing.T) {
 		planID := 2
-		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, nil, &planID, nil)
+		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, nil, &planID, nil, nil)
 		if err != nil {
 			t.Fatalf("ListSegmentSubscriberIDs: %v", err)
 		}
@@ -158,7 +158,7 @@ func TestFR_ANN_001_SegmentAddressesExactlyTheIntendedSubscribers(t *testing.T) 
 
 	t.Run("status filter narrows to that status", func(t *testing.T) {
 		status := "hard_suspended"
-		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, nil, nil, &status)
+		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, nil, nil, &status, nil)
 		if err != nil {
 			t.Fatalf("ListSegmentSubscriberIDs: %v", err)
 		}
@@ -169,7 +169,7 @@ func TestFR_ANN_001_SegmentAddressesExactlyTheIntendedSubscribers(t *testing.T) 
 
 	t.Run("filters compose rather than override one another", func(t *testing.T) {
 		planID := 1
-		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, &f1, &planID, nil)
+		ids, err := store.ListSegmentSubscriberIDs(ctx, segmentOnly, &f1, &planID, nil, nil)
 		if err != nil {
 			t.Fatalf("ListSegmentSubscriberIDs: %v", err)
 		}

@@ -609,7 +609,7 @@ func TestConsole_CountAnnouncementAudience(t *testing.T) {
 	store := database.Console()
 	count := func(plan *int, status *string) int {
 		t.Helper()
-		n, err := store.CountAnnouncementAudience(ctx, nil, plan, status)
+		n, err := store.CountAnnouncementAudience(ctx, nil, plan, status, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

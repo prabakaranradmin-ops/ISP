@@ -142,6 +142,13 @@ func (s *ConsoleStore) ListDirectory(ctx context.Context, f staffui.DirectoryFil
 		          OR s.caf_number = $4
 		          OR l.assigned_ip = $4
 		          OR s.id = $6::int)
+		     -- The named-group filter (FR-GRP-001). EXISTS rather than a
+		     -- join: a subscriber can be in several groups, and joining
+		     -- the membership table would return them once per group and
+		     -- overstate both the page and the match count.
+		     AND ($8::int IS NULL OR EXISTS (
+		           SELECT 1 FROM subscriber_group_members m
+		            WHERE m.group_id = $8 AND m.subscriber_id = s.id))
 		)
 		SELECT id, username, status, mobile_number, COALESCE(plan_name, ''),
 		       plan_expiry, created_at, online,
@@ -151,8 +158,16 @@ func (s *ConsoleStore) ListDirectory(ctx context.Context, f staffui.DirectoryFil
 		 ORDER BY id
 		 LIMIT $7`
 
+	// 0 means "no group filter", passed as NULL so the predicate above is a
+	// no-op rather than matching a group id of zero.
+	var groupQuery *int
+	if f.GroupID > 0 {
+		g := f.GroupID
+		groupQuery = &g
+	}
+
 	rows, err := s.pool.Query(ctx, q, liveSessionTTLSeconds, f.Status, f.View,
-		query, "%"+escapeLike(query)+"%", idQuery, limit)
+		query, "%"+escapeLike(query)+"%", idQuery, limit, groupQuery)
 	if err != nil {
 		return nil, fmt.Errorf("db: list directory: %w", err)
 	}
@@ -688,14 +703,21 @@ func (s *ConsoleStore) ListACSDevices(ctx context.Context, view, query string, l
 // it would have before anyone presses Send. A nil filter matches everyone.
 // It is an estimate of reach, not of delivery: DND opt-outs and missing
 // contact details are applied per message at send time.
-func (s *ConsoleStore) CountAnnouncementAudience(ctx context.Context, franchiseID, planID *int, status *string) (int, error) {
+func (s *ConsoleStore) CountAnnouncementAudience(ctx context.Context, franchiseID, planID *int, status *string, groupID *int) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `
-		SELECT count(*) FROM subscribers
+		SELECT count(*) FROM subscribers s
 		 WHERE status <> 'terminated'  -- as AnnouncementStore.ListSegmentSubscriberIDs
 		   AND ($1::int IS NULL OR franchise_id = $1)
 		   AND ($2::int IS NULL OR plan_id = $2)
-		   AND ($3::text IS NULL OR status = $3)`, franchiseID, planID, status).Scan(&n)
+		   AND ($3::text IS NULL OR status = $3)
+		   -- The group dimension must match the fan-out's predicate exactly
+		   -- (FR-GRP-001): a reach preview that counted a different set from
+		   -- the one that gets messaged is worse than no preview.
+		   AND ($4::int IS NULL OR EXISTS (
+		         SELECT 1 FROM subscriber_group_members m
+		          WHERE m.group_id = $4 AND m.subscriber_id = s.id))`,
+		franchiseID, planID, status, groupID).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("db: count announcement audience: %w", err)
 	}

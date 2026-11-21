@@ -50,6 +50,10 @@ type Announcement struct {
 	SegmentFranchiseID *int    `json:"segment_franchise_id,omitempty"`
 	SegmentPlanID      *int    `json:"segment_plan_id,omitempty"`
 	SegmentStatus      *string `json:"segment_status,omitempty"`
+	// SegmentGroupID targets a named subscriber group (FR-GRP-001), the
+	// fourth segment dimension. Nil means no restriction on it, as for the
+	// other three.
+	SegmentGroupID *int `json:"segment_group_id,omitempty"`
 
 	// SubscriberIDs, when non-empty, targets exactly these subscribers
 	// instead of the segment filters above — the console's multi-select

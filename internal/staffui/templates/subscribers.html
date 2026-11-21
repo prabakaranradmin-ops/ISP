@@ -5,6 +5,7 @@
   <input name="q" value="{{$d.Query}}" placeholder="{{if $d.Statuses}}Username, ID, phone, email, CAF or IP{{else}}Username or subscriber id{{end}}" aria-label="Search subscribers">
   {{if $d.Filter.Status}}<input type="hidden" name="status" value="{{$d.Filter.Status}}">{{end}}
   {{if $d.Filter.View}}<input type="hidden" name="view" value="{{$d.Filter.View}}">{{end}}
+  {{if $d.Filter.GroupID}}<input type="hidden" name="group_id" value="{{$d.Filter.GroupID}}">{{end}}
   <button class="primary" type="submit">Search</button>
   <a class="btn" href="/staff/subscribers/new">New subscriber</a>
 </form>
@@ -17,6 +18,31 @@
   {{end}}
   {{if $d.Filter.View}}<a class="chip on" href="/staff/subscribers?view={{$d.Filter.View}}">{{$d.ViewLabel}}</a>{{end}}
 </nav>
+{{end}}
+
+{{/* Group filter — FR-GRP-001. A select rather than chips: groups are
+     operator-defined and there may be dozens, where the statuses above are a
+     fixed vocabulary of five. Submits on change so it behaves like the chips
+     beside it. */}}
+{{if $d.Groups}}
+<form class="filterbar" method="get" action="/staff/subscribers" aria-label="Filter by group">
+  {{if $d.Query}}<input type="hidden" name="q" value="{{$d.Query}}">{{end}}
+  {{if $d.Filter.Status}}<input type="hidden" name="status" value="{{$d.Filter.Status}}">{{end}}
+  {{if $d.Filter.View}}<input type="hidden" name="view" value="{{$d.Filter.View}}">{{end}}
+  <label class="small">Group
+    <select name="group_id" onchange="this.form.submit()">
+      <option value="">Any group</option>
+      {{range $d.Groups}}
+      <option value="{{.ID}}"{{if eq .ID $d.Filter.GroupID}} selected{{end}}>{{.Name}} ({{.Members}})</option>
+      {{end}}
+    </select>
+  </label>
+  <noscript><button type="submit">Apply</button></noscript>
+  {{if $d.Filter.GroupID}}
+  <a class="chip on" href="/staff/subscribers{{if $d.Query}}?q={{$d.Query}}{{end}}">Clear group</a>
+  <a class="btn small" href="/staff/reports?report=subscribers&amp;group_id={{$d.Filter.GroupID}}">Export this group</a>
+  {{end}}
+</form>
 {{end}}
 
 {{if not $d.LoadFailed}}

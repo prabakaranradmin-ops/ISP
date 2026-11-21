@@ -22,6 +22,18 @@ import (
 // Tables are truncated in FK-dependency order so a test starts from a known
 // empty state regardless of what ran before it.
 var truncateOrder = []string{
+	// Migration 069. Listed because nothing else truncated here would reach
+	// subscriber_groups: groups would accumulate across tests until two of
+	// them collided on uq_subscriber_group_name_active, which would fail
+	// whichever test ran second rather than the one at fault.
+	//
+	// Order against announcements does not matter — announcements has an FK
+	// into subscriber_groups, so CASCADE truncates it from here too, and
+	// ON DELETE RESTRICT does not apply to TRUNCATE CASCADE. It is listed
+	// first only to keep this slice's parents-last reading true.
+	// subscriber_group_members is reached by CASCADE from either parent.
+	"subscriber_group_members",
+	"subscriber_groups",
 	"lea_audit_log",
 	// Migration 062. Nothing truncated here references it, so CASCADE
 	// never reaches it and entries would accumulate across tests —

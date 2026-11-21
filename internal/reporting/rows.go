@@ -73,3 +73,23 @@ type CollectionRow struct {
 	// league table it has not joined yet.
 	CollectionRatePct *float64 `json:"collection_rate_pct"`
 }
+
+// SubscriberRosterRow is one subscriber in a group roster (FR-GRP-001).
+//
+// The only report whose rows are subscribers rather than aggregates, which is
+// what makes it the one a group can filter: the other four read pre-aggregated
+// views in which no individual survives to be matched against a membership.
+type SubscriberRosterRow struct {
+	SubscriberID int    `json:"subscriber_id"`
+	Username     string `json:"username"`
+	Status       string `json:"status"`
+	PlanName     string `json:"plan_name"`
+	FranchiseID  *int   `json:"franchise_id,omitempty"`
+	MobileNumber string `json:"mobile_number"`
+	// Groups names every group the subscriber is in, not only the one filtered
+	// on. An operator exporting "Anna Nagar" to plan a cable replacement needs
+	// to see that four of them are also in "Corporate" before scheduling the
+	// outage.
+	Groups    []string  `json:"groups"`
+	CreatedAt time.Time `json:"created_at"`
+}

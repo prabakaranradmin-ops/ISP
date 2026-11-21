@@ -745,3 +745,118 @@ test.describe('Plan lifecycle controls (FR-CAT-001)', () => {
     expect(text.split('\n')[0].toLowerCase()).toContain('name');
   });
 });
+
+test.describe('Subscriber groups (FR-GRP-001)', () => {
+  // Unique per run: the name index is partial on active, so a leftover live
+  // group from an earlier run would make the create collide rather than fail
+  // on anything this test is about.
+  const groupName = `E2E feeder ${Date.now()}`;
+
+  test('the screen loads over HTTP and refuses a role that should not reach it', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/groups');
+    await expect(page.getByRole('heading', { name: 'Subscriber groups', level: 1 })).toBeVisible();
+
+    // Not offering a nav link is a convenience; refusing the typed URL is
+    // the control. A technician's reach is the job in front of them.
+    await signIn(page, 'tech');
+    const res = await page.goto('/staff/groups');
+    expect(res?.status()).toBe(403);
+  });
+
+  // The whole feature end to end in one pass, because every layer below this
+  // is tested against a fake and what a fake cannot show is that the create
+  // form, the paste-a-list form, the directory filter and the roster report
+  // all agree on the same group.
+  test('a group is created, filled from a pasted list, and filters the directory', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/groups');
+
+    const create = page.locator('form[action="/staff/groups"]');
+    await create.locator('input[name="name"]').fill(groupName);
+    await create.locator('input[name="description"]').fill('Created by the browser suite');
+    await create.getByRole('button', { name: 'Add group' }).click();
+    await expect(page.getByText(/Group added/)).toBeVisible();
+
+    // The row for this group, by its unique name — the table holds the
+    // seeded groups too.
+    const row = page.locator('tbody tr', { hasText: groupName });
+    await expect(row).toHaveCount(1);
+
+    // Paste a subscriber in. Subscriber 1 exists in every seeded stack; 999999
+    // does not, and the count reported is the assertion — a store that failed
+    // the whole batch on the bad id, or claimed both, would show 2 of 2 or an
+    // error instead of 1 of 2.
+    await row.getByText('Edit').click();
+    const members = row.locator('form[action$="/members"]');
+    await members.locator('textarea[name="subscriber_ids"]').fill('1, 999999');
+    await members.getByRole('button', { name: /^Add to/ }).click();
+    await expect(page.getByText(/1 of 2 added to the group/)).toBeVisible();
+
+    // The member count links straight into the directory filtered to this
+    // group, which is the one place the two views of a group could drift.
+    const refreshed = page.locator('tbody tr', { hasText: groupName });
+    const countLink = refreshed.locator('td a[href*="/staff/subscribers?group_id="]').first();
+    await expect(countLink).toHaveText('1');
+    const href = await countLink.getAttribute('href');
+    const groupID = new URL(href!, page.url()).searchParams.get('group_id');
+    expect(groupID).toBeTruthy();
+
+    await countLink.click();
+    await expect(page.getByRole('heading', { name: 'Subscribers', level: 1 })).toBeVisible();
+    // The filter is applied and reflected back in the select, not silently
+    // dropped — and exactly one subscriber matches.
+    await expect(page.locator('select[name="group_id"]')).toHaveValue(groupID!);
+    await expect(page.locator('tbody tr')).toHaveCount(1);
+
+    // And the roster report, scoped to the same group, agrees.
+    await page.goto(`/staff/reports?report=subscribers&group_id=${groupID}`);
+    await expect(page.getByRole('heading', { name: /^Subscribers in this group$/ })).toBeVisible();
+    await expect(page.locator('tbody tr')).toHaveCount(1);
+    await snap(page, 'groups-roster');
+
+    // The CSV is the deliverable an operator actually takes away.
+    // The console route, not /api/v1/... — the API wants a Bearer JWT and
+    // this session has a cookie. Asserting the link an operator actually
+    // clicks is the point: the first version of this test hit the API path
+    // and found the console link returning 401.
+    const csv = await page.request.get(`/staff/reports/subscribers.csv?group_id=${groupID}`);
+    expect(csv.status()).toBe(200);
+    const text = await csv.text();
+    expect(text.split('\n')[0]).toContain('subscriber_id');
+    // Two lines: the header and the one member.
+    expect(text.trim().split('\n')).toHaveLength(2);
+    expect(text).toContain(groupName);
+  });
+
+  // The limitation, asserted rather than only documented. A group filter that
+  // silently did not apply would hand an operator a figure for the whole base
+  // under a heading naming one group.
+  test('an aggregate report refuses a group filter instead of ignoring it', async ({ page }) => {
+    await signIn(page, 'owner');
+
+    await page.goto('/staff/reports?report=plan-mix&group_id=1');
+    await expect(page.getByText(/cannot be filtered by group/)).toBeVisible();
+    // And no group selector is offered there at all.
+    await expect(page.locator('select[name="group_id"]')).toHaveCount(0);
+
+    const refused = await page.request.get('/staff/reports/plan-mix.csv?group_id=1');
+    expect(refused.status()).toBe(422);
+    expect(await refused.text()).toContain('subscribers');
+  });
+
+  // A group is a fourth segment dimension for an announcement, which is the
+  // reason every change to one is audited.
+  test('an announcement can be addressed to a group', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/announcements');
+    const select = page.locator('select[name="segment_group_id"]');
+    if ((await select.count()) === 0) {
+      test.skip(true, 'no groups on this stack to address');
+    }
+    await expect(select.locator('option').first()).toHaveText('Any group');
+    // Every option carries its reach, so the audience is visible before the
+    // draft is saved rather than only on the preview afterwards.
+    await expect(select.locator('option').nth(1)).toHaveText(/\(\d+\)$/);
+  });
+});

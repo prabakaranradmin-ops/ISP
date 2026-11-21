@@ -169,3 +169,51 @@ func (s *ReportingStore) FranchiseCollection(ctx context.Context, months int, fr
 	}
 	return out, rows.Err()
 }
+
+// SubscriberRoster lists the subscribers in a group, or the whole base when
+// groupID is nil — FR-GRP-001.
+//
+// The one report that reads the subscriber table rather than an aggregate
+// view, which is what lets a group filter apply at all.
+//
+// Terminated subscribers are excluded, matching memberCount in groups.go and
+// GroupMemberIDs. That agreement is the point: the console shows a group's
+// size, the announcement fan-out reaches a set of people, and this export is
+// the list an operator works from. If the three counted differently, whichever
+// one an operator checked first would make the other two look broken.
+func (s *ReportingStore) SubscriberRoster(ctx context.Context, groupID, franchiseID *int) ([]reporting.SubscriberRosterRow, error) {
+	const q = `
+		SELECT sub.id, sub.username, sub.status, p.name, sub.franchise_id,
+		       sub.mobile_number, sub.created_at,
+		       COALESCE(ARRAY(
+		           SELECT g.name FROM subscriber_group_members m
+		             JOIN subscriber_groups g ON g.id = m.group_id
+		            WHERE m.subscriber_id = sub.id
+		            ORDER BY lower(btrim(g.name))
+		       ), '{}') AS groups
+		  FROM subscribers sub
+		  JOIN plans p ON p.id = sub.plan_id
+		 WHERE sub.status <> 'terminated'
+		   AND ($1::int IS NULL OR EXISTS (
+		           SELECT 1 FROM subscriber_group_members m
+		            WHERE m.subscriber_id = sub.id AND m.group_id = $1))
+		   AND ($2::int IS NULL OR sub.franchise_id = $2)
+		 ORDER BY sub.id`
+
+	rows, err := s.pool.Query(ctx, q, groupID, franchiseID)
+	if err != nil {
+		return nil, fmt.Errorf("db: subscriber roster: %w", err)
+	}
+	defer rows.Close()
+
+	out := []reporting.SubscriberRosterRow{}
+	for rows.Next() {
+		var r reporting.SubscriberRosterRow
+		if err := rows.Scan(&r.SubscriberID, &r.Username, &r.Status, &r.PlanName,
+			&r.FranchiseID, &r.MobileNumber, &r.CreatedAt, &r.Groups); err != nil {
+			return nil, fmt.Errorf("db: scan subscriber roster: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

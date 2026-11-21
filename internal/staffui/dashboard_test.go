@@ -74,7 +74,7 @@ func (f *fakeConsole) ListACSDevices(_ context.Context, view, query string, _ in
 	return f.cpeRows, f.err
 }
 
-func (f *fakeConsole) CountAnnouncementAudience(context.Context, *int, *int, *string) (int, error) {
+func (f *fakeConsole) CountAnnouncementAudience(context.Context, *int, *int, *string, *int) (int, error) {
 	return 42, f.err
 }
 

@@ -12,6 +12,14 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './e2e',
+  // e2e/demo holds the narrated walkthrough recordings, which belong to
+  // playwright.demo.config.ts: they pause deliberately (DEMO_READ_MS) so a
+  // viewer can follow along, and under this config's 30s timeout all five
+  // fail on page.waitForTimeout. Excluded so `npx playwright test` reports
+  // only behaviour — five timeouts in a run otherwise read as regressions
+  // and cost a diagnosis before the cause (a config meant for recording)
+  // becomes apparent. Record them with ./scripts/record_demo.sh.
+  testIgnore: '**/demo/**',
   outputDir: './e2e/test-results',
   fullyParallel: false, // the demo stack has one subscriber; parallel logins race over the same session
   forbidOnly: !!process.env.CI,

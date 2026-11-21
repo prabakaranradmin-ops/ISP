@@ -21,6 +21,17 @@
           {{$fp := .FormPlan}}{{range .Plans}}<option value="{{.ID}}"{{if eq .ID $fp}} selected{{end}}>{{.Name}}</option>{{end}}
         </select>
       </label>
+      {{/* Group segment — FR-GRP-001. A fourth dimension beside plan and
+           status, and they combine: "Anna Nagar, on Fibre 100, suspended" is
+           three filters narrowing one audience, not three choices. */}}
+      {{if .Groups}}
+      <label>Only subscribers in group
+        <select name="segment_group_id">
+          <option value="">Any group</option>
+          {{$fg := .FormGroup}}{{range .Groups}}<option value="{{.ID}}"{{if eq .ID $fg}} selected{{end}}>{{.Name}} ({{.Members}})</option>{{end}}
+        </select>
+      </label>
+      {{end}}
       <label>Only subscribers who are
         <select name="segment_status">
           <option value="">Any status (terminated excluded)</option>
@@ -48,7 +59,8 @@
           <span class="muted small">{{range $i, $c := .Channels}}{{if $i}}, {{end}}{{channelLabel $c}}{{end}}{{if .ShowInPortal}}{{if .Channels}}, {{end}}portal banner{{end}} &middot; {{if eq .Class "transactional"}}service notice{{else}}promotional{{end}}</span></td>
         <td class="small">
           {{if .PlanName}}Plan {{.PlanName}}{{else if .SegmentPlanID}}Plan #{{deref .SegmentPlanID}}{{else}}Any plan{{end}},
-          {{if .SegmentStatus}}{{humanize (optString .SegmentStatus)}}{{else}}any status{{end}}
+          {{if .SegmentStatus}}{{humanize (optString .SegmentStatus)}}{{else}}any status{{end}}{{if .SegmentGroupID}},
+          group {{if .GroupName}}{{.GroupName}}{{else}}#{{deref .SegmentGroupID}}{{end}}{{end}}
           {{if eq .Status "draft"}}{{if ge .Audience 0}}<br><strong>Reaches {{.Audience}} now</strong>{{end}}
           {{else}}<br>{{.RecipientCount}} message{{if ne .RecipientCount 1}}s{{end}} queued{{end}}
         </td>

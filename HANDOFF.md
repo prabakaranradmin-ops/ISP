@@ -212,6 +212,34 @@ settled the question in seconds.
   say so at startup rather than failing silently, but a deployment that skips
   it has no document retention at all.
 
+- **A deleted plan or franchise silently widens a *sent* announcement's
+  audience to everybody.** `announcements.segment_plan_id` and
+  `segment_franchise_id` (migration 028) are `ON DELETE SET NULL`, and a NULL
+  segment means "no restriction on this dimension". So retiring a plan is
+  safe, but *deleting* one nulls the reference on every announcement that
+  targeted it — including ones already sent — and those then show in every
+  subscriber's portal rather than the slice they were addressed to. Nobody is
+  re-notified, so this is invisible until a customer asks why they can see a
+  notice about a plan they are not on.
+
+  Found while adding `segment_group_id` for FR-GRP-001, which carries
+  `ON DELETE RESTRICT` instead for exactly this reason. The existing two were
+  deliberately left alone: changing them means an `ALTER TABLE` against live
+  rows and a decision about what should happen to an announcement whose plan
+  is being deleted (refuse the delete, or keep the id and let the segment
+  read as "a plan that no longer exists"). RESTRICT is the better default and
+  is what a new reference should use; migrating the old two is its own
+  change, not a side effect of adding a fourth dimension.
+
+- **The four aggregate reports cannot be filtered by subscriber group.** Plan
+  mix, growth, ticket resolution and collection read pre-aggregated views —
+  `mv_ticket_resolution` is materialised — so no individual subscriber
+  survives in them to match against a group membership. FR-GRP-001 delivers
+  the group filter as a fifth report (`subscribers`, a roster) and *refuses*
+  the filter on the other four with a 422 rather than dropping it silently.
+  Making them group-aware means rewriting each view against the underlying
+  tables, with a refresh decision for the materialised one.
+
 ---
 
 ## Things a fresh session will not know

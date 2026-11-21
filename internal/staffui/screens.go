@@ -64,6 +64,10 @@ type subscribersData struct {
 	// would refuse.
 	ShowBulkActions bool
 	Plans           []Plan
+	// Groups populates the group filter (FR-GRP-001). Active groups only:
+	// a retired group is out of the filters by definition, and its members
+	// are still reachable through the directory's other filters.
+	Groups []revenue.SubscriberGroup
 }
 
 // Subscribers lists subscribers with an optional search and filters.
@@ -82,6 +86,10 @@ func (h *Handler) Subscribers(w http.ResponseWriter, r *http.Request) {
 		Query:  strings.TrimSpace(q.Get("q")),
 		Status: q.Get("status"),
 		View:   q.Get("view"),
+		// An unparseable group_id becomes 0, which the store reads as "no
+		// group filter" — the same as absent. A bad id showing everyone is
+		// wrong in the safe direction here, and renderDirectory says so.
+		GroupID: atoiOrZero(q.Get("group_id")),
 	}, "", "")
 }
 
@@ -153,7 +161,34 @@ func (h *Handler) renderDirectory(w http.ResponseWriter, r *http.Request, d page
 		f.View = ""
 	}
 
+	// Loaded before the directory query so the dropdown is populated even
+	// when the query itself fails, and so an id naming no group can be
+	// reported rather than silently showing everyone.
+	var groups []revenue.SubscriberGroup
+	if h.groups != nil {
+		if gs, err := h.groups.ListSubscriberGroups(r.Context(), false); err == nil {
+			groups = gs
+		} else {
+			log.Error().Err(err).Msg("staffui: list groups for directory filter failed")
+		}
+	}
+	if f.GroupID > 0 {
+		var known bool
+		for _, g := range groups {
+			if g.ID == f.GroupID {
+				known = true
+			}
+		}
+		if !known {
+			// Retired or deleted. Reported rather than applied as an empty
+			// result, which would read as "this group has no members".
+			d.Error = "That group is retired or no longer exists; showing everyone."
+			f.GroupID = 0
+		}
+	}
+
 	sd := subscribersData{
+		Groups:          groups,
 		Query:           f.Query,
 		Filter:          f,
 		ViewLabel:       directoryViewLabels[f.View],

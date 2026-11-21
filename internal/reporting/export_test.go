@@ -30,6 +30,7 @@ type stubQuerier struct {
 	growth     []GrowthRow
 	resolution []TicketResolutionRow
 	collection []CollectionRow
+	roster     []SubscriberRosterRow
 
 	// calls records the (months, franchiseID) each query was asked for, so a
 	// test can prove the filter reached the store rather than being dropped.
@@ -41,12 +42,15 @@ type stubCall struct {
 	Method      string
 	Months      int
 	FranchiseID *int
+	// GroupID is recorded only by SubscriberRoster, the one query that takes
+	// one — FR-GRP-001.
+	GroupID *int
 }
 
 func (s *stubQuerier) record(method string, months int, f *int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls = append(s.calls, stubCall{method, months, f})
+	s.calls = append(s.calls, stubCall{Method: method, Months: months, FranchiseID: f})
 }
 
 func (s *stubQuerier) snapshot() []stubCall {
@@ -393,4 +397,142 @@ func mustJSONPayload(t *testing.T, p ExportPayload) []byte {
 		t.Fatalf("marshal payload: %v", err)
 	}
 	return b
+}
+
+func (s *stubQuerier) SubscriberRoster(_ context.Context, group, f *int) ([]SubscriberRosterRow, error) {
+	s.mu.Lock()
+	s.calls = append(s.calls, stubCall{Method: "SubscriberRoster", FranchiseID: f, GroupID: group})
+	s.mu.Unlock()
+	return s.roster, s.err
+}
+
+// ── Group filtering — FR-GRP-001 ────────────────────────────────────────────
+
+func TestFR_GRP_001_TheRosterReportCarriesTheGroupToTheStore(t *testing.T) {
+	q := &stubQuerier{roster: []SubscriberRosterRow{{
+		SubscriberID: 7, Username: "priya@isp", Status: "active", PlanName: "Fibre 100",
+		MobileNumber: "+919876543210", Groups: []string{"Anna Nagar", "Corporate"},
+		CreatedAt: time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC),
+	}}}
+	group, franchise := 3, 9
+
+	var buf bytes.Buffer
+	if err := WriteCSV(context.Background(), q, ReportSubscribers,
+		Filter{GroupID: &group, FranchiseID: &franchise}, &buf); err != nil {
+		t.Fatalf("roster: %v", err)
+	}
+
+	calls := q.snapshot()
+	if len(calls) != 1 || calls[0].Method != "SubscriberRoster" {
+		t.Fatalf("calls = %+v", calls)
+	}
+	if calls[0].GroupID == nil || *calls[0].GroupID != 3 {
+		t.Errorf("the group did not reach the store: %v", calls[0].GroupID)
+	}
+	if calls[0].FranchiseID == nil || *calls[0].FranchiseID != 9 {
+		t.Errorf("the franchise scope did not reach the store: %v", calls[0].FranchiseID)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"subscriber_id,username", "7,priya@isp,active,Fibre 100",
+		"+919876543210", "Anna Nagar; Corporate"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the roster CSV is missing %q:\n%s", want, out)
+		}
+	}
+	// Every group the subscriber is in, semicolon-joined so a group name
+	// cannot split a row into an extra column.
+	if strings.Contains(out, "Anna Nagar,Corporate") {
+		t.Error("the group list is comma-joined, which shifts every later column on import")
+	}
+}
+
+// A group filter asked of a report that cannot honour it is refused, not
+// dropped. A figure for the whole base under a heading naming one group is the
+// kind of number that gets quoted in a meeting.
+func TestFR_GRP_001_AnAggregateReportRefusesAGroupFilter(t *testing.T) {
+	group := 3
+	for _, report := range []string{ReportPlanMix, ReportGrowth, ReportTicketResolution, ReportCollection} {
+		t.Run(report, func(t *testing.T) {
+			q := &stubQuerier{}
+			var buf bytes.Buffer
+			err := WriteCSV(context.Background(), q, report, Filter{GroupID: &group}, &buf)
+			if !errors.Is(err, ErrGroupFilterUnsupported) {
+				t.Fatalf("got %v, want ErrGroupFilterUnsupported", err)
+			}
+			if !strings.Contains(err.Error(), report) {
+				t.Errorf("the error does not name the report: %v", err)
+			}
+			if n := len(q.snapshot()); n != 0 {
+				t.Errorf("%d quer(ies) ran for a filter that cannot be honoured", n)
+			}
+			if buf.Len() != 0 {
+				t.Errorf("a refused report still wrote %d bytes", buf.Len())
+			}
+		})
+	}
+}
+
+// Without a group, every report still works — the refusal must not become a
+// blanket block on the aggregate reports.
+func TestFR_GRP_001_TheAggregateReportsStillWorkWithoutAGroup(t *testing.T) {
+	for _, report := range Reports() {
+		t.Run(report, func(t *testing.T) {
+			q := &stubQuerier{}
+			var buf bytes.Buffer
+			if err := WriteCSV(context.Background(), q, report, Filter{}, &buf); err != nil {
+				t.Fatalf("%s with no group filter: %v", report, err)
+			}
+			if buf.Len() == 0 {
+				t.Errorf("%s wrote nothing at all, not even a header", report)
+			}
+		})
+	}
+}
+
+// GroupFilterable and the refusal must agree: one deciding differently from
+// the other is how a filter starts being silently dropped again.
+func TestFR_GRP_001_GroupFilterableAgreesWithWriteCSV(t *testing.T) {
+	group := 7
+	for _, report := range Reports() {
+		err := WriteCSV(context.Background(), &stubQuerier{}, report, Filter{GroupID: &group}, &bytes.Buffer{})
+		refused := errors.Is(err, ErrGroupFilterUnsupported)
+		if refused == GroupFilterable(report) {
+			t.Errorf("%s: GroupFilterable = %v but WriteCSV refused = %v",
+				report, GroupFilterable(report), refused)
+		}
+	}
+}
+
+func TestFR_GRP_001_TheRosterFilenameNamesTheGroup(t *testing.T) {
+	at := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	group, franchise := 4, 2
+
+	got := Filename(ReportSubscribers, Filter{GroupID: &group}, at)
+	if got != "subscribers-2026-11-21-group-4.csv" {
+		t.Errorf("Filename = %q", got)
+	}
+	// Both scopes, so two franchises' rosters for the same group stay apart.
+	got = Filename(ReportSubscribers, Filter{GroupID: &group, FranchiseID: &franchise}, at)
+	if got != "subscribers-2026-11-21-franchise-2-group-4.csv" {
+		t.Errorf("Filename with both scopes = %q", got)
+	}
+	if got := Filename(ReportSubscribers, Filter{}, at); got != "subscribers-2026-11-21.csv" {
+		t.Errorf("Filename with no scope = %q", got)
+	}
+}
+
+func TestFR_GRP_001_TheRosterIsInTheCatalogue(t *testing.T) {
+	if !ValidReport(ReportSubscribers) {
+		t.Error("the roster is not a valid report, so the route would 404")
+	}
+	var found bool
+	for _, r := range Reports() {
+		if r == ReportSubscribers {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the roster is missing from Reports(), so it would not be offered or validated")
+	}
 }

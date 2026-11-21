@@ -1,0 +1,121 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Subscriber groups</h1>
+
+<p class="muted">A group is a name you give a set of your own customers &mdash; a locality, an apartment
+  block, a promotion cohort, the twenty on one feeder cable. Subscribers could already be filtered by plan,
+  status and franchise, which are facts the system holds about them; a group is a set you define.</p>
+<p class="muted">A subscriber can be in several groups at once: somebody is in &quot;Anna Nagar&quot; and
+  also in &quot;Corporate&quot;, and those are not alternatives. Groups filter the subscriber directory,
+  address an announcement, and scope the <a href="/staff/reports">subscribers report</a>.</p>
+
+{{with $d}}
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Group</th><th>Description</th><th class="right">Members</th><th>Last changed</th>
+      {{if .CanManage}}<th></th>{{end}}
+    </tr></thead>
+    <tbody>
+    {{range .Groups}}
+      <tr{{if not .Active}} class="retired"{{end}}>
+        <td>
+          {{.Name}}
+          {{if not .Active}}<br><span class="pill neutral">retired</span>{{end}}
+        </td>
+        <td class="small">
+          {{if .Description}}{{.Description}}{{else}}<span class="muted">&mdash;</span>{{end}}
+        </td>
+        <td class="num right">
+          <a href="/staff/subscribers?group_id={{.ID}}">{{.Members}}</a>
+        </td>
+        <td class="small">
+          {{if .UpdatedAt}}{{.UpdatedAt.Format "2 Jan 2006"}}{{if .UpdatedBy}}<br>
+            <span class="muted">{{.UpdatedBy}}</span>{{end}}
+          {{else}}<span class="muted">{{.CreatedAt.Format "2 Jan 2006"}}</span>{{end}}
+        </td>
+        {{if $d.CanManage}}
+        <td class="actions">
+          <details>
+            <summary>Edit</summary>
+            <form method="post" action="/staff/groups/{{.ID}}" class="formgrid">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <label>Name <input name="name" value="{{.Name}}" required></label>
+              <label>Description <input name="description" value="{{.Description}}"></label>
+              <button type="submit" class="primary">Save</button>
+            </form>
+
+            <h4>Members</h4>
+            <p class="muted small">Paste subscriber ids &mdash; commas, spaces or one per line, however they
+              arrived. Ids that are already in the group, or are not subscribers at all, are skipped and
+              reported rather than failing the whole paste.</p>
+            <form method="post" action="/staff/groups/{{.ID}}/members" class="formgrid">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <label>Subscriber ids
+                <textarea name="subscriber_ids" rows="3" placeholder="1012, 1013, 1014"></textarea>
+              </label>
+              <button type="submit" name="action" value="add" class="primary">Add to {{.Name}}</button>
+              <button type="submit" name="action" value="remove">Remove from {{.Name}}</button>
+            </form>
+
+            <form method="post" action="/staff/groups/{{.ID}}/active" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="active" value="{{if .Active}}false{{else}}true{{end}}">
+              <button type="submit">{{if .Active}}Retire{{else}}Offer again{{end}}</button>
+              <span class="muted small">
+                {{if .Active}}Takes it out of the filters and the announcement dropdown. Its members stay in
+                it, and any announcement already addressed to it still reaches exactly the same
+                people.{{else}}Puts it back in the filters and the dropdown.{{end}}
+              </span>
+            </form>
+
+            <form method="post" action="/staff/groups/{{.ID}}/delete" class="inline"
+                  onsubmit="return confirm('Delete {{.Name}}? Its {{.Members}} membership(s) go with it. The subscribers themselves are not touched.')">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <button type="submit" class="danger">Delete</button>
+              <span class="muted small">Refused while an announcement is addressed to this group &mdash;
+                deleting it would change who that announcement reaches. Retire it instead.</span>
+            </form>
+          </details>
+        </td>
+        {{end}}
+      </tr>
+    {{else}}
+      <tr><td colspan="{{if .CanManage}}5{{else}}4{{end}}" class="empty">
+        No groups yet. Without one, a question like &quot;everyone on the Anna Nagar feeder&quot; ends in a
+        spreadsheet beside the system.
+      </td></tr>
+    {{end}}
+    </tbody>
+  </table>
+
+  <p>
+    {{if .IncludeRetired}}<a href="/staff/groups">Hide retired groups</a>
+    {{else}}<a href="/staff/groups?retired=true">Show retired groups too</a>{{end}}
+  </p>
+</div>
+
+{{if .CanManage}}
+<div class="card">
+  <h3>Add a group</h3>
+  <form method="post" action="/staff/groups" class="formgrid">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Name <input name="name" placeholder="Anna Nagar feeder" required maxlength="100"></label>
+    <label>Description <input name="description" placeholder="What this set is, for whoever reads it next"></label>
+    <button type="submit" class="primary">Add group</button>
+  </form>
+  <p class="muted small">Two live groups cannot share a name, because a group is referred to by name in
+    conversation. A retired one may share a name with its replacement, which is how a group gets rebuilt
+    after a survey.</p>
+</div>
+
+<div class="card">
+  <h3>Member counts</h3>
+  <p class="muted small">A group's count excludes terminated subscribers, so it is the reach a message to
+    the group would actually have. The directory filter, the announcement fan-out and the subscribers report
+    all count the same way &mdash; if they differed, whichever an operator checked first would make the
+    other two look broken.</p>
+</div>
+{{end}}
+{{end}}
+{{end}}

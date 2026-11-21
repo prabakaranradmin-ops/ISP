@@ -33,7 +33,7 @@ type AnnouncementQuerier interface {
 	// ListSegmentSubscriberIDs resolves an announcement's recipients: its
 	// explicit list (announcement_recipients) if one was given at creation,
 	// otherwise the franchise/plan/status segment filters.
-	ListSegmentSubscriberIDs(ctx context.Context, announcementID int, franchiseID, planID *int, status *string) ([]int, error)
+	ListSegmentSubscriberIDs(ctx context.Context, announcementID int, franchiseID, planID *int, status *string, groupID *int) ([]int, error)
 }
 
 type createAnnouncementRequest struct {
@@ -44,7 +44,10 @@ type createAnnouncementRequest struct {
 	SegmentFranchiseID *int     `json:"segment_franchise_id"`
 	SegmentPlanID      *int     `json:"segment_plan_id"`
 	SegmentStatus      *string  `json:"segment_status"`
-	ShowInPortal       bool     `json:"show_in_portal"`
+	// SegmentGroupID addresses a named subscriber group (FR-GRP-001) — a
+	// fourth segment dimension beside franchise, plan and status.
+	SegmentGroupID *int `json:"segment_group_id"`
+	ShowInPortal   bool `json:"show_in_portal"`
 	// SubscriberIDs targets exactly these subscribers — the console's
 	// multi-select bulk notification — instead of the segment filters
 	// above. Mutually exclusive with them: mixing "these specific people"
@@ -68,7 +71,8 @@ func (h *Handler) CreateAnnouncement(w http.ResponseWriter, r *http.Request) {
 	created, err := h.ComposeAnnouncement(r.Context(), AnnouncementInput{
 		Title: req.Title, Body: req.Body, Channels: req.Channels, Class: req.Class,
 		SegmentFranchiseID: req.SegmentFranchiseID, SegmentPlanID: req.SegmentPlanID,
-		SegmentStatus: req.SegmentStatus, ShowInPortal: req.ShowInPortal,
+		SegmentStatus: req.SegmentStatus, SegmentGroupID: req.SegmentGroupID,
+		ShowInPortal:  req.ShowInPortal,
 		SubscriberIDs: req.SubscriberIDs,
 	})
 	if reason := AnnouncementInvalidReason(err); reason != "" {
@@ -117,7 +121,7 @@ func (h *Handler) SendBulkNotification(ctx context.Context, requestedBy string, 
 	}
 
 	recipients, err := h.announcements.ListSegmentSubscriberIDs(ctx, claimed.ID,
-		claimed.SegmentFranchiseID, claimed.SegmentPlanID, claimed.SegmentStatus)
+		claimed.SegmentFranchiseID, claimed.SegmentPlanID, claimed.SegmentStatus, claimed.SegmentGroupID)
 	if err != nil {
 		h.finishAnnouncement(ctx, created.ID, notifications.AnnouncementFailed, 0)
 		return 0, fmt.Errorf("resolve bulk announcement %d recipients: %w", created.ID, err)

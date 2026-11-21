@@ -269,6 +269,11 @@ func run(ctx context.Context) error {
 		// Reusable bandwidth profiles (FR-CAT-002) live on the same store as
 		// the rest of the router estate.
 		Bandwidth: database.NAS(),
+		// Named subscriber groups (FR-GRP-001) sit on the revenue store
+		// beside franchises: both are named sets of subscribers, and the
+		// group filter and the franchise filter are read by the same
+		// directory and announcement queries.
+		Groups: database.Revenue(),
 		// Archived documents (FR-DOC-003). The row reads come from the
 		// store; retrieval and the invoice write go through the Archiver,
 		// which is what performs the checksum comparison. Separate fields
@@ -477,6 +482,7 @@ func run(ctx context.Context) error {
 		PlanChanges: apiHandler,
 		IPPools:     apiHandler,
 		Bandwidth:   apiHandler,
+		Groups:      apiHandler,
 		ReplyAttrs:  apiHandler,
 		FUPPolicies: apiHandler,
 		Collection:  apiHandler,

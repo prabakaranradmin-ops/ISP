@@ -54,6 +54,17 @@ func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refused here, before any header is written. WriteCSV would refuse it too,
+	// but by then the 200 is committed and the caller would receive an empty
+	// attachment — so the check has to happen on this side of the headers.
+	if filter.GroupID != nil && !reporting.GroupFilterable(report) {
+		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION",
+			report+" cannot be filtered by subscriber group; it reads pre-aggregated "+
+				"figures in which individual subscribers do not appear. Use the "+
+				reporting.ReportSubscribers+" report for a group roster.")
+		return
+	}
+
 	if r.URL.Query().Get("format") != "csv" {
 		h.writeReportJSON(w, r, report, filter)
 		return
@@ -92,6 +103,16 @@ func (h *Handler) writeReportJSON(w http.ResponseWriter, r *http.Request, report
 		rows, err = h.reports.TicketResolution(ctx, months, f.FranchiseID)
 	case reporting.ReportCollection:
 		rows, err = h.reports.FranchiseCollection(ctx, months, f.FranchiseID)
+	case reporting.ReportSubscribers:
+		rows, err = h.reports.SubscriberRoster(ctx, f.GroupID, f.FranchiseID)
+	default:
+		// Unreachable while ValidReport guards the route, and here anyway: the
+		// original switch had no default, so adding a report to the catalogue
+		// without a case here would have served {"rows": null} with a 200 — a
+		// report that silently returns nothing is worse than one that 404s.
+		writeError(w, http.StatusNotFound, "ERR_NOT_FOUND",
+			"report "+report+" has no JSON representation")
+		return
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "report query failed")
@@ -132,7 +153,22 @@ func (h *Handler) reportFilter(w http.ResponseWriter, r *http.Request) (reportin
 		}
 	}
 
-	return reporting.Filter{Months: months, FranchiseID: scope}, true
+	// A group narrows the roster report — FR-GRP-001. Unlike franchise_id this
+	// is open to every reporting role: a group is a label an operator put on
+	// their own customers, not a partition between partners, and a
+	// franchise-scoped caller still only sees their own rows because the
+	// franchise predicate applies as well.
+	var groupID *int
+	if raw := r.URL.Query().Get("group_id"); raw != "" {
+		id, convErr := strconv.Atoi(raw)
+		if convErr != nil || id <= 0 {
+			writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "group_id must be a positive integer")
+			return reporting.Filter{}, false
+		}
+		groupID = &id
+	}
+
+	return reporting.Filter{Months: months, FranchiseID: scope, GroupID: groupID}, true
 }
 
 // ── Scheduled export ────────────────────────────────────────────────────────

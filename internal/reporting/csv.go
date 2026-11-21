@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,11 +29,16 @@ const (
 	ReportGrowth           = "growth"
 	ReportTicketResolution = "ticket-resolution"
 	ReportCollection       = "collection"
+	// ReportSubscribers is the subscriber roster — FR-GRP-001. The only
+	// report with one row per subscriber, and so the only one a group can
+	// filter.
+	ReportSubscribers = "subscribers"
 )
 
 // Reports lists every exportable report, for validation and error messages.
 func Reports() []string {
-	return []string{ReportPlanMix, ReportGrowth, ReportTicketResolution, ReportCollection}
+	return []string{ReportPlanMix, ReportGrowth, ReportTicketResolution, ReportCollection,
+		ReportSubscribers}
 }
 
 // ValidReport reports whether name is exportable.
@@ -163,6 +169,40 @@ func WriteCollectionCSV(w io.Writer, rows []CollectionRow) error {
 			strconv.Itoa(r.PayingSubscribers), optFloat(r.CollectionRatePct),
 		}); err != nil {
 			return fmt.Errorf("reporting: write collection row: %w", err)
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
+
+// WriteSubscriberRosterCSV streams the subscriber roster — FR-GRP-001.
+//
+// Mobile number but no email or address: a roster is used to work a list — ring
+// a block of customers before a cable replacement, check who a promotion
+// reached — and one contact column serves that. Widening it would turn a
+// routine export into a bulk extract of contact details (DPDP
+// purpose-limitation), which the subscriber's own page already serves one at a
+// time.
+func WriteSubscriberRosterCSV(w io.Writer, rows []SubscriberRosterRow) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write([]string{
+		"subscriber_id", "username", "status", "plan_name", "franchise_id",
+		"mobile_number", "groups", "created_at",
+	}); err != nil {
+		return fmt.Errorf("reporting: write subscriber roster header: %w", err)
+	}
+	for _, r := range rows {
+		if err := cw.Write([]string{
+			strconv.Itoa(r.SubscriberID), r.Username, r.Status, r.PlanName,
+			optInt(r.FranchiseID), r.MobileNumber,
+			// Semicolons, not commas: a comma inside a field is legal CSV but
+			// the quoting it forces is what spreadsheets most often get wrong
+			// on import, and a group list splitting into columns silently
+			// shifts every column after it.
+			strings.Join(r.Groups, "; "),
+			r.CreatedAt.UTC().Format(time.RFC3339),
+		}); err != nil {
+			return fmt.Errorf("reporting: write subscriber roster row: %w", err)
 		}
 	}
 	cw.Flush()
