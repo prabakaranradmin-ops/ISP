@@ -15,6 +15,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
 	"github.com/maaransoft/isp-bss-oss/internal/portalui"
+	"github.com/maaransoft/isp-bss-oss/internal/tickets"
 	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -119,6 +120,11 @@ type stubTickets struct {
 	created   []portal.TicketCreateRequest
 	createErr error
 	listErr   error
+	// FR-SUP-004.
+	ratedTicketID int
+	ratedBy       int
+	rating        tickets.Rating
+	rateErr       error
 }
 
 func (s *stubTickets) ListTickets(_ context.Context, _ int) ([]portal.TicketEntry, error) {
@@ -984,4 +990,14 @@ func TestStaticAssets_Served(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
+}
+
+// RateTicket records the rating this fake was asked for, so a test can prove
+// the subscriber id came from the session rather than the request — the one
+// thing a handler test can get wrong and still pass — FR-SUP-004.
+func (s *stubTickets) RateTicket(_ context.Context, ticketID, subscriberID int, r tickets.Rating) error {
+	s.ratedTicketID = ticketID
+	s.ratedBy = subscriberID
+	s.rating = r
+	return s.rateErr
 }

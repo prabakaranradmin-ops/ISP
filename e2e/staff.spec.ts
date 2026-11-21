@@ -991,7 +991,9 @@ test.describe('Support tickets', () => {
     await page.goto('/staff/tickets');
     const row = page.locator('tr', { hasText: description });
     await expect(row).toBeVisible();
-    await expect(page.locator('.summary-strip')).toContainText('Unassigned');
+    // The volume strip specifically: FR-SUP-004 added a second summary strip
+    // for satisfaction, so a bare .summary-strip now matches two elements.
+    await expect(page.locator('[data-strip="volume"]')).toContainText('Unassigned');
     await snap(page, 'tickets-queue');
 
     await row.locator('select[name="assigned_to"]').selectOption({ label: 'Suresh Babu (Ground Tech)' });

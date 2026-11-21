@@ -231,6 +231,22 @@ settled the question in seconds.
   is what a new reference should use; migrating the old two is its own
   change, not a side effect of adding a fourth dimension.
 
+- **A ticket rating has no history: re-rating overwrites.** FR-SUP-004 keeps
+  the score, its timestamp and its comment as columns on `tickets`, so
+  changing a rating replaces it and there is no record of what it was before.
+  That was a deliberate trade for not adding a join to the queue, the
+  subscriber's list and the helpdesk summary to store one row per ticket. It
+  is fine while the rating is read as current feedback; it would not be fine
+  if the business ever wanted to show that support pressured a customer into
+  changing one. If that day comes, the change is a `ticket_ratings` table
+  with the current values kept on `tickets` as a cache, not a migration of
+  the columns away.
+
+  Related: nothing stops staff *asking* a customer to re-rate. What is
+  prevented is staff entering a rating themselves — there is no console path
+  that writes one, and `RateTicket` takes the subscriber id from the portal
+  session.
+
 - **An immediate plan change leaves no history row.** Migration 031's
   trigger is `AFTER UPDATE OF status ... WHEN (OLD.status IS DISTINCT FROM
   NEW.status)`, so changing a subscriber's plan without changing their status

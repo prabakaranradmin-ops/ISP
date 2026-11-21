@@ -1,10 +1,12 @@
 {{define "tickets-list"}}
 <div id="tickets-list">
   {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+  {{if .Message}}<div class="alert alert-success">{{.Message}}</div>{{end}}
   {{if .Tickets}}
+  {{$csrf := .CSRFToken}}
   <table>
     <thead>
-      <tr><th>Category</th><th>Description</th><th>Status</th><th>Filed</th></tr>
+      <tr><th>Category</th><th>Description</th><th>Status</th><th>Filed</th><th>Your rating</th></tr>
     </thead>
     <tbody>
       {{range .Tickets}}
@@ -13,6 +15,59 @@
         <td>{{.Description}}</td>
         <td><span class="badge badge-{{.Status}}">{{.Status}}</span></td>
         <td>{{datetime .CreatedAt}}</td>
+        <td>
+          {{/* Rating a ticket — FR-SUP-004. Three states: rated, ratable and
+               neither. A ticket that was rated and then reopened shows the
+               rating it was given and no form, because the resolution that
+               was rated has been undone and the next one has not happened
+               yet. */}}
+          {{if .Rated}}
+            <span class="rating-given" title="{{.RatingComment}}">
+              {{stars .Rating}}
+            </span>
+            {{if .RatingComment}}<br><span class="muted small">{{.RatingComment}}</span>{{end}}
+            {{if .CanRate}}
+            <details>
+              <summary class="small">Change</summary>
+              <form hx-post="/ui/tickets/{{.ID}}/rating" hx-target="#tickets-list" hx-swap="outerHTML">
+                <input type="hidden" name="csrf_token" value="{{$csrf}}">
+                <label class="small">Rating
+                  <select name="rating" required>
+                    {{range $n := oneToFive}}<option value="{{$n}}">{{$n}}</option>{{end}}
+                  </select>
+                </label>
+                <label class="small">Comment (optional)
+                  <input name="comment" maxlength="500" value="{{.RatingComment}}">
+                </label>
+                <button class="btn" type="submit">Update rating</button>
+              </form>
+            </details>
+            {{else}}
+            {{/* Rated, then reopened. The stars above describe the previous
+                 resolution, and there is nothing to rate until the ticket is
+                 resolved again — said out loud, because a rating shown with
+                 no way to change it otherwise looks like a form that failed
+                 to load. */}}
+            <br><span class="muted small">You can rate this again once it is resolved.</span>
+            {{end}}
+          {{else if .CanRate}}
+            <form hx-post="/ui/tickets/{{.ID}}/rating" hx-target="#tickets-list" hx-swap="outerHTML">
+              <input type="hidden" name="csrf_token" value="{{$csrf}}">
+              <label class="small">How did we do?
+                <select name="rating" required>
+                  <option value="">Rate 1&ndash;5</option>
+                  {{range $n := oneToFive}}<option value="{{$n}}">{{$n}}</option>{{end}}
+                </select>
+              </label>
+              <label class="small">Comment (optional)
+                <input name="comment" maxlength="500" placeholder="Anything we should know?">
+              </label>
+              <button class="btn" type="submit">Submit rating</button>
+            </form>
+          {{else}}
+            <span class="muted small">You can rate this once it is resolved.</span>
+          {{end}}
+        </td>
       </tr>
       {{end}}
     </tbody>

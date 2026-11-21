@@ -11,6 +11,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
+	"github.com/maaransoft/isp-bss-oss/internal/tickets"
 )
 
 // fakeTickets records what the update handler asked the store to change.
@@ -206,5 +207,102 @@ func TestRenderTicketQueue(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			assertRendersOK(t, h, "tickets", pageData{Session: testSession(), Data: d})
 		})
+	}
+}
+
+// ── Ratings in the queue and the summary strip — FR-SUP-004 ─────────────────
+
+func ptrInt(v int) *int { return &v }
+
+// Rendered with real data: the rating cell and the satisfaction tiles both
+// read fields a wrong name would hide until somebody loaded the page.
+func TestFR_SUP_004_TheQueueShowsTheSubscribersRating(t *testing.T) {
+	four := 4
+	now := time.Now()
+	h := &Handler{}
+
+	d := h.page(testSession(), "Support", "tickets")
+	d.Data = ticketsData{
+		QueueMode:  true,
+		Filter:     TicketFilter{View: "all"},
+		Views:      DirectoryViews,
+		Priorities: []string{"low", "medium", "high", "critical"},
+		Summary: &HelpdeskSummary{
+			Open: 3, Overdue: 1, Unassigned: 2, Closed30d: 4,
+			MedianCloseHours: ptrFloat(3.5),
+			Ratings: tickets.RatingSummary{
+				Rated: 3, Ratable: 4, Average: ptrFloat(2.67),
+				Distribution: [tickets.MaxRating]int{1, 1, 0, 0, 1},
+			},
+		},
+		Queue: []QueueTicket{
+			{
+				ID: 1, SubscriberID: 10, Username: "rated@isp", Category: "billing",
+				Description: "overcharged", Priority: "medium", Status: "resolved",
+				CreatedAt: now, UpdatedAt: now,
+				Rating: &four, RatedAt: &now, RatingComment: "sorted quickly",
+			},
+			{
+				ID: 2, SubscriberID: 11, Username: "unrated@isp", Category: "billing",
+				Description: "still waiting", Priority: "low", Status: "open",
+				CreatedAt: now, UpdatedAt: now,
+			},
+		},
+	}
+	assertRendersOK(t, h, "tickets", d)
+
+	w := httptest.NewRecorder()
+	h.render(w, "tickets", d)
+	body := w.Body.String()
+
+	if strings.Contains(body, "<no value>") {
+		t.Error("the queue rendered <no value>, so a template field name does not resolve")
+	}
+	// Four filled stars and one empty, and the comment beside them.
+	if !strings.Contains(body, "★★★★☆") {
+		t.Error("the rated ticket does not show its stars")
+	}
+	if !strings.Contains(body, "sorted quickly") {
+		t.Error("the rating comment is not shown")
+	}
+	// The satisfaction tiles.
+	for _, want := range []string{"Average rating (30 days)", "1&ndash;2 star", "worth a call back"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the summary strip is missing %q", want)
+		}
+	}
+	// Three of four rated is 75%.
+	if !strings.Contains(body, "75.0% replied") {
+		t.Error("the response rate is not shown beside the average")
+	}
+	// Two negative ratings, which is the follow-up list.
+	if !strings.Contains(body, ">2<") {
+		t.Error("the negative count is not shown")
+	}
+	// And emphatically no way for staff to enter a rating: feedback staff
+	// can write about their own work is not feedback.
+	if strings.Contains(body, `name="rating"`) {
+		t.Error("the console offers a rating input, which would let staff rate their own work")
+	}
+}
+
+// An unrated helpdesk must not print zero, which reads as the worst possible
+// score rather than as no data.
+func TestFR_SUP_004_AnUnratedHelpdeskStripShowsADash(t *testing.T) {
+	h := &Handler{}
+	d := h.page(testSession(), "Support", "tickets")
+	d.Data = ticketsData{
+		QueueMode: true,
+		Filter:    TicketFilter{View: "all"},
+		Summary:   &HelpdeskSummary{Closed30d: 0},
+	}
+	assertRendersOK(t, h, "tickets", d)
+
+	w := httptest.NewRecorder()
+	h.render(w, "tickets", d)
+	body := w.Body.String()
+	if strings.Contains(body, "0.0 / 5") || strings.Contains(body, "0.0% replied") {
+		t.Error("an unrated helpdesk reports 0.0, which reads as the worst possible score " +
+			"rather than as nothing to report")
 	}
 }

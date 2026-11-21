@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
+	"github.com/maaransoft/isp-bss-oss/internal/tickets"
 	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -55,7 +56,13 @@ func (s *stubNotifs) ListNotifications(_ context.Context, _ int, _ int) ([]porta
 	}, nil
 }
 
-type stubTickets struct{}
+type stubTickets struct {
+	// FR-SUP-004.
+	ratedTicketID int
+	ratedBy       int
+	rating        tickets.Rating
+	rateErr       error
+}
 
 func (s *stubTickets) ListTickets(_ context.Context, _ int) ([]portal.TicketEntry, error) {
 	return []portal.TicketEntry{
@@ -150,4 +157,14 @@ func TestPortalRenew_NoGateway(t *testing.T) {
 	if renewRec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("want 503 without gateway, got %d — %s", renewRec.Code, renewRec.Body.String())
 	}
+}
+
+// RateTicket records the rating this fake was asked for, so a test can prove
+// the subscriber id came from the session rather than the request — the one
+// thing a handler test can get wrong and still pass — FR-SUP-004.
+func (s *stubTickets) RateTicket(_ context.Context, ticketID, subscriberID int, r tickets.Rating) error {
+	s.ratedTicketID = ticketID
+	s.ratedBy = subscriberID
+	s.rating = r
+	return s.rateErr
 }

@@ -14,11 +14,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
+	"github.com/maaransoft/isp-bss-oss/internal/tickets"
 	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/bcrypt"
@@ -57,6 +59,10 @@ type PortalNotificationQuerier interface {
 type PortalTicketQuerier interface {
 	ListTickets(ctx context.Context, subscriberID int) ([]TicketEntry, error)
 	CreateTicket(ctx context.Context, t TicketCreateRequest) (*TicketEntry, error)
+	// RateTicket records a rating against the caller's own resolved ticket
+	// (FR-SUP-004). The subscriber id is passed separately and comes from
+	// the session, never the body.
+	RateTicket(ctx context.Context, ticketID, subscriberID int, r tickets.Rating) error
 }
 
 // GatewayLogger records payment-gateway orders (FR-PAY-001). Satisfied
@@ -177,7 +183,26 @@ type TicketEntry struct {
 	SLAResponseDueAt   *time.Time `json:"sla_response_due_at,omitempty"`
 	SLAResolutionDueAt *time.Time `json:"sla_resolution_due_at,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
+
+	// The subscriber's own rating of this ticket — FR-SUP-004. Nil until
+	// they rate it.
+	Rating        *int       `json:"rating,omitempty"`
+	RatedAt       *time.Time `json:"rated_at,omitempty"`
+	RatingComment string     `json:"rating_comment,omitempty"`
 }
+
+// CanRate reports whether the subscriber may rate this ticket now.
+//
+// Computed from the status rather than stored, so it cannot go stale against
+// a ticket that was reopened — and so the portal, the API and any later
+// channel ask the same question of the same data instead of each deciding
+// when a star control should appear.
+func (t TicketEntry) CanRate() bool { return tickets.Ratable(t.Status) }
+
+// Rated reports whether a rating has been given, which is not the same as
+// CanRate: a reopened ticket keeps the rating of its previous resolution
+// while becoming unratable until it is resolved again.
+func (t TicketEntry) Rated() bool { return t.Rating != nil }
 
 // TicketCreateRequest is the body for POST /portal/tickets.
 type TicketCreateRequest struct {
@@ -244,6 +269,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /portal/notifications", self(http.HandlerFunc(h.ListNotifications)))
 	mux.Handle("GET /portal/tickets", self(http.HandlerFunc(h.ListTickets)))
 	mux.Handle("POST /portal/tickets", self(http.HandlerFunc(h.CreateTicket)))
+	mux.Handle("POST /portal/tickets/{id}/rating", self(http.HandlerFunc(h.RateTicket)))
 }
 
 // â”€â”€ POR-001: Auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -483,15 +509,18 @@ func (h *Handler) ListTickets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tickets, err := h.tickets.ListTickets(r.Context(), subID)
+	// Named entries, not tickets: the package of that name is imported here
+	// now, and a local shadowing it is a trap for whoever next reaches for
+	// tickets.Ratable in this function.
+	entries, err := h.tickets.ListTickets(r.Context(), subID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errBody("ERR_INTERNAL", "failed to fetch tickets"))
 		return
 	}
-	if tickets == nil {
-		tickets = []TicketEntry{}
+	if entries == nil {
+		entries = []TicketEntry{}
 	}
-	writeJSON(w, http.StatusOK, tickets)
+	writeJSON(w, http.StatusOK, entries)
 }
 
 // CreateTicket handles POST /portal/tickets.
@@ -519,6 +548,68 @@ func (h *Handler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, ticket)
+}
+
+// TicketRateRequest is the body for POST /portal/tickets/{id}/rating.
+type TicketRateRequest struct {
+	Rating  int    `json:"rating"`
+	Comment string `json:"comment,omitempty"`
+}
+
+// RateTicket handles POST /portal/tickets/{id}/rating — FR-SUP-004.
+//
+// The subscriber id comes from the session, never the body, so a rating
+// cannot be filed against somebody else's ticket by editing a request. The
+// store checks ownership and status in the same statement as the write.
+func (h *Handler) RateTicket(w http.ResponseWriter, r *http.Request) {
+	subID := subscriberIDFromCtx(r)
+	if subID == 0 {
+		writeJSON(w, http.StatusUnauthorized, errBody("ERR_UNAUTHORIZED", "missing subscriber context"))
+		return
+	}
+
+	ticketID, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || ticketID <= 0 {
+		writeJSON(w, http.StatusBadRequest, errBody("ERR_BAD_REQUEST", "invalid ticket id"))
+		return
+	}
+
+	var req TicketRateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("ERR_BAD_REQUEST", "invalid request body"))
+		return
+	}
+
+	err = h.tickets.RateTicket(r.Context(), ticketID, subID,
+		tickets.Rating{Score: req.Rating, Comment: req.Comment})
+	switch {
+	case err == nil:
+		// 204 rather than the updated ticket: the portal list is the one
+		// place a rating is read back, and returning a single ticket here
+		// would be a second shape of the same thing to keep in step.
+		w.WriteHeader(http.StatusNoContent)
+
+	case errors.Is(err, tickets.ErrRatingOutOfRange), errors.Is(err, tickets.ErrCommentTooLong):
+		writeJSON(w, http.StatusUnprocessableEntity, errBody("ERR_VALIDATION", err.Error()))
+
+	case errors.Is(err, tickets.ErrTicketNotResolved):
+		// 409, not 422: the request is well formed and will succeed once the
+		// ticket is resolved, which is a different thing to tell a client
+		// from "this score is not a number from 1 to 5".
+		writeJSON(w, http.StatusConflict,
+			errBody("ERR_NOT_RESOLVED", "a ticket can only be rated once it has been resolved"))
+
+	case errors.Is(err, tickets.ErrTicketNotFound), errors.Is(err, tickets.ErrNotYourTicket):
+		// Deliberately the same answer for both. Distinguishing them would
+		// let anybody enumerate which ticket ids exist by rating them, and
+		// a subscriber has no legitimate interest in the difference.
+		writeJSON(w, http.StatusNotFound, errBody("ERR_NOT_FOUND", "no such ticket"))
+
+	default:
+		log.Error().Err(err).Int("ticket_id", ticketID).Int("subscriber_id", subID).
+			Msg("portal: rate ticket failed")
+		writeJSON(w, http.StatusInternalServerError, errBody("ERR_INTERNAL", "could not record the rating"))
+	}
 }
 
 // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

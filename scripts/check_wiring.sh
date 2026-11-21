@@ -172,6 +172,13 @@ COMPONENTS=(
     # qualified "reporting.X(") cannot see them.
     "reporting.Areas:the report catalogue grouping the console index (FR-RPT-004)"
     "ExpiringSubscribers:the renewal call list, as one of the nine new reports (FR-RPT-004)"
+
+    # Subscriber ticket ratings (FR-SUP-004). The write path only: the read
+    # side is a column on a row every ticket query already fetches, so it
+    # cannot be unwired without the queries themselves failing. The write is
+    # the part that could exist with no caller — a rating form nobody can
+    # reach is a feature that looks built and collects nothing.
+    "RateTicket:subscribers rating their own resolved tickets (FR-SUP-004)"
 )
 
 if [ "${1:-}" = "--list" ]; then

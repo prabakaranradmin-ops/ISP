@@ -6,9 +6,11 @@ import (
 	"io/fs"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
+	"github.com/maaransoft/isp-bss-oss/internal/tickets"
 	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 )
@@ -34,6 +36,29 @@ var funcMap = template.FuncMap{
 	"statusBadge": statusBadgeClass,
 	"pctWidth":    pctWidth,
 	"methodLabel": billing.MethodLabel,
+	// stars renders a rating as filled and empty stars — FR-SUP-004. Takes
+	// the *int straight off the ticket, so a template cannot render an
+	// unrated ticket as zero stars (which reads as one star given, not as
+	// none given).
+	"stars": func(rating *int) string {
+		if rating == nil {
+			return ""
+		}
+		n := *rating
+		if n < tickets.MinRating || n > tickets.MaxRating {
+			return ""
+		}
+		return strings.Repeat("★", n) + strings.Repeat("☆", tickets.MaxRating-n)
+	},
+	// oneToFive is the score range, from the domain rather than written out
+	// in the markup, so the form cannot offer a score the store would refuse.
+	"oneToFive": func() []int {
+		out := make([]int, 0, tickets.MaxRating)
+		for n := tickets.MinRating; n <= tickets.MaxRating; n++ {
+			out = append(out, n)
+		}
+		return out
+	},
 }
 
 // pageNames lists every full page template (layout + content). Extended as

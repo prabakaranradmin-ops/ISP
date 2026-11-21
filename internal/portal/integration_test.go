@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
+	"github.com/maaransoft/isp-bss-oss/internal/tickets"
 	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -50,6 +51,11 @@ type itSubscriberSeed struct {
 type itPortalStore struct {
 	mu   sync.Mutex
 	subs map[int]*itSubscriberSeed
+	// FR-SUP-004.
+	ratedTicketID int
+	ratedBy       int
+	rating        tickets.Rating
+	rateErr       error
 }
 
 func newITPortalStore(seeds ...*itSubscriberSeed) *itPortalStore {
@@ -508,4 +514,14 @@ func TestFR_SUB_005_PortalMe_ScopedToSubscriber(t *testing.T) {
 	if profile.PlanName != "Plan B" {
 		t.Errorf("plan_name: want Plan B, got %q", profile.PlanName)
 	}
+}
+
+// RateTicket records the rating this fake was asked for, so a test can prove
+// the subscriber id came from the session rather than the request — the one
+// thing a handler test can get wrong and still pass — FR-SUP-004.
+func (s *itPortalStore) RateTicket(_ context.Context, ticketID, subscriberID int, r tickets.Rating) error {
+	s.ratedTicketID = ticketID
+	s.ratedBy = subscriberID
+	s.rating = r
+	return s.rateErr
 }

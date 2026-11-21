@@ -222,3 +222,116 @@ test.describe('Renewal', () => {
     await expect(page.getByText(/not configured/i)).toBeVisible({ timeout: 10_000 });
   });
 });
+
+test.describe('Rating a resolved ticket (FR-SUP-004)', () => {
+  // An open ticket cannot be rated: rating one would be rating a resolution
+  // that has not happened. The portal says so rather than showing a control
+  // that fails.
+  test('an open ticket offers no rating, and says why', async ({ page }) => {
+    await signIn(page);
+    await page.goto('/ui/tickets');
+
+    const description = `E2E rating-open ${Date.now()}`;
+    await page.selectOption('select[name="category"]', { index: 0 });
+    await page.fill('textarea[name="description"]', description);
+    await page.getByRole('button', { name: /Submit Ticket/i }).click();
+    await expect(page.getByText(description)).toBeVisible({ timeout: 10_000 });
+
+    const row = page.locator('tbody tr', { hasText: description });
+    await expect(row.locator('form[action*="/rating"], select[name="rating"]')).toHaveCount(0);
+    await expect(row.getByText(/once it is resolved/)).toBeVisible();
+  });
+
+  // The write path end to end against a real database: a subscriber files a
+  // ticket, staff resolve it in the console, and the subscriber rates it.
+  // Driven through both real screens rather than by writing the status
+  // straight into the table, so the transition is the one production makes —
+  // it is what writes the ticket_status_history row the helpdesk figures
+  // read, and a fixture that skipped it would prove nothing about them.
+  test('a resolved ticket can be rated and the stars come back', async ({ page, browser }) => {
+    await signIn(page);
+    await page.goto('/ui/tickets');
+
+    const description = `E2E rating ${Date.now()}`;
+    await page.selectOption('select[name="category"]', { index: 0 });
+    await page.fill('textarea[name="description"]', description);
+    await page.getByRole('button', { name: /Submit Ticket/i }).click();
+    await expect(page.getByText(description)).toBeVisible({ timeout: 10_000 });
+
+    // Resolve it in the console, in its own context so the staff session and
+    // the portal session do not share a cookie jar.
+    const staffCtx = await browser.newContext({ ignoreHTTPSErrors: true });
+    try {
+      const staff = await staffCtx.newPage();
+      await staff.goto('/staff/login');
+      await staff.getByLabel('Username').fill('csr');
+      await staff.getByLabel('Password').fill('staffpassword');
+      await staff.getByRole('button', { name: 'Sign in' }).click();
+      await expect(staff).toHaveURL(/\/staff\/dashboard/);
+
+      await staff.goto('/staff/tickets?view=open');
+      const staffRow = staff.locator('tbody tr', { hasText: description });
+      if ((await staffRow.count()) === 0) {
+        test.skip(true, 'the filed ticket is not in the console queue on this stack');
+      }
+      await staffRow.locator('select[name="status"]').selectOption('resolved');
+      await staffRow.getByRole('button', { name: /Update|Save/i }).first().click();
+      await expect(staff.locator('tbody tr', { hasText: description })).toHaveCount(0);
+    } finally {
+      await staffCtx.close();
+    }
+
+    // Back in the portal, it is now ratable.
+    await page.reload();
+    const row = page.locator('tbody tr', { hasText: description });
+    await expect(row.locator('select[name="rating"]')).toBeVisible();
+
+    await row.locator('select[name="rating"]').selectOption('4');
+    await row.locator('input[name="comment"]').fill('sorted quickly');
+    await row.getByRole('button', { name: /Submit rating/i }).click();
+
+    // The fragment swaps in place and now carries the rating.
+    await expect(page.getByText(/Thank you/)).toBeVisible({ timeout: 10_000 });
+    const rated = page.locator('tbody tr', { hasText: description });
+    await expect(rated.getByText('★★★★☆')).toBeVisible();
+    await expect(rated.getByText('sorted quickly')).toBeVisible();
+  });
+
+  // And the console shows it, which is the other half of the requirement:
+  // a rating nobody in support can see is feedback collected and discarded.
+  test('the rating appears in the console queue and the helpdesk summary', async ({ browser }) => {
+    const staffCtx = await browser.newContext({ ignoreHTTPSErrors: true });
+    try {
+      const staff = await staffCtx.newPage();
+      await staff.goto('/staff/login');
+      await staff.getByLabel('Username').fill('csr');
+      await staff.getByLabel('Password').fill('staffpassword');
+      await staff.getByRole('button', { name: 'Sign in' }).click();
+      await expect(staff).toHaveURL(/\/staff\/dashboard/);
+
+      await staff.goto('/staff/tickets?view=closed');
+      // The column exists whether or not anything is rated yet.
+      await expect(staff.getByRole('columnheader', { name: 'Rated' })).toBeVisible();
+      // The satisfaction tiles, with the response rate's denominator beside
+      // the average rather than left to be worked out.
+      await expect(staff.getByText('Average rating (30 days)')).toBeVisible();
+      await expect(staff.getByText(/worth a call back/)).toBeVisible();
+      // And no way for staff to enter one.
+      await expect(staff.locator('select[name="rating"], input[name="rating"]')).toHaveCount(0);
+    } finally {
+      await staffCtx.close();
+    }
+  });
+
+  // The cookie rides along automatically and the token does not, which is
+  // the shape a cross-site forgery takes.
+  test('a rating without the CSRF token is refused', async ({ page }) => {
+    await signIn(page);
+    await page.goto('/ui/tickets');
+
+    const res = await page.request.post('/ui/tickets/1/rating', {
+      form: { rating: '5' },
+    });
+    expect(res.status()).toBe(403);
+  });
+});

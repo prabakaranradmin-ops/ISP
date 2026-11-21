@@ -664,7 +664,8 @@ func (s *PortalStore) ListNotifications(ctx context.Context, subscriberID, limit
 func (s *PortalStore) ListTickets(ctx context.Context, subscriberID int) ([]portal.TicketEntry, error) {
 	const q = `
 		SELECT id, category, description, status, priority,
-		       sla_response_due_at, sla_resolution_due_at, created_at
+		       sla_response_due_at, sla_resolution_due_at, created_at,
+		       rating, rated_at, COALESCE(rating_comment, '')
 		FROM tickets
 		WHERE subscriber_id = $1
 		ORDER BY created_at DESC`
@@ -679,7 +680,8 @@ func (s *PortalStore) ListTickets(ctx context.Context, subscriberID int) ([]port
 	for rows.Next() {
 		var t portal.TicketEntry
 		if err := rows.Scan(&t.ID, &t.Category, &t.Description, &t.Status, &t.Priority,
-			&t.SLAResponseDueAt, &t.SLAResolutionDueAt, &t.CreatedAt); err != nil {
+			&t.SLAResponseDueAt, &t.SLAResolutionDueAt, &t.CreatedAt,
+			&t.Rating, &t.RatedAt, &t.RatingComment); err != nil {
 			return nil, fmt.Errorf("db: scan ticket row: %w", err)
 		}
 		tickets = append(tickets, t)

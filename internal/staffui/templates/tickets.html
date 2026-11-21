@@ -4,13 +4,38 @@
 <h1>Support{{if $d.Filter.SubscriberID}} <span class="muted">&middot; subscriber {{$d.Filter.SubscriberID}}</span>{{end}}</h1>
 
 {{with $d.Summary}}
-<div class="tiles tiles-5 summary-strip">
+<div class="tiles tiles-5 summary-strip" data-strip="volume">
   <a class="tile" href="/staff/tickets?view=open"><span class="tile-label">Open</span><span class="tile-num">{{.Open}}</span></a>
   <a class="tile{{if .Overdue}} tile-alert{{end}}" href="/staff/tickets?view=overdue"><span class="tile-label">Past resolution target</span><span class="tile-num">{{.Overdue}}</span></a>
   <a class="tile" href="/staff/tickets?view=unassigned"><span class="tile-label">Unassigned</span><span class="tile-num">{{.Unassigned}}</span></a>
   <a class="tile" href="/staff/tickets?view=closed"><span class="tile-label">Closed in 30 days</span><span class="tile-num">{{.Closed30d}}</span></a>
   <div class="tile"><span class="tile-label">Median time to close</span><span class="tile-num">{{optHours .MedianCloseHours}}{{if .MedianCloseHours}}<span class="unit"> h</span>{{end}}</span></div>
 </div>
+{{with .Ratings}}
+{{/* Satisfaction — FR-SUP-004. Over exactly the tickets "Closed in 30 days"
+     counts, so the response rate divides by the number in the tile beside
+     it. The average is shown with how many ratings it is made of and how
+     many of those were poor, because an average alone cannot distinguish a
+     happy month from one with four responses. */}}
+<div class="tiles tiles-3 summary-strip" data-strip="satisfaction">
+  <div class="tile">
+    <span class="tile-label">Average rating (30 days)</span>
+    <span class="tile-num">
+      {{if .Average}}{{optPct .Average}}<span class="unit"> / 5</span>{{else}}&mdash;{{end}}
+    </span>
+  </div>
+  <div class="tile">
+    <span class="tile-label">Rated</span>
+    <span class="tile-num">{{.Rated}}<span class="unit"> of {{.Ratable}}</span></span>
+    {{if .ResponseRate}}<span class="unit">{{optPct .ResponseRate}}% replied</span>{{end}}
+  </div>
+  <div class="tile{{if .Negative}} tile-alert{{end}}">
+    <span class="tile-label">1&ndash;2 star</span>
+    <span class="tile-num">{{.Negative}}</span>
+    <span class="unit">worth a call back</span>
+  </div>
+</div>
+{{end}}
 {{end}}
 
 <nav class="filterbar" aria-label="Ticket lists">
@@ -38,7 +63,7 @@
   <table class="queue">
     <thead><tr>
       <th>#</th><th>Subscriber</th><th>Issue</th><th>Priority</th><th>Status</th>
-      <th>Assignee</th><th>Resolve by</th><th>Filed</th><th>Update</th>
+      <th>Assignee</th><th>Resolve by</th><th>Filed</th><th>Rated</th><th>Update</th>
     </tr></thead>
     <tbody>
     {{range $d.Queue}}
@@ -51,6 +76,15 @@
         <td>{{if .AssigneeName}}{{.AssigneeName}}{{else}}<span class="muted">Unassigned</span>{{end}}</td>
         <td class="num">{{optDatetime .ResolutionDue}}{{if .Overdue}} <span class="pill bad">overdue</span>{{end}}</td>
         <td class="num">{{datetime .CreatedAt}}</td>
+        {{/* The subscriber's rating — FR-SUP-004. Read-only: there is no
+             console path that writes one, because feedback staff can enter
+             about their own work is not feedback. */}}
+        <td class="small">
+          {{if .Rating}}
+            <span title="{{.RatingComment}}">{{stars .Rating}}</span>
+            {{if .RatingComment}}<br><span class="muted">{{.RatingComment}}</span>{{end}}
+          {{else}}<span class="muted">&mdash;</span>{{end}}
+        </td>
         <td>
           {{$t := .}}
           <form method="post" action="/staff/tickets/{{.ID}}/status" class="inline">
@@ -72,7 +106,7 @@
         </td>
       </tr>
     {{else}}
-      <tr><td colspan="9" class="empty">{{if eq $d.Filter.View "open"}}No open tickets. The queue is clear.{{else}}No tickets match.{{end}}</td></tr>
+      <tr><td colspan="10" class="empty">{{if eq $d.Filter.View "open"}}No open tickets. The queue is clear.{{else}}No tickets match.{{end}}</td></tr>
     {{end}}
     </tbody>
   </table>

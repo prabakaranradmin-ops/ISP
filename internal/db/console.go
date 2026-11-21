@@ -350,7 +350,8 @@ func (s *ConsoleStore) ListTicketQueue(ctx context.Context, f staffui.TicketFilt
 		SELECT t.id, t.subscriber_id, s.username, t.category, t.description,
 		       t.priority, t.status, t.assigned_to, COALESCE(NULLIF(u.full_name, ''), u.username, ''),
 		       t.sla_response_due_at, t.sla_resolution_due_at, t.created_at, t.updated_at,
-		       (t.status IN ('open','in_progress') AND t.sla_resolution_due_at < now()) AS overdue
+		       (t.status IN ('open','in_progress') AND t.sla_resolution_due_at < now()) AS overdue,
+		       t.rating, t.rated_at, COALESCE(t.rating_comment, '')
 		  FROM tickets t
 		  JOIN subscribers s ON s.id = t.subscriber_id
 		  LEFT JOIN staff_users u ON u.id = t.assigned_to
@@ -388,7 +389,8 @@ func (s *ConsoleStore) ListTicketQueue(ctx context.Context, f staffui.TicketFilt
 		var t staffui.QueueTicket
 		if err := rows.Scan(&t.ID, &t.SubscriberID, &t.Username, &t.Category, &t.Description,
 			&t.Priority, &t.Status, &t.AssignedTo, &t.AssigneeName,
-			&t.ResponseDue, &t.ResolutionDue, &t.CreatedAt, &t.UpdatedAt, &t.Overdue); err != nil {
+			&t.ResponseDue, &t.ResolutionDue, &t.CreatedAt, &t.UpdatedAt, &t.Overdue,
+			&t.Rating, &t.RatedAt, &t.RatingComment); err != nil {
 			return nil, fmt.Errorf("db: scan ticket: %w", err)
 		}
 		out = append(out, t)
@@ -415,6 +417,11 @@ func (s *ConsoleStore) HelpdeskSummary(ctx context.Context) (*staffui.HelpdeskSu
 		    JOIN ticket_status_history h ON h.ticket_id = t.id
 		   WHERE h.new_status IN ('resolved','closed') AND NOT h.is_baseline
 		   GROUP BY t.id, t.created_at
+		), rated AS (
+		  SELECT t.rating
+		    FROM first_close fc
+		    JOIN tickets t ON t.id = fc.id
+		   WHERE fc.closed_at >= now() - interval '30 days'
 		)
 		SELECT
 		  (SELECT count(*) FROM tickets WHERE status IN ('open','in_progress')),
@@ -422,10 +429,26 @@ func (s *ConsoleStore) HelpdeskSummary(ctx context.Context) (*staffui.HelpdeskSu
 		  (SELECT count(*) FROM tickets WHERE status IN ('open','in_progress') AND assigned_to IS NULL),
 		  (SELECT count(*) FROM first_close WHERE closed_at >= now() - interval '30 days'),
 		  (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM closed_at - created_at) / 3600.0)
-		     FROM first_close WHERE closed_at >= now() - interval '30 days')`
+		     FROM first_close WHERE closed_at >= now() - interval '30 days'),
+		  -- The rating figures, over exactly the tickets Closed30d counts
+		  -- (FR-SUP-004). Ratable is that same count, so the response rate
+		  -- divides by the number printed beside it rather than by a set the
+		  -- reader cannot see.
+		  (SELECT count(*) FROM rated),
+		  (SELECT count(rating) FROM rated),
+		  (SELECT avg(rating)::float8 FROM rated),
+		  (SELECT count(*) FROM rated WHERE rating = 1),
+		  (SELECT count(*) FROM rated WHERE rating = 2),
+		  (SELECT count(*) FROM rated WHERE rating = 3),
+		  (SELECT count(*) FROM rated WHERE rating = 4),
+		  (SELECT count(*) FROM rated WHERE rating = 5)`
 	var sum staffui.HelpdeskSummary
 	if err := s.pool.QueryRow(ctx, q).Scan(&sum.Open, &sum.Overdue, &sum.Unassigned,
-		&sum.Closed30d, &sum.MedianCloseHours); err != nil {
+		&sum.Closed30d, &sum.MedianCloseHours,
+		&sum.Ratings.Ratable, &sum.Ratings.Rated, &sum.Ratings.Average,
+		&sum.Ratings.Distribution[0], &sum.Ratings.Distribution[1],
+		&sum.Ratings.Distribution[2], &sum.Ratings.Distribution[3],
+		&sum.Ratings.Distribution[4]); err != nil {
 		return nil, fmt.Errorf("db: helpdesk summary: %w", err)
 	}
 	return &sum, nil

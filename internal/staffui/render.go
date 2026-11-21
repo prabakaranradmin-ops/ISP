@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/tickets"
 	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 )
@@ -60,6 +61,15 @@ var funcMap = template.FuncMap{
 	// gb renders a byte count in GB — the unit allowances and tariffs are
 	// quoted in, and the only one an operator can compare against a plan.
 	// Nobody reads 1099511627776 (FR-RPT-004).
+	// stars renders a ticket rating (FR-SUP-004). Takes the *int off the
+	// row, so an unrated ticket cannot render as zero stars — which reads as
+	// a score given, not as none given.
+	"stars": func(rating *int) string {
+		if rating == nil || *rating < tickets.MinRating || *rating > tickets.MaxRating {
+			return ""
+		}
+		return strings.Repeat("★", *rating) + strings.Repeat("☆", tickets.MaxRating-*rating)
+	},
 	"gb": func(bytes int64) string {
 		return strconv.FormatFloat(float64(bytes)/(1024*1024*1024), 'f', 2, 64)
 	},

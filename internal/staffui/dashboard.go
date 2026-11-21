@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/tickets"
 	"github.com/maaransoft/isp-bss-oss/internal/tr069"
 	"github.com/rs/zerolog/log"
 )
@@ -273,6 +274,14 @@ type QueueTicket struct {
 	// Overdue is computed by the store against its own clock, so the badge
 	// and the "overdue" view can never disagree about a ticket.
 	Overdue bool
+
+	// The subscriber's rating of this ticket — FR-SUP-004. Nil until they
+	// rate it, and read-only here: there is no console path that writes a
+	// rating, because feedback staff can enter about their own work is not
+	// feedback.
+	Rating        *int
+	RatedAt       *time.Time
+	RatingComment string
 }
 
 // HelpdeskSummary is the figures strip above the queue.
@@ -284,6 +293,10 @@ type HelpdeskSummary struct {
 	// MedianCloseHours is nil when nothing was resolved in the window — "no
 	// data", which a zero would misreport as "instant".
 	MedianCloseHours *float64
+	// Ratings is how the tickets closed in the same 30-day window were rated
+	// (FR-SUP-004). Over the same set as Closed30d deliberately, so the
+	// response rate's denominator is the figure printed beside it.
+	Ratings tickets.RatingSummary
 }
 
 // Assignee is a staff member a ticket can be assigned to.
