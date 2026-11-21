@@ -109,6 +109,7 @@ type Handler struct {
 	bandwidth       BandwidthProfileStore
 	replyAttrs      ReplyAttributeStore
 	fupPolicies     FUPPolicyStore
+	collection      CollectionStore
 	gatewayLog      GatewayLogStore
 	diagnostics     DiagnosticsStore
 	billingRuns     BillingRunStore
@@ -190,6 +191,8 @@ type HandlerDeps struct {
 	ReplyAttributes ReplyAttributeStore
 	// FUPPolicies is the multi-tier fair-use policy and top-up store (FR-CAT-003).
 	FUPPolicies FUPPolicyStore
+	// Collection is the field payment collection store (FR-COL-001).
+	Collection CollectionStore
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeStore
 	// Products manages the product catalogue and the charges attached to
@@ -273,6 +276,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		bandwidth:        deps.Bandwidth,
 		replyAttrs:       deps.ReplyAttributes,
 		fupPolicies:      deps.FUPPolicies,
+		collection:       deps.Collection,
 		gatewayLog:       deps.GatewayLog,
 		diagnostics:      deps.Diagnostics,
 		billingRuns:      deps.BillingRuns,

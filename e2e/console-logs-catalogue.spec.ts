@@ -89,6 +89,15 @@ const SCREENS = [
     deny: ['noc', 'csr', 'tech'],
   },
   {
+    key: 'collections',
+    url: '/staff/collections',
+    heading: 'Collections',
+    // Wider than the other financial screens by one role: technicians work
+    // the rounds, and the screen is scoped to their own.
+    allow: ['owner', 'billing', 'tech'],
+    deny: ['noc', 'csr'],
+  },
+  {
     key: 'fair-use',
     url: '/staff/fair-use',
     heading: 'Fair-use policies',
@@ -345,6 +354,104 @@ test.describe('Bandwidth profiles (FR-CAT-002)', () => {
     await signIn(page, 'csr');
     const res = await page.request.get('/staff/bandwidth');
     expect(res.status()).toBe(403);
+  });
+});
+
+test.describe('Field payment collection (FR-COL-001)', () => {
+  // The security property the feature turns on, through a real browser: a
+  // technician may work a round, but must not be able to look at somebody
+  // else's by typing the parameter, and must not be offered the assignment
+  // or cash-reconciliation controls at all.
+  test('a technician sees only their own round and none of the owner controls', async ({ page }) => {
+    await signIn(page, 'tech');
+    await page.goto('/staff/collections?collector=1');
+
+    await expect(page.getByRole('heading', { name: 'Collections', level: 1 })).toBeVisible();
+    // Their own round, named as theirs.
+    await expect(page.getByText(/Your doorstep collection round/)).toBeVisible();
+    // Not the assignment form, not the takings table.
+    await expect(page.locator('form[action="/staff/collections/assign"]')).toHaveCount(0);
+    await expect(page.getByText(/Takings for/)).toHaveCount(0);
+    // And no way to pick whose round to look at.
+    await expect(page.locator('select[name="collector"]')).toHaveCount(0);
+  });
+
+  test('the owner can pick a round and sees the cash reconciliation', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/collections');
+
+    await expect(page.locator('select[name="collector"]')).toHaveCount(1);
+    await expect(page.getByText(/Takings for/)).toBeVisible();
+    // Cash is the line that has to be handed in, and the page says why.
+    await expect(page.getByText(/has to be handed in/)).toBeVisible();
+    await expect(page.locator('form[action="/staff/collections/assign"]')).toHaveCount(1);
+    await snap(page, 'collections');
+  });
+
+  // A collector needs to know what to ask for and why somebody dropped off
+  // the round, so the look-ahead has to round-trip rather than silently
+  // resetting.
+  test('the look-ahead window round-trips, including lapsed-only', async ({ page }) => {
+    await signIn(page, 'tech');
+    await page.goto('/staff/collections?window=0');
+    await expect(page.locator('select[name="window"]')).toHaveValue('0');
+    await page.goto('/staff/collections?window=30');
+    await expect(page.locator('select[name="window"]')).toHaveValue('30');
+    // A nonsense value falls back to the default rather than to zero, which
+    // would show a shorter round than was asked for.
+    await page.goto('/staff/collections?window=soon');
+    await expect(page.locator('select[name="window"]')).toHaveValue('7');
+  });
+
+  // The core of the requirement: a collector takes cash at the door and it
+  // reaches the wallet through FR-BIL-013's existing credit. Asserted end to
+  // end because every layer below this is tested against a fake, and the one
+  // thing a fake cannot show is that the form, the scoping check and the
+  // wallet credit actually line up.
+  test('a technician records cash and it reaches the wallet', async ({ page }) => {
+    await signIn(page, 'tech');
+    await page.goto('/staff/collections?window=30');
+
+    const row = page.locator('tbody tr', { has: page.getByText('Take payment') }).first();
+    if ((await row.count()) === 0) {
+      test.skip(true, 'nothing on the seeded round to collect from');
+    }
+    // The subscriber's own link carries their id, which is what the wallet
+    // has to be checked against afterwards.
+    const href = await row.locator('td a').first().getAttribute('href');
+    expect(href, 'the round does not link to the subscriber').toBeTruthy();
+
+    await row.getByText('Take payment').click();
+    const form = row.locator('form[action*="/payment"]');
+    // A part payment is the interesting case: it must credit what was
+    // actually taken rather than the full figure the form pre-filled.
+    await form.locator('input[name="amount"]').fill('100.00');
+    await form.locator('select[name="method"]').selectOption('cash');
+    await form.getByRole('button', { name: /Record/ }).click();
+
+    await expect(page.getByText(/Payment recorded and credited/)).toBeVisible();
+
+    // And it reaches where the money is actually kept, not only the flash
+    // message on the screen that recorded it. The owner is used because the
+    // ledger panel is withheld from technicians.
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    await signIn(page, 'owner');
+    await page.goto(href!);
+    // Asserted on the page's text rather than on visibility: the ledger sits
+    // in a collapsible panel, so the credit can be present and correct while
+    // the element reports hidden. What is under test is that the money
+    // arrived, not which panel happens to be open.
+    const body = (await page.textContent('body')) ?? '';
+    expect(body, 'the collected amount is not on the subscriber page').toContain('100.00');
+  });
+
+  test('the desk-based roles cannot reach the screen', async ({ page }) => {
+    for (const role of ['csr', 'noc'] as const) {
+      await signIn(page, role);
+      const res = await page.request.get('/staff/collections');
+      expect(res.status(), `${role} opening /staff/collections`).toBe(403);
+      await page.getByRole('button', { name: 'Sign out' }).click();
+    }
   });
 });
 

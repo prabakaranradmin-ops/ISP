@@ -136,6 +136,12 @@ COMPONENTS=(
     # present and does nothing. The scanner's own side is covered by the
     # FUPQuerier interface, which will not compile without it.
     "SaveFUPPolicy:fair-use policy management from the console (FR-CAT-003)"
+    # Field payment collection (FR-COL-001). The screen and the API service
+    # layer both compile with no store wired and the screen answers a
+    # readable 503, so an unwired store is a round nobody can work. The
+    # scoped-write check lives behind the same store, so losing it would
+    # also lose the assignment-as-permission rule.
+    "ListCollectionRound:field collection rounds from the console (FR-COL-001)"
 )
 
 if [ "${1:-}" = "--list" ]; then

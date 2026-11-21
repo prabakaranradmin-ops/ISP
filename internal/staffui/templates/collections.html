@@ -1,0 +1,149 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Collections</h1>
+
+{{with $d}}
+<p class="muted">
+  {{if .Mine}}Your doorstep collection round: the subscribers assigned to you whose plan has lapsed or is
+  about to. Work the lapsed ones first &mdash; they are off service, and taking payment is what restores them.
+  {{else}}{{.ViewingName}}'s collection round.{{end}}
+</p>
+<p class="muted small">Amount due is the plan price less whatever is already in the wallet, worked out when
+  this page loaded. A subscriber can pay online between here and the door, so the row says
+  <strong>already paid</strong> rather than disappearing.</p>
+
+<div class="card">
+  <form method="get" action="/staff/collections" class="formgrid">
+    <label>Looking ahead
+      <select name="window" onchange="this.form.submit()">
+        <option value="0"{{if eq .Window 0}} selected{{end}}>Only already lapsed</option>
+        <option value="3"{{if eq .Window 3}} selected{{end}}>Lapsed or within 3 days</option>
+        <option value="7"{{if eq .Window 7}} selected{{end}}>Lapsed or within 7 days</option>
+        <option value="30"{{if eq .Window 30}} selected{{end}}>Lapsed or within 30 days</option>
+      </select>
+    </label>
+    {{if .CanAssign}}
+    <label>Whose round
+      <select name="collector" onchange="this.form.submit()">
+        <option value="">Mine</option>
+        {{range .Collectors}}
+          <option value="{{.StaffID}}"{{if eq .StaffID $d.ViewingID}} selected{{end}}>
+            {{.Username}} ({{.Role}}) &mdash; {{.Assigned}}
+          </option>
+        {{end}}
+      </select>
+    </label>
+    {{end}}
+    <button type="submit" class="primary">Show</button>
+  </form>
+</div>
+
+<div class="card table-card">
+  <h3>{{len .Rows}} to visit &mdash; &#8377;{{money .TotalDue}} outstanding</h3>
+  <table>
+    <thead><tr>
+      <th>Subscriber</th><th>Phone</th><th>Plan</th><th>Expiry</th>
+      <th class="right">In wallet</th><th class="right">Ask for</th><th>Record</th>
+    </tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr>
+        <td>
+          <a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a>
+          {{if .Overdue}}<br><span class="pill bad">off service</span>{{end}}
+        </td>
+        <td class="num">{{if .MobileNumber}}{{.MobileNumber}}{{else}}<span class="muted">none</span>{{end}}</td>
+        <td class="small">{{.PlanName}}<br><span class="muted">&#8377;{{money .PlanPrice}}</span></td>
+        <td class="num small">{{if .ExpiryDay}}{{.ExpiryDay}}{{else}}<span class="muted">never billed</span>{{end}}</td>
+        <td class="num right">&#8377;{{money .Balance}}</td>
+        <td class="num right">
+          {{if .Covered}}<span class="pill ok">already paid</span>
+          {{else}}<strong>&#8377;{{money .Due}}</strong>{{end}}
+        </td>
+        <td class="actions">
+          {{if .Covered}}
+            <span class="muted small">Nothing to collect.</span>
+          {{else}}
+          <details>
+            <summary>Take payment</summary>
+            <form method="post" action="/staff/collections/{{.SubscriberID}}/payment" class="formgrid">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <label>Amount (&#8377;)
+                <input name="amount" value="{{.Due.StringFixed 2}}" required>
+                <span class="muted small">Change it if they pay part.</span>
+              </label>
+              <label>How they paid
+                <select name="method">
+                  {{range $d.Methods}}<option value="{{.Key}}">{{.Label}}</option>{{end}}
+                </select>
+              </label>
+              <label>Reference <input name="reference" placeholder="UPI or bank reference, if any"></label>
+              <label>Cheque number <input name="cheque_number"></label>
+              <label>Cheque bank <input name="cheque_bank"></label>
+              <label>Cheque date <input type="date" name="cheque_date">
+                <span class="muted small">A cheque dated over three months ago is refused as stale.</span>
+              </label>
+              <button type="submit" class="primary">Record &#8377;{{money .Due}} from {{.Username}}</button>
+            </form>
+          </details>
+          {{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="7" class="empty">
+        {{if .Mine}}Nothing on your round in this window. Widen the look-ahead, or ask the owner to assign
+        you some subscribers.
+        {{else}}Nothing on this round in this window.{{end}}
+      </td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+{{if .CanAssign}}
+<div class="card">
+  <h3>Takings for {{.TakingsDay}}</h3>
+  <p class="muted small">What each person recorded today, from the same rows the subscriber's receipt came
+    from. <strong>Cash is the line that has to be handed in</strong> &mdash; a UPI payment taken at the door
+    has already reached the bank. Everyone who recorded a payment appears, not only field collectors, because
+    a day's cash reconciliation has to cover the counter as well as the round. Refunds and bounced cheques are
+    left out: that money never arrived, so nobody is holding it.</p>
+  <table>
+    <thead><tr><th>Recorded by</th><th class="right">Payments</th><th class="right">Cash</th><th class="right">Total</th><th>By method</th></tr></thead>
+    <tbody>
+    {{range .Takings}}
+      <tr>
+        <td>{{.Collector}}</td>
+        <td class="num right">{{.Count}}</td>
+        <td class="num right"><strong>&#8377;{{money .CashTotal}}</strong></td>
+        <td class="num right">&#8377;{{money .Total}}</td>
+        <td class="small muted">
+          {{range $method, $amount := .ByMethod}}{{$method}} &#8377;{{money $amount}}<br>{{end}}
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="5" class="empty">Nothing recorded today.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Who collects from a subscriber</h3>
+  <p class="muted small">Assigning somebody decides whose pocket the cash passes through, so it is an
+    owner and billing decision. A collector can only record payment for subscribers on their own round.</p>
+  <form method="post" action="/staff/collections/assign" class="formgrid">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Subscriber id <input name="subscriber_id" required placeholder="e.g. 42"></label>
+    <label>Collector
+      <select name="collector_id">
+        <option value="">None &mdash; take them off the round</option>
+        {{range .Collectors}}<option value="{{.StaffID}}">{{.Username}} ({{.Role}})</option>{{end}}
+      </select>
+    </label>
+    <button type="submit" class="primary">Apply</button>
+  </form>
+</div>
+{{end}}
+{{end}}
+{{end}}

@@ -79,9 +79,9 @@ by one.
 | | |
 |---|---|
 | Go packages | 35 total; **24 have tests** |
-| Wiring check | **31/31** components have a production caller (2026-11-20) |
-| Migrations | **67** applied (`001`–`067`) |
-| Browser tests | **130**, all passing (2026-11-20) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts` and `e2e/console-logs-catalogue.spec.ts` |
+| Wiring check | **32/32** components have a production caller (2026-11-20) |
+| Migrations | **68** applied (`001`–`068`) |
+| Browser tests | **137**, all passing (2026-11-21) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts` and `e2e/console-logs-catalogue.spec.ts` |
 | Lint | **6** findings on default tags, **116** with `--build-tags=integration`; none introduced by recent work, all untriaged |
 | DB integration suite | ~700s in Docker, **1000-1500s on the bundled native cluster**; carry `-timeout 45m` |
 | NFR-PERF-001 (RADIUS auth p99 ≤15ms) | **PASS at 13.224ms**, 5,000 req/s, 30s, 0 errors — `run_nfr_tests.sh`, 2026-08-16 |
@@ -344,9 +344,41 @@ bash scripts/run_db_tests.sh -timeout 45m   # ~700s in Docker, up to 1500s nativ
                                             # (Docker down? see "Running the
                                             #  DB suite with Docker down")
 golangci-lint run --build-tags=integration ./...   # 116 known, none recent
-./scripts/check_wiring.sh                   # 31/31 wired
-npx playwright test e2e/staff.spec.ts e2e/portal.spec.ts     e2e/console-logs-catalogue.spec.ts      # 130 browser tests
+./scripts/check_wiring.sh                   # 32/32 wired
+npx playwright test e2e/staff.spec.ts e2e/portal.spec.ts     e2e/console-logs-catalogue.spec.ts      # 137 browser tests
 ```
+
+**Run `scripts/refresh_e2e_session.sh` before a browser suite.** Eight tests
+assert the "online" state — the portal's live-usage panel, the console's
+Online tile, and the Sessions screen including its disconnect — and all read
+`live_sessions`, whose reads filter `updated_at` against a 30-minute TTL. The
+row goes stale two ways: time passing (this machine suspends, and a seed from
+last night is nine hours old by morning), and the disconnect test itself,
+which closes the accounting row it disconnected and leaves nothing for the
+next run. Both fail with "element(s) not found", which reads exactly like a
+broken page. The script reseeds the live row and reopens the accounting row;
+it is idempotent, so run it whenever that cluster of eight fails together.
+
+**The DB suite is now close to its own timeout.** `internal/db` measured
+2539s against `-timeout 45m` (2700s) on 2026-11-20, with builds and unit
+tests running against the same machine throughout. Left alone it is nearer
+1300s. If a run reports a bare `FAIL internal/db` with a duration in the
+2600s range, check whether anything else was using the machine before
+looking for a defect — and consider `-timeout 60m` for a run you cannot
+babysit.
+
+**Stop the Playwright API server before running the DB integration suite.**
+The harness TRUNCATEs about a hundred tables per test, which needs ACCESS
+EXCLUSIVE, and a leftover `api_e2e.exe` keeps idle connections whose
+background scanners (FUP every 10s, renewal, the purges) take ACCESS SHARE on
+those same tables every few seconds — enough to starve the TRUNCATE
+indefinitely. The suite then hangs in `truncateAll` and is killed at the
+timeout, reported as a bare `FAIL internal/db 2700.182s` with a goroutine
+dump naming whichever test was unlucky, which reads exactly like that test
+deadlocking. `powershell -NoProfile -Command "Stop-Process -Name api_e2e
+-Force"`, then check `SELECT count(*) FROM pg_stat_activity WHERE
+datname='isp_bss_oss'` is zero. It inflates runs that do finish, too: 1848s
+and 1697s with the server up against 1289s without.
 
 **Never run the DB integration suite and Playwright against the same
 cluster.** The `internal/db` harness TRUNCATEs its tables, so an integration

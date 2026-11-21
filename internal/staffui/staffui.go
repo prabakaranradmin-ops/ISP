@@ -261,6 +261,8 @@ type HandlerDeps struct {
 	ReplyAttrs ReplyAttrManager
 	// FUPPolicies manages multi-tier fair-use policies (FR-CAT-003).
 	FUPPolicies FUPPolicyManager
+	// Collection manages field payment collection rounds (FR-COL-001).
+	Collection CollectionManager
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeManager
 	// Products manages the product catalogue and the charges attached to
@@ -330,6 +332,7 @@ type Handler struct {
 	bandwidth          BandwidthManager
 	replyAttrs         ReplyAttrManager
 	fupPolicies        FUPPolicyManager
+	collection         CollectionManager
 	audit              AuditReader
 	authLog            AuthLogReader
 	gatewayLog         GatewayLogReader
@@ -390,6 +393,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		bandwidth:          deps.Bandwidth,
 		replyAttrs:         deps.ReplyAttrs,
 		fupPolicies:        deps.FUPPolicies,
+		collection:         deps.Collection,
 		audit:              deps.Audit,
 		authLog:            deps.AuthLog,
 		gatewayLog:         deps.GatewayLog,
@@ -573,6 +577,13 @@ var sections = []Section{
 	// staff, same reach as the ledger (FR-PAY-001).
 	{"gateway-log", "Gateway Log", "/staff/gateway-log",
 		[]string{"isp_owner", "billing_admin"}, false},
+	// Field collection (FR-COL-001). Wider than the other financial
+	// screens by one role: technicians are the field staff who knock on
+	// doors, and the screen is scoped to their own round — they cannot
+	// record a payment for anybody not assigned to them, which is what
+	// makes including them safe. CSRs are excluded, being desk-based.
+	{"collections", "Collections", "/staff/collections",
+		[]string{"isp_owner", "billing_admin", "technician"}, false},
 	// Technicians handle hardware day to day (issue/return); NOC engineers
 	// track it against the network estate; purchases and device-type
 	// changes are procurement, gated inside the screen itself to
@@ -661,6 +672,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/diagnostics", h.authed(h.BillingDiagnostics))
 	mux.Handle("GET /staff/billing-runs", h.authed(h.BillingRuns))
 	mux.Handle("GET /staff/gateway-log", h.authed(h.GatewayLog))
+	mux.Handle("GET /staff/collections", h.authed(h.Collections))
+	mux.Handle("POST /staff/collections/assign", h.authed(h.requireCSRF(h.AssignCollectorForm)))
+	mux.Handle("POST /staff/collections/{id}/payment", h.authed(h.requireCSRF(h.RecordCollectionForm)))
 	mux.Handle("GET /staff/billing-runs/{id}", h.authed(h.BillingRun))
 	mux.Handle("POST /staff/dunning", h.authed(h.requireCSRF(h.SaveDunningForm)))
 	mux.Handle("POST /staff/subscribers/{id}/proforma", h.authed(h.requireCSRF(h.IssueProformaForm)))

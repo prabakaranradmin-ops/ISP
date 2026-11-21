@@ -10,6 +10,7 @@ package db_test
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -414,4 +415,58 @@ func scanString(ctx context.Context, t *testing.T, pool *pgxpool.Pool, query str
 		t.Fatalf("scan query %q: %v", query, err)
 	}
 	return s
+}
+
+// seedWalletCredit writes a wallet credit with its payment detail, the pair
+// a real payment produces (FR-BIL-013), so a test can exercise reads that
+// join them — the collector takings in particular (FR-COL-001).
+func seedWalletCredit(ctx context.Context, t *testing.T, pool *pgxpool.Pool,
+	subscriberID int, amount, method, recordedBy string) int {
+	t.Helper()
+	return seedWalletEntry(ctx, t, pool, subscriberID, amount, method, recordedBy, "credit")
+}
+
+// seedWalletDebit writes the money-leaving half: a refund or a reversal.
+//
+// The amount is positive, like a credit: wallet_ledgers carries the
+// direction in entry_type, not in the sign (see diagnostics.go and
+// revenue.go). Seeding a negative amount here would be a fixture production
+// never produces, and would let a reader that filtered on the sign pass.
+func seedWalletDebit(ctx context.Context, t *testing.T, pool *pgxpool.Pool,
+	subscriberID int, amount, method, recordedBy string) int {
+	t.Helper()
+	return seedWalletEntry(ctx, t, pool, subscriberID, amount, method, recordedBy, "debit")
+}
+
+func seedWalletEntry(ctx context.Context, t *testing.T, pool *pgxpool.Pool,
+	subscriberID int, amount, method, recordedBy, entryType string) int {
+	t.Helper()
+	var id int
+	err := pool.QueryRow(ctx, `
+		INSERT INTO wallet_ledgers (subscriber_id, entry_type, amount, balance_after,
+		                            description, account, created_at)
+		VALUES ($1, $2, $3::numeric, 0, 'seeded', 'subscriber_wallet', NOW())
+		RETURNING id`, subscriberID, entryType, amount).Scan(&id)
+	if err != nil {
+		t.Fatalf("seed wallet %s for subscriber %d: %v", entryType, subscriberID, err)
+	}
+	// A cheque has to carry its number, bank and date: chk_payment_cheque_fields
+	// (migration 054) enforces that, so a seeded cheque with none is a row
+	// production cannot produce and the insert fails. Supplied here rather
+	// than at each call site, so a test asking for a cheque gets a valid one.
+	var chequeNo, chequeBank *string
+	var chequeDate *time.Time
+	if method == "cheque" {
+		no, bank := "SEED-"+strconv.Itoa(id), "Seed Bank"
+		date := time.Now().AddDate(0, 0, -1)
+		chequeNo, chequeBank, chequeDate = &no, &bank, &date
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO payment_details (wallet_ledger_id, method, status, recorded_by,
+		                             cheque_number, cheque_bank, cheque_date, created_at)
+		VALUES ($1, $2, 'cleared', $3, $4, $5, $6, NOW())`,
+		id, method, recordedBy, chequeNo, chequeBank, chequeDate); err != nil {
+		t.Fatalf("seed payment detail for ledger %d: %v", id, err)
+	}
+	return id
 }

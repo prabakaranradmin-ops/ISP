@@ -253,6 +253,9 @@ func run(ctx context.Context) error {
 		// Multi-tier fair-use policies and data top-ups (FR-CAT-003) sit on
 		// the FUP store, beside the scanner queries that read them.
 		FUPPolicies: database.FUP(),
+		// Field payment collection (FR-COL-001) sits on the billing store,
+		// beside the payment path it records through.
+		Collection: database.Billing(),
 		// Payment-gateway orders and callbacks (FR-PAY-001), recorded
 		// whether or not they credit a wallet.
 		GatewayLog: database.GatewayLog(),
@@ -443,6 +446,7 @@ func run(ctx context.Context) error {
 		Bandwidth:   apiHandler,
 		ReplyAttrs:  apiHandler,
 		FUPPolicies: apiHandler,
+		Collection:  apiHandler,
 		Audit:       database.Audit(),
 		AuthLog:     database.AuthLog(),
 		GatewayLog:  database.GatewayLog(),
