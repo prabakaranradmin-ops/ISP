@@ -365,6 +365,53 @@ test.describe('Bandwidth profiles (FR-CAT-002)', () => {
   });
 });
 
+test.describe('Customer Application Form (FR-DOC-002)', () => {
+  // The form prints through the same headless browser as invoices, so this
+  // is the test that shows the whole chain works: the subscriber, their
+  // plan and their KYC facts assembled, rendered to HTML, and printed to a
+  // real PDF by a real browser.
+  test('a CSR can print a subscriber application form as a PDF', async ({ page }) => {
+    await signIn(page, 'csr');
+
+    const res = await page.request.get('/staff/subscribers/1/caf');
+    if (res.status() === 503) {
+      test.skip(true, 'no Chromium-based browser on this host, so no PDF can be printed');
+    }
+    expect(res.status(), 'the application form did not print').toBe(200);
+    expect(res.headers()['content-type']).toContain('application/pdf');
+    // An attachment, not inline: the form carries contact details, and
+    // inline leaves it in the browser's cache and history.
+    expect(res.headers()['content-disposition']).toContain('attachment');
+    expect(res.headers()['content-disposition']).toContain('application-form-1.pdf');
+
+    const body = await res.body();
+    expect(body.length, 'the PDF is implausibly small').toBeGreaterThan(1000);
+    expect(body.subarray(0, 5).toString()).toBe('%PDF-');
+  });
+
+  // The network roles have no reason to hold a customer's contact details
+  // and KYC status.
+  test('the network roles cannot print one', async ({ page }) => {
+    for (const role of ['noc', 'tech'] as const) {
+      await signIn(page, role);
+      const res = await page.request.get('/staff/subscribers/1/caf');
+      expect(res.status(), `${role} printing an application form`).toBe(403);
+      await page.getByRole('button', { name: 'Sign out' }).click();
+    }
+  });
+
+  test('an unknown subscriber is reported, not printed blank', async ({ page }) => {
+    await signIn(page, 'csr');
+    const res = await page.request.get('/staff/subscribers/999999/caf');
+    // 404 when there is a browser to print with, 503 when there is not —
+    // either way, never a PDF describing a subscriber that does not exist.
+    expect([404, 503]).toContain(res.status());
+    if (res.status() === 404) {
+      expect(res.headers()['content-type']).not.toContain('application/pdf');
+    }
+  });
+});
+
 test.describe('Archived documents (FR-DOC-003)', () => {
   // The screen has to be honest when there is nothing archived, and say how
   // a document comes to be there — an empty table with no explanation reads

@@ -113,6 +113,8 @@ type Handler struct {
 	docArchives     DocumentArchiveStore
 	docRetriever    DocumentRetriever
 	docArchiver     InvoiceArchiver
+	cafDB           CAFQuerier
+	cafPDF          CAFPDFGenerator
 	gatewayLog      GatewayLogStore
 	diagnostics     DiagnosticsStore
 	billingRuns     BillingRunStore
@@ -203,6 +205,10 @@ type HandlerDeps struct {
 	DocArchives  DocumentArchiveStore
 	DocRetriever DocumentRetriever
 	DocArchiver  InvoiceArchiver
+	// CAFDB and CAFPDF print a subscriber's application form (FR-DOC-002).
+	// CAFPDF is the same InvoicePDFClient invoices and receipts use.
+	CAFDB  CAFQuerier
+	CAFPDF CAFPDFGenerator
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeStore
 	// Products manages the product catalogue and the charges attached to
@@ -290,6 +296,8 @@ func NewHandler(deps HandlerDeps) *Handler {
 		docArchives:      deps.DocArchives,
 		docRetriever:     deps.DocRetriever,
 		docArchiver:      deps.DocArchiver,
+		cafDB:            deps.CAFDB,
+		cafPDF:           deps.CAFPDF,
 		gatewayLog:       deps.GatewayLog,
 		diagnostics:      deps.Diagnostics,
 		billingRuns:      deps.BillingRuns,

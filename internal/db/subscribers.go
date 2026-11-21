@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
+	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/health"
 	"github.com/maaransoft/isp-bss-oss/internal/nas"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
@@ -775,4 +776,59 @@ func (s *PortalStore) ListSessionHistory(ctx context.Context, subscriberID, limi
 		return nil, fmt.Errorf("db: iterate session history: %w", err)
 	}
 	return entries, nil
+}
+
+// GetCAFDetail returns everything a Customer Application Form prints for one
+// subscriber — FR-DOC-002.
+//
+// One query rather than three reads. Separate reads would let a form print a
+// plan the subscriber had already moved off, and a CAF is a document somebody
+// signs: it has to describe one consistent moment.
+//
+// The name comes from the lead the subscriber was converted from
+// (FR-CRM-002), because subscribers carries no name of its own. LEFT, since
+// a subscriber created directly has no lead, and the form falls back to the
+// username and says so rather than printing a blank line.
+//
+// KYC is read as two booleans and a date. The encrypted columns are
+// deliberately not selected: they are never decrypted anywhere in this
+// system, and a form that gets filed or emailed must not become a second
+// copy of a customer's identity numbers. Selecting them "just in case"
+// would put ciphertext one template edit away from being printed.
+func (s *APIStore) GetCAFDetail(ctx context.Context, subscriberID int) (*billing.CAFDetail, error) {
+	const q = `
+		SELECT s.caf_number, COALESCE(l.full_name, ''), s.username,
+		       COALESCE(s.mobile_number, ''), COALESCE(s.email, ''),
+		       COALESCE(s.registered_state, ''), COALESCE(s.gstin, ''),
+		       COALESCE(f.name, ''),
+		       p.name, p.price, p.rate_limit_string, p.volume_gb, p.validity_days,
+		       COALESCE(s.kyc_status, ''),
+		       (k.aadhaar_encrypted IS NOT NULL AND length(k.aadhaar_encrypted) > 0),
+		       (k.pan_encrypted IS NOT NULL AND length(k.pan_encrypted) > 0),
+		       k.verified_at,
+		       s.created_at
+		  FROM subscribers s
+		  JOIN plans p            ON p.id = s.plan_id
+		  LEFT JOIN franchises f  ON f.id = s.franchise_id
+		  LEFT JOIN kyc_verifications k ON k.subscriber_id = s.id
+		  LEFT JOIN leads l       ON l.converted_subscriber_id = s.id
+		 WHERE s.id = $1`
+
+	var d billing.CAFDetail
+	err := s.pool.QueryRow(ctx, q, subscriberID).Scan(
+		&d.CAFNumber, &d.FullName, &d.Username,
+		&d.MobileNumber, &d.Email,
+		&d.RegisteredState, &d.GSTIN,
+		&d.Franchise,
+		&d.PlanName, &d.PlanPrice, &d.RateLimit, &d.VolumeGB, &d.ValidityDays,
+		&d.KYCStatus,
+		&d.AadhaarOnRecord, &d.PANOnRecord, &d.KYCVerifiedAt,
+		&d.CreatedAt)
+	if isNoRows(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: application form detail for subscriber %d: %w", subscriberID, err)
+	}
+	return &d, nil
 }

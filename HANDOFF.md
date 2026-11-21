@@ -81,7 +81,7 @@ by one.
 | Go packages | 35 total; **24 have tests** |
 | Wiring check | **33/33** components have a production caller (2026-11-21) |
 | Migrations | **68** applied (`001`–`068`) |
-| Browser tests | **142**, all passing (2026-11-21) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts` and `e2e/console-logs-catalogue.spec.ts` |
+| Browser tests | **145**, all passing (2026-11-21) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts` and `e2e/console-logs-catalogue.spec.ts` |
 | Lint | **6** findings on default tags, **116** with `--build-tags=integration`; none introduced by recent work, all untriaged |
 | DB integration suite | ~700s in Docker, **1000-1500s on the bundled native cluster**; carry `-timeout 45m` |
 | NFR-PERF-001 (RADIUS auth p99 ≤15ms) | **PASS at 13.224ms**, 5,000 req/s, 30s, 0 errors — `run_nfr_tests.sh`, 2026-08-16 |
@@ -349,7 +349,7 @@ bash scripts/run_db_tests.sh -timeout 45m   # ~700s in Docker, up to 1500s nativ
                                             #  DB suite with Docker down")
 golangci-lint run --build-tags=integration ./...   # 116 known, none recent
 ./scripts/check_wiring.sh                   # 33/33 wired
-npx playwright test e2e/staff.spec.ts e2e/portal.spec.ts     e2e/console-logs-catalogue.spec.ts      # 142 browser tests
+npx playwright test e2e/staff.spec.ts e2e/portal.spec.ts     e2e/console-logs-catalogue.spec.ts      # 145 browser tests
 ```
 
 **Run `scripts/refresh_e2e_session.sh` before a browser suite.** Eight tests

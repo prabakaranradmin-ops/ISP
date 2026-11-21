@@ -347,10 +347,12 @@ func sanitiseFilename(name string) string {
 // ErrNotFound covers both "no such archive row" and "purged", which are the
 // same thing to a caller asking for bytes — FR-DOC-003.
 //
-// This and ErrNotTheirs live here rather than in internal/api because the
-// console has to tell them apart from a corrupt document and from a storage
-// failure, and it cannot import internal/api: *api.Handler is what satisfies
-// the console's interfaces, so the dependency runs the other way.
+// This and ErrNotTheirs live here rather than in internal/api because they
+// are facts about an archive, not about an HTTP layer: the store raises
+// them, the service passes them on, and the console tells them apart from a
+// corrupt document and from a storage failure. (An earlier version of this
+// comment claimed internal/staffui could not import internal/api — it can,
+// and does in money.go. The reason is cohesion, not a dependency rule.)
 var ErrNotFound = errors.New("archive: archived document not found")
 
 // ErrNotTheirs is returned when an archive row does not belong to the

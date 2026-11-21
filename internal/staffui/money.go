@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
+	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/rs/zerolog/log"
 )
 
@@ -222,4 +223,74 @@ func (h *Handler) InvoicePDF(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=\"INV-%06d.pdf\"", id))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(pdf) //nolint:errcheck,gosec // served as application/pdf with nosniff; see api.GetInvoicePDF
+}
+
+// SubscriberCAF handles GET /staff/subscribers/{id}/caf — FR-DOC-002.
+//
+// On the subscribers section rather than a screen of its own: the form is
+// printed from the subscriber it describes, and there is nothing to browse.
+// Served as an attachment, like every other document here — a CAF carries
+// the customer's contact details, and opening it inline leaves it in a
+// browser's cache and history.
+func (h *Handler) SubscriberCAF(w http.ResponseWriter, r *http.Request) {
+	s, ok := h.requireSection(w, r, "subscribers")
+	if !ok {
+		return
+	}
+	// The same reach as recording a payment: the form shows contact details
+	// and which identity documents are held, which is not something the
+	// whole console needs to be able to print.
+	if !canPrintCAF(s.Role) {
+		h.renderError(w, r, s, http.StatusForbidden,
+			"Only the owner, billing staff and the front desk can print an application form.")
+		return
+	}
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		h.renderError(w, r, s, http.StatusBadRequest, "That is not a valid subscriber id.")
+		return
+	}
+	if h.caf == nil {
+		h.renderError(w, r, s, http.StatusServiceUnavailable,
+			"Application forms are not configured on this deployment.")
+		return
+	}
+
+	ctx := middleware.WithSubject(r.Context(), s.Username)
+	pdf, err := h.caf.RenderCAFPDF(ctx, id)
+	switch {
+	case errors.Is(err, api.ErrCAFSubscriberNotFound):
+		h.renderError(w, r, s, http.StatusNotFound, "No subscriber with that id.")
+		return
+	case errors.Is(err, api.ErrCAFUnavailable):
+		h.renderError(w, r, s, http.StatusServiceUnavailable,
+			"PDF generation is not available on this server: no Chromium-based browser (Edge or Chrome) was found.")
+		return
+	case err != nil:
+		log.Error().Err(err).Int("subscriber_id", id).Msg("staffui: print application form failed")
+		h.renderError(w, r, s, http.StatusInternalServerError,
+			"The application form could not be printed.")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Length", strconv.Itoa(len(pdf)))
+	w.Header().Set("Content-Disposition",
+		`attachment; filename="application-form-`+strconv.Itoa(id)+`.pdf"`)
+	if _, err := w.Write(pdf); err != nil {
+		log.Warn().Err(err).Int("subscriber_id", id).Msg("staffui: application form write to client failed")
+	}
+}
+
+// canPrintCAF: the owner, billing, and the front desk — a CSR is who
+// actually signs a customer up and needs the form in their hand. Not the
+// NOC or a technician, who have no reason to hold a customer's contact
+// details and KYC status.
+func canPrintCAF(role string) bool {
+	return role == "isp_owner" || role == "billing_admin" || role == "csr"
+}
+
+// CAFPrinter prints an application form. Satisfied by *api.Handler.
+type CAFPrinter interface {
+	RenderCAFPDF(ctx context.Context, subscriberID int) ([]byte, error)
 }

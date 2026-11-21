@@ -160,12 +160,13 @@ func run(ctx context.Context) error {
 	var (
 		pdfGen     api.PDFGenerator
 		receiptPDF api.ReceiptPDFGenerator // FR-BIL-021, same browser
+		cafPDF     api.CAFPDFGenerator     // FR-DOC-002, same browser again
 	)
 	if chromiumPath, err := chromium.Locate(cfg.ChromiumPath); err != nil {
 		log.Warn().Err(err).Msg("api: no Chromium-based browser found — invoice PDF downloads will return 503")
 	} else {
 		client := billing.NewInvoicePDFClient(chromiumPath)
-		pdfGen, receiptPDF = client, client
+		pdfGen, receiptPDF, cafPDF = client, client, client
 		log.Info().Str("path", chromiumPath).Msg("api: invoice PDF renderer configured")
 	}
 
@@ -272,6 +273,11 @@ func run(ctx context.Context) error {
 		// store; retrieval and the invoice write go through the Archiver,
 		// which is what performs the checksum comparison. Separate fields
 		// so the console's read path cannot reach the purge sweep.
+		// The application form (FR-DOC-002) reads its facts from APIStore
+		// and prints through the same InvoicePDFClient as invoices and
+		// receipts, so there is one PDF path to keep working.
+		CAFDB:        database.API(),
+		CAFPDF:       cafPDF,
 		DocArchives:  database.Archive(),
 		DocRetriever: docArchiverOrNil(docArchiver),
 		DocArchiver:  invoiceArchiverOrNil(docArchiver),
@@ -475,6 +481,7 @@ func run(ctx context.Context) error {
 		FUPPolicies: apiHandler,
 		Collection:  apiHandler,
 		Documents:   apiHandler,
+		CAF:         apiHandler,
 		Audit:       database.Audit(),
 		AuthLog:     database.AuthLog(),
 		GatewayLog:  database.GatewayLog(),

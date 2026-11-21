@@ -265,6 +265,8 @@ type HandlerDeps struct {
 	Collection CollectionManager
 	// Documents reads archived documents and verifies them (FR-DOC-003).
 	Documents DocumentManager
+	// CAF prints a subscriber's application form (FR-DOC-002).
+	CAF CAFPrinter
 	// PlanChanges schedules plan changes for a future renewal (FR-BIL-023).
 	PlanChanges PlanChangeManager
 	// Products manages the product catalogue and the charges attached to
@@ -336,6 +338,7 @@ type Handler struct {
 	fupPolicies        FUPPolicyManager
 	collection         CollectionManager
 	documents          DocumentManager
+	caf                CAFPrinter
 	audit              AuditReader
 	authLog            AuthLogReader
 	gatewayLog         GatewayLogReader
@@ -398,6 +401,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		fupPolicies:        deps.FUPPolicies,
 		collection:         deps.Collection,
 		documents:          deps.Documents,
+		caf:                deps.CAF,
 		audit:              deps.Audit,
 		authLog:            deps.AuthLog,
 		gatewayLog:         deps.GatewayLog,
@@ -768,6 +772,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/subscribers/{id}/static-ip", h.authed(h.requireCSRF(h.AllocateStaticIPForm)))
 	mux.Handle("POST /staff/static-ips/{id}/release", h.authed(h.requireCSRF(h.ReleaseStaticIPForm)))
 	mux.Handle("GET /staff/invoices/{id}/pdf", h.authed(h.InvoicePDF))
+	mux.Handle("GET /staff/subscribers/{id}/caf", h.authed(h.SubscriberCAF))
 	mux.Handle("GET /staff/invoices/{id}/credit-note", h.authed(h.CreditNotePage))
 	mux.Handle("GET /staff/invoices/payments/{id}/receipt", h.authed(h.ReceiptPDF))
 	mux.Handle("POST /staff/invoices/payments/{id}/bounce", h.authed(h.requireCSRF(h.BounceChequeForm)))
