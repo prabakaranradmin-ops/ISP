@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,12 @@ var funcMap = template.FuncMap{
 	// pointers, not bare float64s).
 	"optHours": optFloat1,
 	"optPct":   optFloat1,
+	// gb renders a byte count in GB — the unit allowances and tariffs are
+	// quoted in, and the only one an operator can compare against a plan.
+	// Nobody reads 1099511627776 (FR-RPT-004).
+	"gb": func(bytes int64) string {
+		return strconv.FormatFloat(float64(bytes)/(1024*1024*1024), 'f', 2, 64)
+	},
 	// optMoney formats a nil-able *decimal.Decimal (workflow.ApprovalRequest's
 	// Amount is nil for a terminate request, which has no money attached).
 	"optMoney": optMoney,

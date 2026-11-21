@@ -1,10 +1,8 @@
 package staffui
 
 import (
-	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -13,32 +11,43 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// ReportingStore backs the Reports screen — the four general-analytics
-// reports (plan mix, growth/churn, ticket resolution, franchise collection)
-// that have been routed and CSV-exportable at /api/v1/reports/{report}
-// since they were built, with no console screen to view them without
-// calling the API directly.
+// ReportingStore backs the Reports screen — the report catalogue
+// (FR-RPT-004), satisfied by *db.ReportingStore.
 //
-// Redefined per package rather than sharing reporting.Querier, matching
-// every other store interface in this file. Satisfied by *db.ReportingStore.
+// This one embeds reporting.Querier rather than restating its methods, unlike
+// every other store interface in this file. The convention is set aside
+// deliberately: the catalogue holds fourteen reports and grows, and a
+// hand-copied list of fourteen signatures is a list that drifts — a method
+// added to the Querier and forgotten here fails at the call site with
+// "does not implement", which is a confusing place to learn about it. The
+// reason the other interfaces are redefined (keeping the console's needs
+// narrower than a package's whole API) does not apply here, because the
+// console serves the whole catalogue.
 type ReportingStore interface {
-	PlanMix(ctx context.Context, franchiseID *int) ([]reporting.PlanMixRow, error)
-	GrowthMonthly(ctx context.Context, months int, franchiseID *int) ([]reporting.GrowthRow, error)
-	TicketResolution(ctx context.Context, months int, franchiseID *int) ([]reporting.TicketResolutionRow, error)
-	FranchiseCollection(ctx context.Context, months int, franchiseID *int) ([]reporting.CollectionRow, error)
-	SubscriberRoster(ctx context.Context, groupID, franchiseID *int) ([]reporting.SubscriberRosterRow, error)
+	reporting.Querier
 }
 
 type reportsData struct {
-	Active           string
-	Months           int
+	// Active is the report being shown, empty when the catalogue index is.
+	Active string
+	// Def is Active's catalogue entry, so the screen can show its title and
+	// summary without restating either.
+	Def reporting.ReportDef
+	// Areas and Query drive the index: the cards grouped by area, and the
+	// filter box's current text.
+	Areas  []reportArea
+	Query  string
+	Months int
+	Days   int
+	Limit  int
+
 	PlanMix          []reporting.PlanMixRow
 	Growth           []reporting.GrowthRow
 	TicketResolution []reporting.TicketResolutionRow
 	Collection       []reporting.CollectionRow
 	// Roster and the group fields belong to the subscribers report
-	// (FR-GRP-001), the only one of the five with a row per subscriber and so
-	// the only one a group can filter.
+	// (FR-GRP-001), one of the two with a row per subscriber and the only one
+	// a group can filter.
 	Roster  []reporting.SubscriberRosterRow
 	Groups  []revenue.SubscriberGroup
 	GroupID int
@@ -46,13 +55,54 @@ type reportsData struct {
 	// all, read from reporting rather than restated here, so the screen and
 	// the exporter cannot disagree about which reports accept one.
 	GroupFilterable bool
+
+	// FR-RPT-004.
+	Expiring        []reporting.ExpiringRow
+	PlanChanges     []reporting.PlanChangeRow
+	PaymentMethods  []reporting.PaymentMethodRow
+	StaffCollection []reporting.StaffCollectionRow
+	InvoiceRegister []reporting.InvoiceRegisterRow
+	Tax             []reporting.TaxRow
+	Turnaround      []reporting.TurnaroundRow
+	DataUsers       []reporting.DataUserRow
+	FUPExceeded     []reporting.FUPExceededRow
 }
 
-// Reports shows the four general-analytics reports. ISP-wide only (no
-// franchise filter in this first pass — a franchise-scoped viewer would need
-// their own restricted reach, tracked alongside CRD-EXP-005's other
-// franchise-partner follow-up), and owner/billing only: this is financial
-// and growth performance, the same reach Revenue already has.
+// reportArea is one heading on the catalogue index with its reports.
+type reportArea struct {
+	Name    string
+	Reports []reporting.ReportDef
+}
+
+// catalogueFor builds the index, keeping only the reports matching the filter
+// box and dropping an area left with nothing — an empty heading reads as a
+// section that failed to load.
+func catalogueFor(query string) []reportArea {
+	var out []reportArea
+	for _, area := range reporting.Areas() {
+		var keep []reporting.ReportDef
+		for _, d := range reporting.InArea(area) {
+			if d.Matches(query) {
+				keep = append(keep, d)
+			}
+		}
+		if len(keep) > 0 {
+			out = append(out, reportArea{Name: area, Reports: keep})
+		}
+	}
+	return out
+}
+
+// Reports shows the report catalogue, or one report — FR-RPT-004.
+//
+// ISP-wide only (no franchise filter in this pass — a franchise-scoped viewer
+// would need their own restricted reach, tracked alongside CRD-EXP-005's
+// other franchise-partner follow-up), and owner/billing only: this is
+// financial and growth performance, the same reach Revenue already has.
+//
+// With no ?report= the catalogue index is shown rather than a default report.
+// Fourteen reports is too many for a tab bar, and an index that opens on one
+// of them makes the other thirteen look like they do not exist.
 func (h *Handler) Reports(w http.ResponseWriter, r *http.Request) {
 	s, ok := h.requireSection(w, r, "reports")
 	if !ok {
@@ -66,23 +116,39 @@ func (h *Handler) Reports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	report := r.URL.Query().Get("report")
-	if report == "" {
-		report = reporting.ReportPlanMix
+	q := r.URL.Query()
+	report := q.Get("report")
+	rd := reportsData{
+		Query:  strings.TrimSpace(q.Get("q")),
+		Months: reporting.NormaliseMonths(atoiOrZero(q.Get("months"))),
+		Days:   reporting.NormaliseDays(atoiOrZero(q.Get("days"))),
+		Limit:  reporting.NormaliseLimit(atoiOrZero(q.Get("limit"))),
 	}
-	months := reporting.DefaultMonths
-	if v := r.URL.Query().Get("months"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			months = reporting.NormaliseMonths(n)
+	rd.Areas = catalogueFor(rd.Query)
+
+	// The index.
+	if report == "" {
+		if len(rd.Areas) == 0 && rd.Query != "" {
+			d.Message = "No report matches " + rd.Query + "."
 		}
+		d.Data = rd
+		h.render(w, "reports", d)
+		return
 	}
 
-	groupID := atoiOrZero(r.URL.Query().Get("group_id"))
-	rd := reportsData{
-		Active:          report,
-		Months:          months,
-		GroupFilterable: reporting.GroupFilterable(report),
+	def, known := reporting.Lookup(report)
+	if !known {
+		// Named rather than silently substituted. An earlier version of this
+		// screen fell back to plan mix, which would show one report's figures
+		// under another report's name on any typo or stale bookmark.
+		h.renderError(w, r, s, http.StatusNotFound,
+			"No report called "+report+". Pick one from the catalogue.")
+		return
 	}
+	rd.Active, rd.Def = report, def
+	rd.GroupFilterable = def.Group
+
+	groupID := atoiOrZero(q.Get("group_id"))
 	if h.groups != nil {
 		if gs, gerr := h.groups.ListSubscriberGroups(r.Context(), false); gerr == nil {
 			rd.Groups = gs
@@ -101,23 +167,50 @@ func (h *Handler) Reports(w http.ResponseWriter, r *http.Request) {
 	}
 	rd.GroupID = groupID
 
+	ctx := r.Context()
+	months, days, limit := rd.Months, rd.Days, rd.Limit
 	var err error
 	switch report {
+	case reporting.ReportPlanMix:
+		rd.PlanMix, err = h.reporting.PlanMix(ctx, nil)
+	case reporting.ReportGrowth:
+		rd.Growth, err = h.reporting.GrowthMonthly(ctx, months, nil)
+	case reporting.ReportTicketResolution:
+		rd.TicketResolution, err = h.reporting.TicketResolution(ctx, months, nil)
+	case reporting.ReportCollection:
+		rd.Collection, err = h.reporting.FranchiseCollection(ctx, months, nil)
 	case reporting.ReportSubscribers:
 		var group *int
 		if groupID > 0 {
 			group = &groupID
 		}
-		rd.Roster, err = h.reporting.SubscriberRoster(r.Context(), group, nil)
-	case reporting.ReportGrowth:
-		rd.Growth, err = h.reporting.GrowthMonthly(r.Context(), months, nil)
-	case reporting.ReportTicketResolution:
-		rd.TicketResolution, err = h.reporting.TicketResolution(r.Context(), months, nil)
-	case reporting.ReportCollection:
-		rd.Collection, err = h.reporting.FranchiseCollection(r.Context(), months, nil)
+		rd.Roster, err = h.reporting.SubscriberRoster(ctx, group, nil)
+	case reporting.ReportExpiring:
+		rd.Expiring, err = h.reporting.ExpiringSubscribers(ctx, days, nil)
+	case reporting.ReportPlanChanges:
+		rd.PlanChanges, err = h.reporting.PlanChangeHistory(ctx, months, nil)
+	case reporting.ReportPaymentsByMethod:
+		rd.PaymentMethods, err = h.reporting.PaymentsByMethod(ctx, months, nil)
+	case reporting.ReportCollectionByStaff:
+		rd.StaffCollection, err = h.reporting.CollectionByStaff(ctx, months, nil)
+	case reporting.ReportInvoiceRegister:
+		rd.InvoiceRegister, err = h.reporting.InvoiceRegister(ctx, months, nil)
+	case reporting.ReportTaxCharged:
+		rd.Tax, err = h.reporting.TaxCharged(ctx, months, nil)
+	case reporting.ReportTicketTurnaround:
+		rd.Turnaround, err = h.reporting.TicketTurnaround(ctx, months, nil)
+	case reporting.ReportTopDataUsers:
+		rd.DataUsers, err = h.reporting.TopDataUsers(ctx, months, limit, nil)
+	case reporting.ReportFUPExceeded:
+		rd.FUPExceeded, err = h.reporting.FUPExceeded(ctx, nil)
 	default:
-		rd.Active = reporting.ReportPlanMix
-		rd.PlanMix, err = h.reporting.PlanMix(r.Context(), nil)
+		// Reachable only by adding a report to the catalogue and not here.
+		// Refused rather than rendered empty: a report showing a blank table
+		// is indistinguishable from one with nothing to show, and
+		// TestFR_RPT_004_EveryCatalogueEntryHasAConsoleView fails on it.
+		h.renderError(w, r, s, http.StatusNotImplemented,
+			"The "+def.Title+" report has no console view yet. Download it as CSV instead.")
+		return
 	}
 	if err != nil {
 		log.Error().Err(err).Str("report", report).Msg("staffui: load report failed")

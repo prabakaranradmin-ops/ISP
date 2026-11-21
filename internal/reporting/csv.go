@@ -33,23 +33,19 @@ const (
 	// report with one row per subscriber, and so the only one a group can
 	// filter.
 	ReportSubscribers = "subscribers"
+
+	// The reports added by FR-RPT-004. Descriptions, areas and which filters
+	// apply live in catalogue.go; these are only the names on the wire.
+	ReportExpiring          = "expiring-subscribers"
+	ReportPlanChanges       = "plan-change-history"
+	ReportPaymentsByMethod  = "payments-by-method"
+	ReportCollectionByStaff = "collection-by-staff"
+	ReportInvoiceRegister   = "invoice-register"
+	ReportTaxCharged        = "tax-charged"
+	ReportTicketTurnaround  = "ticket-turnaround"
+	ReportTopDataUsers      = "top-data-users"
+	ReportFUPExceeded       = "fup-exceeded"
 )
-
-// Reports lists every exportable report, for validation and error messages.
-func Reports() []string {
-	return []string{ReportPlanMix, ReportGrowth, ReportTicketResolution, ReportCollection,
-		ReportSubscribers}
-}
-
-// ValidReport reports whether name is exportable.
-func ValidReport(name string) bool {
-	for _, r := range Reports() {
-		if r == name {
-			return true
-		}
-	}
-	return false
-}
 
 // ── Formatting helpers ──────────────────────────────────────────────────────
 

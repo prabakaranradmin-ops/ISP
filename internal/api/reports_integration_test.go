@@ -33,6 +33,9 @@ type stubReports struct {
 	mu     sync.Mutex
 	calls  []*int // franchise scope each query received
 	groups []*int // group filter each roster query received
+	// The windows only one report each takes — FR-RPT-004.
+	gotDays  int
+	gotLimit int
 }
 
 func (s *stubReports) record(f *int) {
@@ -488,5 +491,160 @@ func TestFR_GRP_001_AGroupDoesNotWidenAFranchiseScope(t *testing.T) {
 	scopes := reports.scopes()
 	if len(scopes) != 1 || scopes[0] == nil || *scopes[0] != 7 {
 		t.Fatalf("the franchise scope reached the store as %v, want 7", scopes)
+	}
+}
+
+// The FR-RPT-004 catalogue reports. One row each, so the CSV-for-every-report
+// test gets a body rather than only a header, and each records the scope it
+// was given.
+func (s *stubReports) ExpiringSubscribers(_ context.Context, days int, f *int) ([]reporting.ExpiringRow, error) {
+	s.record(f)
+	s.mu.Lock()
+	s.gotDays = days
+	s.mu.Unlock()
+	return []reporting.ExpiringRow{{
+		SubscriberID: 1, Username: "a@isp", MobileNumber: "+919876543210", PlanName: "100 Mbps",
+		Status: "active", PlanExpiry: time.Now().Add(48 * time.Hour), DaysLeft: 2,
+		PlanPrice: decimal.NewFromInt(799), WalletBalance: decimal.NewFromInt(100),
+	}}, nil
+}
+
+func (s *stubReports) PlanChangeHistory(_ context.Context, _ int, f *int) ([]reporting.PlanChangeRow, error) {
+	s.record(f)
+	return []reporting.PlanChangeRow{{
+		SubscriberID: 1, Username: "a@isp", FromPlan: "100 Mbps", ToPlan: "200 Mbps",
+		EffectiveOn: time.Now(), Status: "scheduled", ScheduledBy: "csr", ScheduledAt: time.Now(),
+	}}, nil
+}
+
+func (s *stubReports) PaymentsByMethod(_ context.Context, _ int, f *int) ([]reporting.PaymentMethodRow, error) {
+	s.record(f)
+	return []reporting.PaymentMethodRow{{
+		Month: time.Now(), Method: "cash", Payments: 3, Total: decimal.NewFromInt(2397),
+	}}, nil
+}
+
+func (s *stubReports) CollectionByStaff(_ context.Context, _ int, f *int) ([]reporting.StaffCollectionRow, error) {
+	s.record(f)
+	return []reporting.StaffCollectionRow{{
+		Month: time.Now(), RecordedBy: "tech", Payments: 2,
+		CashTotal: decimal.NewFromInt(1000), DigitalTotal: decimal.NewFromInt(799),
+		Total: decimal.NewFromInt(1799),
+	}}, nil
+}
+
+func (s *stubReports) InvoiceRegister(_ context.Context, _ int, f *int) ([]reporting.InvoiceRegisterRow, error) {
+	s.record(f)
+	return []reporting.InvoiceRegisterRow{{
+		InvoiceID: 1, InvoiceDate: time.Now(), SubscriberID: 1, Username: "a@isp",
+		PlanName: "100 Mbps", BaseAmount: decimal.NewFromInt(799),
+		CGST: decimal.NewFromInt(72), SGST: decimal.NewFromInt(72), IGST: decimal.Zero,
+		Total: decimal.NewFromInt(943),
+	}}, nil
+}
+
+func (s *stubReports) TaxCharged(_ context.Context, _ int, f *int) ([]reporting.TaxRow, error) {
+	s.record(f)
+	return []reporting.TaxRow{{
+		Month: time.Now(), CGSTRate: decimal.NewFromInt(9), SGSTRate: decimal.NewFromInt(9),
+		IGSTRate: decimal.Zero, Invoices: 1, TaxableValue: decimal.NewFromInt(799),
+		CGST: decimal.NewFromInt(72), SGST: decimal.NewFromInt(72), IGST: decimal.Zero,
+		TaxTotal: decimal.NewFromInt(144),
+	}}, nil
+}
+
+func (s *stubReports) TicketTurnaround(_ context.Context, _ int, f *int) ([]reporting.TurnaroundRow, error) {
+	s.record(f)
+	return []reporting.TurnaroundRow{{
+		Month: time.Now(), Category: "billing", Priority: "P3", Raised: 4, Resolved: 3, StillOpen: 1,
+	}}, nil
+}
+
+func (s *stubReports) TopDataUsers(_ context.Context, _, limit int, f *int) ([]reporting.DataUserRow, error) {
+	s.record(f)
+	s.mu.Lock()
+	s.gotLimit = limit
+	s.mu.Unlock()
+	return []reporting.DataUserRow{{
+		SubscriberID: 1, Username: "a@isp", PlanName: "100 Mbps", Sessions: 12,
+		InputOctets: 1 << 30, OutputOctets: 1 << 29, TotalBytes: (1 << 30) + (1 << 29),
+		AllowanceBytes: 1 << 40,
+	}}, nil
+}
+
+func (s *stubReports) FUPExceeded(_ context.Context, f *int) ([]reporting.FUPExceededRow, error) {
+	s.record(f)
+	return []reporting.FUPExceededRow{{
+		SubscriberID: 1, Username: "a@isp", PlanName: "100 Mbps",
+		UsedBytes: 1 << 41, AllowanceBytes: 1 << 40, AppliedRate: "10M/10M", FUPActive: true,
+	}}, nil
+}
+
+// A schedule must be able to reproduce what the synchronous download does.
+// Without the per-report filters on the payload, "export the next 30 days of
+// expiries" quietly delivered the default seven — the schedule and the screen
+// would then disagree, which is the drift the shared WriteCSV exists to stop.
+func TestFR_RPT_004_AScheduledExportCarriesThePerReportFilters(t *testing.T) {
+	tasks := &stubTaskEnqueuer{}
+	mux := reportsMux(&stubReports{}, nil, tasks)
+
+	rec := reportCall(t, mux, http.MethodPost,
+		"/api/v1/reports/"+reporting.ReportExpiring+"/export",
+		hotspotStaffToken(t, "isp_owner"), `{"days":30}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d — %s", rec.Code, rec.Body.String())
+	}
+
+	queued := tasks.snapshot()
+	if len(queued) != 1 {
+		t.Fatalf("%d task(s) queued, want 1", len(queued))
+	}
+	var payload reporting.ExportPayload
+	if err := json.Unmarshal(queued[0].Payload(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Days != 30 {
+		t.Errorf("the day window reached the queue as %d, want 30", payload.Days)
+	}
+
+	// And the ranking's cut-off.
+	tasks2 := &stubTaskEnqueuer{}
+	mux2 := reportsMux(&stubReports{}, nil, tasks2)
+	rec = reportCall(t, mux2, http.MethodPost,
+		"/api/v1/reports/"+reporting.ReportTopDataUsers+"/export",
+		hotspotStaffToken(t, "isp_owner"), `{"limit":25}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d", rec.Code)
+	}
+	queued2 := tasks2.snapshot()
+	if len(queued2) != 1 {
+		t.Fatalf("%d task(s) queued, want 1", len(queued2))
+	}
+	if err := json.Unmarshal(queued2[0].Payload(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Limit != 25 {
+		t.Errorf("the limit reached the queue as %d, want 25", payload.Limit)
+	}
+}
+
+// A group filter on a report that cannot honour it is refused at enqueue
+// time, so the caller is told now rather than finding an export that never
+// arrived.
+func TestFR_RPT_004_AnUnhonourableGroupFilterIsRefusedAtEnqueue(t *testing.T) {
+	tasks := &stubTaskEnqueuer{}
+	mux := reportsMux(&stubReports{}, nil, tasks)
+
+	rec := reportCall(t, mux, http.MethodPost,
+		"/api/v1/reports/"+reporting.ReportPlanMix+"/export",
+		hotspotStaffToken(t, "isp_owner"), `{"group_id":4}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d — %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), reporting.ReportSubscribers) {
+		t.Error("the refusal does not name the report that does support a group filter")
+	}
+	if n := len(tasks.snapshot()); n != 0 {
+		t.Errorf("a refused export queued %d task(s)", n)
 	}
 }

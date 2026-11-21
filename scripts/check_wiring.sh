@@ -158,6 +158,20 @@ COMPONENTS=(
     "ListSubscriberGroups:named subscriber groups offered as a filter (FR-GRP-001)"
     "AddToGroup:subscribers placed in a named group (FR-GRP-001)"
     "SubscriberRoster:the group-filterable subscriber roster report (FR-GRP-001)"
+
+    # The report catalogue (FR-RPT-004). Two entries stand in for the nine
+    # new reports: Catalogue() is what the console groups and filters, so a
+    # catalogue nobody reads would mean the screen had been built some other
+    # way, and one query from the set proves the reports are reachable rather
+    # than only defined. The rest are held to the catalogue by
+    # TestFR_RPT_004_EveryCatalogueEntryIsServedByEveryPath, which is a
+    # stronger guarantee than a caller grep: it checks every entry, not
+    # whether one symbol is mentioned. Areas rather than Catalogue: the
+    # console reaches the table through Areas/InArea, and Catalogue's own
+    # callers are inside the package where this grep (which looks for the
+    # qualified "reporting.X(") cannot see them.
+    "reporting.Areas:the report catalogue grouping the console index (FR-RPT-004)"
+    "ExpiringSubscribers:the renewal call list, as one of the nine new reports (FR-RPT-004)"
 )
 
 if [ "${1:-}" = "--list" ]; then

@@ -860,3 +860,151 @@ test.describe('Subscriber groups (FR-GRP-001)', () => {
     await expect(select.locator('option').nth(1)).toHaveText(/\(\d+\)$/);
   });
 });
+
+test.describe('Report catalogue (FR-RPT-004)', () => {
+  // Every report the catalogue holds, as the console itself lists them. Read
+  // off the index rather than hardcoded, so adding a report to the Go
+  // catalogue extends this test instead of leaving it behind.
+  async function catalogueNames(page: Page): Promise<string[]> {
+    await page.goto('/staff/reports');
+    const hrefs = await page.locator('a[href^="/staff/reports?report="]').evaluateAll(
+      (as) => as.map((a) => (a as HTMLAnchorElement).getAttribute('href') || ''));
+    return [...new Set(hrefs.map((h) => h.replace('/staff/reports?report=', '')))];
+  }
+
+  test('the index groups every report under its area, with a filter box', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/reports');
+
+    await expect(page.getByRole('heading', { name: 'Reports', level: 1 })).toBeVisible();
+    // The four areas, as headings rather than nav links.
+    for (const area of ['Subscribers', 'Money', 'Support', 'Network']) {
+      await expect(page.getByRole('heading', { name: area, level: 3 })).toBeVisible();
+    }
+    // The nine FR-RPT-004 asked for by name, so the requirement cannot pass
+    // with one missing.
+    const names = await catalogueNames(page);
+    for (const required of ['expiring-subscribers', 'payments-by-method', 'collection-by-staff',
+      'invoice-register', 'tax-charged', 'top-data-users', 'fup-exceeded',
+      'ticket-turnaround', 'plan-change-history']) {
+      expect(names, `${required} is missing from the catalogue index`).toContain(required);
+    }
+    await expect(page.locator('#report-filter input[name="q"]')).toBeVisible();
+    await snap(page, 'report-catalogue');
+  });
+
+  // Server-side, so it works with scripting off and a filtered catalogue can
+  // be linked to or bookmarked.
+  test('the filter box narrows the index on the server', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/reports?q=GST');
+
+    // "GST" is only in the tax report's summary.
+    await expect(page.locator('a[href="/staff/reports?report=tax-charged"]')).toHaveCount(1);
+    await expect(page.locator('a[href="/staff/reports?report=plan-mix"]')).toHaveCount(0);
+    // An area left with nothing loses its heading rather than standing over
+    // an empty table.
+    await expect(page.getByRole('heading', { name: 'Network', level: 3 })).toHaveCount(0);
+
+    await page.goto('/staff/reports?q=zzzznothing');
+    await expect(page.getByText(/No report matches/)).toBeVisible();
+  });
+
+  // And live, as an enhancement on top of the form.
+  test('typing in the filter box hides the rows that do not match', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/reports');
+
+    const taxRow = page.locator('a[href="/staff/reports?report=tax-charged"]');
+    const planMixRow = page.locator('a[href="/staff/reports?report=plan-mix"]');
+    await expect(taxRow).toBeVisible();
+    await expect(planMixRow).toBeVisible();
+
+    await page.locator('#report-filter input[name="q"]').fill('GST');
+    await expect(taxRow).toBeVisible();
+    // Hidden, not removed — the script only toggles rows.
+    await expect(planMixRow).toBeHidden();
+  });
+
+  // The assertion no unit test can make: every report in the catalogue loads
+  // over HTTP in a real session. A page name missing from staffui's registry
+  // renders perfectly in a Go test and returns 500 in a browser.
+  test('every report in the catalogue opens with its own heading', async ({ page }) => {
+    await signIn(page, 'owner');
+    const names = await catalogueNames(page);
+    expect(names.length).toBeGreaterThanOrEqual(14);
+
+    for (const name of names) {
+      const res = await page.goto(`/staff/reports?report=${name}`);
+      expect(res?.status(), `${name} did not load`).toBe(200);
+      // Its own breadcrumb heading, so one report cannot be served under
+      // another's name.
+      await expect(page.locator('h1')).toContainText('Reports');
+      // Prefix match: the link carries the report's current window as query
+      // params, so an exact href would only ever match a report that takes
+      // no filters at all.
+      await expect(page.locator(`a[href^="/staff/reports/${name}.csv"]`).first()).toBeVisible();
+      // Never a link to the API from a console page: the API wants a Bearer
+      // JWT and this session has a cookie, so it would 401.
+      await expect(page.locator('a[href*="/api/v1/reports/"]')).toHaveCount(0);
+    }
+  });
+
+  test('a stale bookmark is named rather than served as a different report', async ({ page }) => {
+    await signIn(page, 'owner');
+    const res = await page.goto('/staff/reports?report=no-such-report');
+    expect(res?.status()).toBe(404);
+    await expect(page.getByText(/no-such-report/)).toBeVisible();
+    // Emphatically not somebody else's figures under that name.
+    await expect(page.getByText('current snapshot')).toHaveCount(0);
+  });
+
+  test('each report downloads as CSV from the console route', async ({ page }) => {
+    await signIn(page, 'owner');
+    const names = await catalogueNames(page);
+
+    for (const name of names) {
+      const res = await page.request.get(`/staff/reports/${name}.csv`);
+      expect(res.status(), `${name}.csv`).toBe(200);
+      expect(res.headers()['content-type']).toContain('csv');
+      expect(res.headers()['content-disposition']).toContain(name);
+      // A header row at minimum: a CSV with no header is a report that is
+      // not wired up.
+      const first = (await res.text()).split('\n')[0];
+      expect(first.length, `${name}.csv has no header row`).toBeGreaterThan(0);
+      expect(first).toContain(',');
+    }
+  });
+
+  // Only the window a report declares. A month box on a point-in-time
+  // snapshot implies a history it does not have.
+  test('a report is offered only the window it takes', async ({ page }) => {
+    await signIn(page, 'owner');
+
+    await page.goto('/staff/reports?report=expiring-subscribers');
+    await expect(page.locator('input[name="days"]')).toHaveCount(1);
+    await expect(page.locator('input[name="months"]')).toHaveCount(0);
+
+    await page.goto('/staff/reports?report=growth');
+    await expect(page.locator('input[name="months"]')).toHaveCount(1);
+    await expect(page.locator('input[name="days"]')).toHaveCount(0);
+
+    await page.goto('/staff/reports?report=fup-exceeded');
+    await expect(page.locator('input[name="months"]')).toHaveCount(0);
+    await expect(page.locator('input[name="days"]')).toHaveCount(0);
+
+    // And the top-users ranking takes a cut-off, which has to round-trip or
+    // "top 10" silently returns the default fifty.
+    await page.goto('/staff/reports?report=top-data-users&limit=10');
+    await expect(page.locator('input[name="limit"]')).toHaveValue('10');
+  });
+
+  // The reports are financial and growth performance — the same reach Revenue
+  // has. Not offering a nav link is a convenience; refusing the typed URL is
+  // the control.
+  test('a technician cannot reach the reports at all', async ({ page }) => {
+    await signIn(page, 'tech');
+    expect((await page.goto('/staff/reports'))?.status()).toBe(403);
+    expect((await page.goto('/staff/reports/tax-charged.csv'))?.status()).toBe(403);
+  });
+});

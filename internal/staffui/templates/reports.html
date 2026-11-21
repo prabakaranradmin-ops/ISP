@@ -1,43 +1,80 @@
 {{define "content"}}
 {{$d := .Data}}
-<h1>Reports</h1>
-<p class="muted">General business analytics &mdash; not tax filing (see Billing &rarr; GSTR-1 for that).</p>
 
-<div class="tabbar" role="tablist">
-  <a class="tab-btn {{if eq $d.Active "plan-mix"}}on{{end}}" href="?report=plan-mix">Plan mix</a>
-  <a class="tab-btn {{if eq $d.Active "growth"}}on{{end}}" href="?report=growth">Growth &amp; churn</a>
-  <a class="tab-btn {{if eq $d.Active "ticket-resolution"}}on{{end}}" href="?report=ticket-resolution">Ticket resolution</a>
-  <a class="tab-btn {{if eq $d.Active "collection"}}on{{end}}" href="?report=collection">Collections</a>
-  <a class="tab-btn {{if eq $d.Active "subscribers"}}on{{end}}" href="?report=subscribers">Subscribers</a>
-</div>
+{{if $d.Active}}
+{{/* One report. */}}
+<h1><a href="/staff/reports" class="muted">Reports</a> &rsaquo; {{$d.Def.Title}}</h1>
+<p class="muted">{{$d.Def.Summary}}</p>
 
-{{/* Group filter — FR-GRP-001. Offered only for the report that can honour
-     it: the other four read pre-aggregated views in which no individual
-     subscriber survives to be matched against a membership, and a filter
-     that silently does not apply is worse than none. */}}
-{{if and $d.GroupFilterable $d.Groups}}
-<form class="searchbar" method="get">
+<form class="searchbar" method="get" action="/staff/reports">
   <input type="hidden" name="report" value="{{$d.Active}}">
+
+  {{/* Only the window this report declares. Offering a month range on a
+       point-in-time snapshot would imply a history it does not have, and a
+       day range on a trailing report means nothing. */}}
+  {{if $d.Def.TakesMonths}}
+  <label>Months <input name="months" type="number" min="1" max="120" value="{{$d.Months}}"></label>
+  {{else if $d.Def.TakesDays}}
+  <label>Next days <input name="days" type="number" min="1" max="90" value="{{$d.Days}}"></label>
+  {{end}}
+
+  {{if eq $d.Active "top-data-users"}}
+  <label>Top <input name="limit" type="number" min="1" max="1000" value="{{$d.Limit}}"></label>
+  {{end}}
+
+  {{if and $d.GroupFilterable $d.Groups}}
   <label>Group
-    <select name="group_id" onchange="this.form.submit()">
+    <select name="group_id">
       <option value="">Everyone</option>
       {{range $d.Groups}}<option value="{{.ID}}"{{if eq .ID $d.GroupID}} selected{{end}}>{{.Name}} ({{.Members}})</option>{{end}}
     </select>
   </label>
-  <noscript><button type="submit">Apply</button></noscript>
+  {{end}}
+
+  <button class="primary" type="submit">Apply</button>
   {{/* The console route, not /api/v1/reports/... — the API authenticates a
        Bearer JWT and an operator has a session cookie, so the obvious link
        returns 401. Both produce the same bytes via reporting.WriteCSV. */}}
-  <a class="btn" href="/staff/reports/subscribers.csv{{if $d.GroupID}}?group_id={{$d.GroupID}}{{end}}">Download CSV</a>
+  <a class="btn" href="/staff/reports/{{$d.Active}}.csv?months={{$d.Months}}&amp;days={{$d.Days}}&amp;limit={{$d.Limit}}{{if $d.GroupID}}&amp;group_id={{$d.GroupID}}{{end}}">Download CSV</a>
 </form>
-{{end}}
 
-{{if and (ne $d.Active "plan-mix") (ne $d.Active "subscribers")}}
-<form class="searchbar" method="get">
-  <input type="hidden" name="report" value="{{$d.Active}}">
-  <label>Months <input name="months" type="number" min="1" max="120" value="{{$d.Months}}"></label>
-  <button class="primary" type="submit">Apply</button>
+{{else}}
+{{/* The catalogue index — FR-RPT-004. Grouped by area rather than one long
+     list, and with a filter box, because fourteen reports is more than a
+     reader scans. The filter is a GET so it works without JavaScript and so
+     a filtered catalogue can be linked to; the script below only makes it
+     live. */}}
+<h1>Reports</h1>
+<p class="muted">General business analytics &mdash; not tax filing (see Billing &rarr; GSTR-1 for that).
+  Every report downloads as CSV, and any of them can be scheduled through the API.</p>
+
+<form class="searchbar" method="get" action="/staff/reports" id="report-filter">
+  <input name="q" value="{{$d.Query}}" placeholder="Filter reports &mdash; try GST, renewal, cash, SLA"
+         aria-label="Filter reports" autocomplete="off">
+  <button class="primary" type="submit">Filter</button>
+  {{if $d.Query}}<a class="btn" href="/staff/reports">Clear</a>{{end}}
 </form>
+
+{{range $d.Areas}}
+<div class="card" data-report-area="{{.Name}}">
+  <h3>{{.Name}}</h3>
+  <table>
+    <tbody>
+    {{range .Reports}}
+      <tr data-report-row="{{.Name}} {{.Title}} {{.Summary}}">
+        <td>
+          <a href="/staff/reports?report={{.Name}}"><strong>{{.Title}}</strong></a><br>
+          <span class="muted small">{{.Summary}}</span>
+        </td>
+        <td class="actions">
+          <a class="btn small" href="/staff/reports/{{.Name}}.csv">CSV</a>
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
 {{end}}
 
 {{if eq $d.Active "plan-mix"}}
@@ -156,5 +193,311 @@
     </tbody>
   </table>
 </div>
+{{end}}
+
+{{if eq $d.Active "expiring-subscribers"}}
+<div class="card table-card">
+  <h3>Expiring in the next {{$d.Days}} day(s)</h3>
+  <p class="muted small">Soonest first, and expiries already past are included &mdash; those are the
+    customers already off service, who most need the call. The amount due is the plan price less
+    whatever the wallet already holds, computed now rather than stored, because a subscriber can pay
+    online between this list being drawn and the call being made.</p>
+  <table>
+    <thead><tr>
+      <th>Subscriber</th><th>Mobile</th><th>Plan</th><th>Status</th>
+      <th>Expires</th><th class="right">Days</th><th class="right">Price</th>
+      <th class="right">Wallet</th><th class="right">Ask for</th>
+    </tr></thead>
+    <tbody>
+    {{range $d.Expiring}}
+      <tr>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td class="small">{{.MobileNumber}}</td>
+        <td>{{.PlanName}}</td>
+        <td>{{humanize .Status}}</td>
+        <td class="small">{{.PlanExpiry.Format "2 Jan 2006"}}</td>
+        <td class="right num">{{.DaysLeft}}</td>
+        <td class="right num">&#8377;{{money .PlanPrice}}</td>
+        <td class="right num">&#8377;{{money .WalletBalance}}</td>
+        <td class="right num"><strong>&#8377;{{money .AmountDue}}</strong></td>
+      </tr>
+    {{else}}<tr><td colspan="9" class="empty">Nothing expiring in this window.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Active "plan-change-history"}}
+<div class="card table-card">
+  <h3>Plan changes scheduled in the last {{$d.Months}} month(s)</h3>
+  <p class="muted small">Scheduled changes only. An immediate plan change from the subscriber page
+    writes no history row &mdash; those are in the Audit Trail. All three outcomes are shown: what was
+    withdrawn before it fired is as much a part of the record as what happened.</p>
+  <table>
+    <thead><tr>
+      <th>Subscriber</th><th>From</th><th>To</th><th>Effective</th>
+      <th>Outcome</th><th>Reason</th><th>Scheduled by</th>
+    </tr></thead>
+    <tbody>
+    {{range $d.PlanChanges}}
+      <tr>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td class="small">{{.FromPlan}}</td>
+        <td class="small">{{.ToPlan}}</td>
+        <td class="small">{{.EffectiveOn.Format "2 Jan 2006"}}</td>
+        <td>
+          {{humanize .Status}}
+          {{if .AppliedAt}}<br><span class="muted small">{{.AppliedAt.Format "2 Jan"}}</span>{{end}}
+          {{if .CancelledAt}}<br><span class="muted small">by {{.CancelledBy}}</span>{{end}}
+        </td>
+        <td class="small">{{if .Reason}}{{.Reason}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="small">{{.ScheduledBy}}</td>
+      </tr>
+    {{else}}<tr><td colspan="7" class="empty">No plan changes scheduled in this window.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Active "payments-by-method"}}
+<div class="card table-card">
+  <h3>Payments by method</h3>
+  <p class="muted small">Credits only, bounced cheques excluded &mdash; migration 054 bounces a cheque
+    with a reversing entry rather than flipping the original, so counting it would report money that
+    came back as money taken. A credit with no payment record is a wallet adjustment and shows as
+    such.</p>
+  <table>
+    <thead><tr><th>Month</th><th>Method</th><th class="right">Payments</th><th class="right">Total</th></tr></thead>
+    <tbody>
+    {{range $d.PaymentMethods}}
+      <tr>
+        <td>{{.Month.Format "Jan 2006"}}</td>
+        <td>{{humanize .Method}}</td>
+        <td class="right num">{{.Payments}}</td>
+        <td class="right num">&#8377;{{money .Total}}</td>
+      </tr>
+    {{else}}<tr><td colspan="4" class="empty">No payments in this window.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Active "collection-by-staff"}}
+<div class="card table-card">
+  <h3>Collection by staff</h3>
+  <p class="muted small">Cash apart from digital, because cash has to be handed in and UPI has already
+    reached the bank &mdash; a single total cannot be checked against anything. Grouped on the recorded
+    name rather than a staff id, so deleting an account cannot erase a cash trail.</p>
+  <table>
+    <thead><tr>
+      <th>Month</th><th>Recorded by</th><th class="right">Payments</th>
+      <th class="right">Cash</th><th class="right">Digital</th><th class="right">Total</th>
+    </tr></thead>
+    <tbody>
+    {{range $d.StaffCollection}}
+      <tr>
+        <td>{{.Month.Format "Jan 2006"}}</td>
+        <td>{{.RecordedBy}}</td>
+        <td class="right num">{{.Payments}}</td>
+        <td class="right num"><strong>&#8377;{{money .CashTotal}}</strong></td>
+        <td class="right num">&#8377;{{money .DigitalTotal}}</td>
+        <td class="right num">&#8377;{{money .Total}}</td>
+      </tr>
+    {{else}}<tr><td colspan="6" class="empty">Nobody recorded a payment in this window.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Active "invoice-register"}}
+<div class="card table-card">
+  <h3>Invoice register</h3>
+  <p class="muted small">What was raised. There is no paid/unpaid column because this system settles
+    invoices against the wallet rather than marking them, so a per-invoice status would have to be
+    inferred and would be wrong as often as right &mdash; what was collected is the collections
+    reports.</p>
+  <table>
+    <thead><tr>
+      <th class="right">No.</th><th>Date</th><th>Subscriber</th><th>Plan</th><th>For</th>
+      <th class="right">Taxable</th><th class="right">CGST</th><th class="right">SGST</th>
+      <th class="right">IGST</th><th class="right">Total</th>
+    </tr></thead>
+    <tbody>
+    {{range $d.InvoiceRegister}}
+      <tr>
+        <td class="right num">{{.InvoiceID}}</td>
+        <td class="small">{{.InvoiceDate.Format "2 Jan 2006"}}</td>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td class="small">{{.PlanName}}</td>
+        <td class="small">{{.Description}}</td>
+        <td class="right num">&#8377;{{money .BaseAmount}}</td>
+        <td class="right num">&#8377;{{money .CGST}}</td>
+        <td class="right num">&#8377;{{money .SGST}}</td>
+        <td class="right num">&#8377;{{money .IGST}}</td>
+        <td class="right num"><strong>&#8377;{{money .Total}}</strong></td>
+      </tr>
+    {{else}}<tr><td colspan="10" class="empty">No invoices in this window.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Active "tax-charged"}}
+<div class="card table-card">
+  <h3>Tax charged</h3>
+  <p class="muted small">CGST/SGST and IGST in separate columns, never summed: an intra-state supply
+    splits the rate between centre and state while an inter-state one carries IGST alone, and a
+    combined figure reconciles against neither. Grouped by rate, so a rate change mid-window produces
+    two lines rather than one blended figure. This is analytics &mdash; the return itself is
+    Billing &rarr; GSTR-1.</p>
+  <table>
+    <thead><tr>
+      <th>Month</th><th class="right">CGST%</th><th class="right">SGST%</th><th class="right">IGST%</th>
+      <th class="right">Invoices</th><th class="right">Taxable</th>
+      <th class="right">CGST</th><th class="right">SGST</th><th class="right">IGST</th><th class="right">Tax</th>
+    </tr></thead>
+    <tbody>
+    {{range $d.Tax}}
+      <tr>
+        <td>{{.Month.Format "Jan 2006"}}</td>
+        <td class="right num">{{money .CGSTRate}}</td>
+        <td class="right num">{{money .SGSTRate}}</td>
+        <td class="right num">{{money .IGSTRate}}</td>
+        <td class="right num">{{.Invoices}}</td>
+        <td class="right num">&#8377;{{money .TaxableValue}}</td>
+        <td class="right num">&#8377;{{money .CGST}}</td>
+        <td class="right num">&#8377;{{money .SGST}}</td>
+        <td class="right num">&#8377;{{money .IGST}}</td>
+        <td class="right num"><strong>&#8377;{{money .TaxTotal}}</strong></td>
+      </tr>
+    {{else}}<tr><td colspan="10" class="empty">No invoices in this window.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Active "ticket-turnaround"}}
+<div class="card table-card">
+  <h3>Ticket turnaround</h3>
+  <p class="muted small">How long tickets actually took, as distinct from the Ticket resolution report
+    beside it, which counts them against their SLA &mdash; a month can be entirely within SLA and still
+    be getting slower. First arrival at resolved, not the last: a ticket closed, reopened and closed
+    again is a support failure, and the last timestamp would report it as one slow success. Still-open
+    counts tickets raised in the month that have never been resolved, because a fast median over a
+    month that left thirty open is not a fast month.</p>
+  <table>
+    <thead><tr>
+      <th>Month</th><th>Category</th><th>Priority</th><th class="right">Raised</th>
+      <th class="right">Resolved</th><th class="right">Median hrs</th><th class="right">P90 hrs</th>
+      <th class="right">Worst hrs</th><th class="right">Still open</th>
+    </tr></thead>
+    <tbody>
+    {{range $d.Turnaround}}
+      <tr>
+        <td>{{.Month.Format "Jan 2006"}}</td>
+        <td>{{.Category}}</td>
+        <td>{{.Priority}}</td>
+        <td class="right num">{{.Raised}}</td>
+        <td class="right num">{{.Resolved}}</td>
+        <td class="right num">{{optHours .MedianHours}}</td>
+        <td class="right num">{{optHours .P90Hours}}</td>
+        <td class="right num">{{optHours .MaxHours}}</td>
+        <td class="right num">{{if .StillOpen}}<strong>{{.StillOpen}}</strong>{{else}}0{{end}}</td>
+      </tr>
+    {{else}}<tr><td colspan="9" class="empty">No tickets in this window.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Active "top-data-users"}}
+<div class="card table-card">
+  <h3>Top {{$d.Limit}} data users</h3>
+  <p class="muted small">Every session that started in the window, open or closed &mdash; unlike the
+    Over fair-use report, which counts only open sessions because that is how the scanner measures
+    "now". The plan's allowance is shown beside the usage so a large number can be read as within what
+    they bought or well past it.</p>
+  <table>
+    <thead><tr>
+      <th>Subscriber</th><th>Plan</th><th class="right">Sessions</th>
+      <th class="right">Down GB</th><th class="right">Up GB</th><th class="right">Total GB</th>
+      <th class="right">Allowance GB</th>
+    </tr></thead>
+    <tbody>
+    {{range $d.DataUsers}}
+      <tr>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td class="small">{{.PlanName}}</td>
+        <td class="right num">{{.Sessions}}</td>
+        <td class="right num">{{gb .InputOctets}}</td>
+        <td class="right num">{{gb .OutputOctets}}</td>
+        <td class="right num"><strong>{{gb .TotalBytes}}</strong></td>
+        <td class="right num">{{if .AllowanceBytes}}{{gb .AllowanceBytes}}{{else}}<span class="muted">unlimited</span>{{end}}</td>
+      </tr>
+    {{else}}<tr><td colspan="7" class="empty">No sessions in this window.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if eq $d.Active "fup-exceeded"}}
+<div class="card table-card">
+  <h3>Over fair-use now</h3>
+  <p class="muted small">Measured the way the fair-use scanner measures it &mdash; summed across open
+    sessions, since a reconnect opens a new row while the quota is per cycle. Matching the scanner is
+    the point: counting closed sessions too would list subscribers whose throttle has already been
+    lifted. Top-ups raise the allowance rather than clearing a flag, so they are added in. A row with
+    no applied rate is one the scanner has not reached yet &mdash; a column of them means the scanner
+    is not running.</p>
+  <table>
+    <thead><tr>
+      <th>Subscriber</th><th>Plan</th><th class="right">Used GB</th><th class="right">Allowance GB</th>
+      <th class="right">Top-up GB</th><th class="right">Of allowance</th><th>Throttled to</th>
+    </tr></thead>
+    <tbody>
+    {{range $d.FUPExceeded}}
+      <tr>
+        <td><a href="/staff/subscribers/{{.SubscriberID}}">{{.Username}}</a></td>
+        <td class="small">{{.PlanName}}</td>
+        <td class="right num"><strong>{{gb .UsedBytes}}</strong></td>
+        <td class="right num">{{gb .AllowanceBytes}}</td>
+        <td class="right num">{{if .TopupBytes}}{{gb .TopupBytes}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="right num">{{optPct .OveragePct}}%</td>
+        <td class="small">
+          {{if .AppliedRate}}{{.AppliedRate}}
+          {{else}}<span class="muted">not yet applied</span>{{end}}
+        </td>
+      </tr>
+    {{else}}<tr><td colspan="7" class="empty">Nobody is over their fair-use allowance.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{/* Live filtering of the catalogue index. Progressive only: the GET form
+     above is the source of truth and works with scripting off. */}}
+{{if not $d.Active}}
+<script>
+(function () {
+  var form = document.getElementById('report-filter');
+  if (!form) return;
+  var box = form.querySelector('input[name="q"]');
+  if (!box) return;
+  box.addEventListener('input', function () {
+    var q = box.value.trim().toLowerCase();
+    document.querySelectorAll('[data-report-area]').forEach(function (card) {
+      var shown = 0;
+      card.querySelectorAll('[data-report-row]').forEach(function (row) {
+        var hit = row.getAttribute('data-report-row').toLowerCase().indexOf(q) !== -1;
+        row.hidden = !hit;
+        if (hit) shown++;
+      });
+      // An area with nothing left is hidden too, so the page does not keep a
+      // heading over an empty table.
+      card.hidden = shown === 0;
+    });
+  });
+})();
+</script>
 {{end}}
 {{end}}

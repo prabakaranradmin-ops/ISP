@@ -53,6 +53,16 @@ type ExportPayload struct {
 	// read from the request, so a scheduled export cannot widen its own scope
 	// between being asked for and being run.
 	FranchiseID *int `json:"franchise_id,omitempty"`
+	// Days, Limit and GroupID carry the filters that belong to one report
+	// each (FR-RPT-004, FR-GRP-001). Without them a scheduled
+	// expiring-subscribers export would silently fall back to the default
+	// seven days however many were asked for, and a group-scoped roster
+	// could not be scheduled at all — the synchronous download would then be
+	// doing something the schedule cannot reproduce, which is the drift this
+	// package exists to prevent.
+	Days    int  `json:"days,omitempty"`
+	Limit   int  `json:"limit,omitempty"`
+	GroupID *int `json:"group_id,omitempty"`
 	// RequestedBy records who asked, for the archive's audit trail.
 	RequestedBy string `json:"requested_by,omitempty"`
 	// EntityID keys the archive row. Exports have no natural entity, so the
@@ -101,7 +111,17 @@ func (h *ExportHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error
 	timer := prometheus.NewTimer(exportDuration.WithLabelValues(p.Report))
 	defer timer.ObserveDuration()
 
-	filter := Filter{Months: p.Months, FranchiseID: p.FranchiseID}
+	filter := Filter{
+		Months: p.Months, FranchiseID: p.FranchiseID,
+		Days: p.Days, Limit: p.Limit, GroupID: p.GroupID,
+	}
+	// Refused rather than silently unfiltered, exactly as the synchronous
+	// path refuses it. SkipRetry because retrying cannot make the
+	// combination valid.
+	if filter.GroupID != nil && !GroupFilterable(p.Report) {
+		return fmt.Errorf("reporting: %s cannot be filtered by group: %w",
+			p.Report, jobqueue.SkipRetry)
+	}
 	var buf bytes.Buffer
 	if err := WriteCSV(ctx, h.db, p.Report, filter, &buf); err != nil {
 		exportsTotal.WithLabelValues(p.Report, "generate_error").Inc()

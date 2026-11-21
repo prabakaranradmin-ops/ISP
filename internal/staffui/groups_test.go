@@ -476,19 +476,38 @@ type fakeRosterStore struct {
 	gotGrp *int
 	calls  int
 	err    error
+
+	// The original four, so a screen test can render them with data rather
+	// than only hitting their empty-state branch.
+	planMix          []reporting.PlanMixRow
+	growth           []reporting.GrowthRow
+	ticketResolution []reporting.TicketResolutionRow
+	collection       []reporting.CollectionRow
+
+	// FR-RPT-004 catalogue reports.
+	expiring        []reporting.ExpiringRow
+	planChanges     []reporting.PlanChangeRow
+	paymentMethods  []reporting.PaymentMethodRow
+	staffCollection []reporting.StaffCollectionRow
+	invoiceRegister []reporting.InvoiceRegisterRow
+	tax             []reporting.TaxRow
+	turnaround      []reporting.TurnaroundRow
+	dataUsers       []reporting.DataUserRow
+	fupExceeded     []reporting.FUPExceededRow
+	gotLimit        int
 }
 
 func (f *fakeRosterStore) PlanMix(context.Context, *int) ([]reporting.PlanMixRow, error) {
-	return nil, f.err
+	return f.planMix, f.err
 }
 func (f *fakeRosterStore) GrowthMonthly(context.Context, int, *int) ([]reporting.GrowthRow, error) {
-	return nil, f.err
+	return f.growth, f.err
 }
 func (f *fakeRosterStore) TicketResolution(context.Context, int, *int) ([]reporting.TicketResolutionRow, error) {
-	return nil, f.err
+	return f.ticketResolution, f.err
 }
 func (f *fakeRosterStore) FranchiseCollection(context.Context, int, *int) ([]reporting.CollectionRow, error) {
-	return nil, f.err
+	return f.collection, f.err
 }
 func (f *fakeRosterStore) SubscriberRoster(_ context.Context, group, _ *int) ([]reporting.SubscriberRosterRow, error) {
 	f.calls++
@@ -563,4 +582,35 @@ func itoa(n int) string {
 		return string(rune('0' + n))
 	}
 	return string(rune('0'+n/10)) + string(rune('0'+n%10))
+}
+
+// The FR-RPT-004 catalogue methods. Empty by default and overridable per
+// test, so a screen test can supply only the report it is about.
+func (f *fakeRosterStore) ExpiringSubscribers(context.Context, int, *int) ([]reporting.ExpiringRow, error) {
+	return f.expiring, f.err
+}
+func (f *fakeRosterStore) PlanChangeHistory(context.Context, int, *int) ([]reporting.PlanChangeRow, error) {
+	return f.planChanges, f.err
+}
+func (f *fakeRosterStore) PaymentsByMethod(context.Context, int, *int) ([]reporting.PaymentMethodRow, error) {
+	return f.paymentMethods, f.err
+}
+func (f *fakeRosterStore) CollectionByStaff(context.Context, int, *int) ([]reporting.StaffCollectionRow, error) {
+	return f.staffCollection, f.err
+}
+func (f *fakeRosterStore) InvoiceRegister(context.Context, int, *int) ([]reporting.InvoiceRegisterRow, error) {
+	return f.invoiceRegister, f.err
+}
+func (f *fakeRosterStore) TaxCharged(context.Context, int, *int) ([]reporting.TaxRow, error) {
+	return f.tax, f.err
+}
+func (f *fakeRosterStore) TicketTurnaround(context.Context, int, *int) ([]reporting.TurnaroundRow, error) {
+	return f.turnaround, f.err
+}
+func (f *fakeRosterStore) TopDataUsers(_ context.Context, _, limit int, _ *int) ([]reporting.DataUserRow, error) {
+	f.gotLimit = limit
+	return f.dataUsers, f.err
+}
+func (f *fakeRosterStore) FUPExceeded(context.Context, *int) ([]reporting.FUPExceededRow, error) {
+	return f.fupExceeded, f.err
 }

@@ -31,6 +31,19 @@ type Querier interface {
 	TicketResolution(ctx context.Context, months int, franchiseID *int) ([]TicketResolutionRow, error)
 	FranchiseCollection(ctx context.Context, months int, franchiseID *int) ([]CollectionRow, error)
 	SubscriberRoster(ctx context.Context, groupID, franchiseID *int) ([]SubscriberRosterRow, error)
+
+	// FR-RPT-004. Each takes the window its catalogue entry declares — days
+	// for the forward-looking expiry list, months for the trailing ones, and
+	// neither for the two point-in-time snapshots.
+	ExpiringSubscribers(ctx context.Context, days int, franchiseID *int) ([]ExpiringRow, error)
+	PlanChangeHistory(ctx context.Context, months int, franchiseID *int) ([]PlanChangeRow, error)
+	PaymentsByMethod(ctx context.Context, months int, franchiseID *int) ([]PaymentMethodRow, error)
+	CollectionByStaff(ctx context.Context, months int, franchiseID *int) ([]StaffCollectionRow, error)
+	InvoiceRegister(ctx context.Context, months int, franchiseID *int) ([]InvoiceRegisterRow, error)
+	TaxCharged(ctx context.Context, months int, franchiseID *int) ([]TaxRow, error)
+	TicketTurnaround(ctx context.Context, months int, franchiseID *int) ([]TurnaroundRow, error)
+	TopDataUsers(ctx context.Context, months, limit int, franchiseID *int) ([]DataUserRow, error)
+	FUPExceeded(ctx context.Context, franchiseID *int) ([]FUPExceededRow, error)
 }
 
 // ErrGroupFilterUnsupported is returned when a group filter is asked of a
@@ -45,8 +58,8 @@ type Querier interface {
 var ErrGroupFilterUnsupported = errors.New(
 	"reporting: this report cannot be filtered by subscriber group")
 
-// GroupFilterable reports whether report honours Filter.GroupID.
-func GroupFilterable(report string) bool { return report == ReportSubscribers }
+// GroupFilterable now lives in catalogue.go, derived from the report
+// catalogue rather than restated here (FR-RPT-004).
 
 // Filter narrows a report.
 //
@@ -60,6 +73,13 @@ type Filter struct {
 	Months      int
 	FranchiseID *int
 	GroupID     *int
+	// Days is the forward-looking window for the expiring-subscribers report
+	// (FR-RPT-004), where "the next 7 days" is the question a renewal call
+	// list answers and a trailing month window means nothing.
+	Days int
+	// Limit caps the top-data-users report. A "top users" list is a ranking,
+	// so it needs a cut-off; without one it is just the whole base sorted.
+	Limit int
 }
 
 // NormaliseMonths clamps a requested window into range.
@@ -128,6 +148,71 @@ func WriteCSV(ctx context.Context, q Querier, report string, f Filter, w io.Writ
 		}
 		return WriteCollectionCSV(w, rows)
 
+	// ── FR-RPT-004 ──────────────────────────────────────────────────────
+
+	case ReportExpiring:
+		rows, err := q.ExpiringSubscribers(ctx, NormaliseDays(f.Days), f.FranchiseID)
+		if err != nil {
+			return err
+		}
+		return WriteExpiringCSV(w, rows)
+
+	case ReportPlanChanges:
+		rows, err := q.PlanChangeHistory(ctx, months, f.FranchiseID)
+		if err != nil {
+			return err
+		}
+		return WritePlanChangesCSV(w, rows)
+
+	case ReportPaymentsByMethod:
+		rows, err := q.PaymentsByMethod(ctx, months, f.FranchiseID)
+		if err != nil {
+			return err
+		}
+		return WritePaymentsByMethodCSV(w, rows)
+
+	case ReportCollectionByStaff:
+		rows, err := q.CollectionByStaff(ctx, months, f.FranchiseID)
+		if err != nil {
+			return err
+		}
+		return WriteCollectionByStaffCSV(w, rows)
+
+	case ReportInvoiceRegister:
+		rows, err := q.InvoiceRegister(ctx, months, f.FranchiseID)
+		if err != nil {
+			return err
+		}
+		return WriteInvoiceRegisterCSV(w, rows)
+
+	case ReportTaxCharged:
+		rows, err := q.TaxCharged(ctx, months, f.FranchiseID)
+		if err != nil {
+			return err
+		}
+		return WriteTaxChargedCSV(w, rows)
+
+	case ReportTicketTurnaround:
+		rows, err := q.TicketTurnaround(ctx, months, f.FranchiseID)
+		if err != nil {
+			return err
+		}
+		return WriteTurnaroundCSV(w, rows)
+
+	case ReportTopDataUsers:
+		rows, err := q.TopDataUsers(ctx, months, NormaliseLimit(f.Limit), f.FranchiseID)
+		if err != nil {
+			return err
+		}
+		return WriteTopDataUsersCSV(w, rows)
+
+	case ReportFUPExceeded:
+		rows, err := q.FUPExceeded(ctx, f.FranchiseID)
+		if err != nil {
+			return err
+		}
+		return WriteFUPExceededCSV(w, rows)
+
 	default:
 		return fmt.Errorf("reporting: unknown report %q", report)
 	}
@@ -149,4 +234,46 @@ func Filename(report string, f Filter, at time.Time) string {
 		name = fmt.Sprintf("%s-group-%d", name, *f.GroupID)
 	}
 	return name + ".csv"
+}
+
+// Day-window bounds for the expiring-subscribers report.
+const (
+	// DefaultDays is a week: long enough to work a call list through, short
+	// enough that the list is still the people about to lapse.
+	DefaultDays = 7
+	// MaxDays caps it at a quarter. Past that an "expiring" list is the
+	// renewal schedule of the whole base.
+	MaxDays = 90
+)
+
+// Top-users bounds.
+const (
+	DefaultLimit = 50
+	MaxLimit     = 1000
+)
+
+// NormaliseDays clamps a requested forward window into range.
+//
+// Zero or negative falls back to the default rather than returning nobody: a
+// hand-edited URL showing the usual week is recoverable, where an empty list
+// reads as "nothing is expiring" and would stop a day's calls being made.
+func NormaliseDays(days int) int {
+	if days <= 0 {
+		return DefaultDays
+	}
+	if days > MaxDays {
+		return MaxDays
+	}
+	return days
+}
+
+// NormaliseLimit clamps a requested ranking size into range.
+func NormaliseLimit(limit int) int {
+	if limit <= 0 {
+		return DefaultLimit
+	}
+	if limit > MaxLimit {
+		return MaxLimit
+	}
+	return limit
 }

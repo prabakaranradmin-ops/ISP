@@ -105,6 +105,29 @@ func (h *Handler) writeReportJSON(w http.ResponseWriter, r *http.Request, report
 		rows, err = h.reports.FranchiseCollection(ctx, months, f.FranchiseID)
 	case reporting.ReportSubscribers:
 		rows, err = h.reports.SubscriberRoster(ctx, f.GroupID, f.FranchiseID)
+
+	// FR-RPT-004. Every catalogue entry needs a case here as well as in
+	// WriteCSV; TestFR_RPT_004_EveryCatalogueEntryIsServedByEveryPath holds
+	// the two lists together.
+	case reporting.ReportExpiring:
+		rows, err = h.reports.ExpiringSubscribers(ctx, reporting.NormaliseDays(f.Days), f.FranchiseID)
+	case reporting.ReportPlanChanges:
+		rows, err = h.reports.PlanChangeHistory(ctx, months, f.FranchiseID)
+	case reporting.ReportPaymentsByMethod:
+		rows, err = h.reports.PaymentsByMethod(ctx, months, f.FranchiseID)
+	case reporting.ReportCollectionByStaff:
+		rows, err = h.reports.CollectionByStaff(ctx, months, f.FranchiseID)
+	case reporting.ReportInvoiceRegister:
+		rows, err = h.reports.InvoiceRegister(ctx, months, f.FranchiseID)
+	case reporting.ReportTaxCharged:
+		rows, err = h.reports.TaxCharged(ctx, months, f.FranchiseID)
+	case reporting.ReportTicketTurnaround:
+		rows, err = h.reports.TicketTurnaround(ctx, months, f.FranchiseID)
+	case reporting.ReportTopDataUsers:
+		rows, err = h.reports.TopDataUsers(ctx, months, reporting.NormaliseLimit(f.Limit), f.FranchiseID)
+	case reporting.ReportFUPExceeded:
+		rows, err = h.reports.FUPExceeded(ctx, f.FranchiseID)
+
 	default:
 		// Unreachable while ValidReport guards the route, and here anyway: the
 		// original switch had no default, so adding a report to the catalogue
@@ -168,7 +191,22 @@ func (h *Handler) reportFilter(w http.ResponseWriter, r *http.Request) (reportin
 		groupID = &id
 	}
 
-	return reporting.Filter{Months: months, FranchiseID: scope, GroupID: groupID}, true
+	// The two windows that belong to one report each — FR-RPT-004. Both are
+	// clamped rather than refused: an out-of-range window is a hand-edited
+	// URL, and the usual week of expiries is more useful than an error.
+	days, err := strconv.Atoi(r.URL.Query().Get("days"))
+	if err != nil {
+		days = 0
+	}
+	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil {
+		limit = 0
+	}
+
+	return reporting.Filter{
+		Months: months, FranchiseID: scope, GroupID: groupID,
+		Days: days, Limit: limit,
+	}, true
 }
 
 // ── Scheduled export ────────────────────────────────────────────────────────
@@ -178,6 +216,13 @@ type exportRequest struct {
 	// FranchiseID is accepted only from ISP-wide staff; a scoped caller's own
 	// franchise always wins, whatever the body says.
 	FranchiseID *int `json:"franchise_id,omitempty"`
+	// Days, Limit and GroupID belong to one report each (FR-RPT-004,
+	// FR-GRP-001). Accepted here so a schedule can reproduce what the
+	// synchronous download does; without them "export the next 30 days of
+	// expiries" would quietly deliver seven.
+	Days    int  `json:"days,omitempty"`
+	Limit   int  `json:"limit,omitempty"`
+	GroupID *int `json:"group_id,omitempty"`
 }
 
 // RequestReportExport handles POST /api/v1/reports/{report}/export.
@@ -226,9 +271,28 @@ func (h *Handler) RequestReportExport(w http.ResponseWriter, r *http.Request) {
 	// enough to quote over the phone.
 	exportID := int(time.Now().Unix())
 
+	// Refused here as well as on the worker, so the caller is told now rather
+	// than finding an export that never arrived.
+	if req.GroupID != nil {
+		if *req.GroupID <= 0 {
+			writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION",
+				"group_id must be a positive integer")
+			return
+		}
+		if !reporting.GroupFilterable(report) {
+			writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION",
+				report+" cannot be filtered by subscriber group; use the "+
+					reporting.ReportSubscribers+" report")
+			return
+		}
+	}
+
 	task, err := reporting.NewExportTask(reporting.ExportPayload{
 		Report:      report,
 		Months:      req.Months,
+		Days:        req.Days,
+		Limit:       req.Limit,
+		GroupID:     req.GroupID,
 		FranchiseID: scope,
 		RequestedBy: middleware.SubjectFromContext(r.Context()),
 		EntityID:    exportID,

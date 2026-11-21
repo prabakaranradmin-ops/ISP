@@ -231,6 +231,34 @@ settled the question in seconds.
   is what a new reference should use; migrating the old two is its own
   change, not a side effect of adding a fourth dimension.
 
+- **An immediate plan change leaves no history row.** Migration 031's
+  trigger is `AFTER UPDATE OF status ... WHEN (OLD.status IS DISTINCT FROM
+  NEW.status)`, so changing a subscriber's plan without changing their status
+  writes nothing to `subscriber_status_history` — and there is no
+  plan-change-history table. `scheduled_plan_changes` records only changes
+  that went through the *scheduled* path (FR-BIL-023), with its own
+  from/to/effective/status columns.
+
+  FR-RPT-004's plan-change-history report is therefore built on
+  `scheduled_plan_changes` and says so on the screen. Immediate changes are
+  recoverable only from the owner-only `staff_audit_log`, and that was
+  deliberately not pulled into the report: it would widen a record *about the
+  staff* to every role that can read a report, and the audit detail is JSON
+  that would have to be parsed per row. Making the history complete means
+  either a `plan_change_history` table written by both paths, or widening
+  migration 031's trigger to fire on `plan_id` as well — the second is
+  cheaper and is probably the right answer, but it changes what an existing
+  table means, so it is its own change.
+
+- **The invoice register has no paid/unpaid column, and cannot.** `invoices`
+  carries no status: this schema settles an invoice by debiting the wallet,
+  so "paid" is a property of the wallet's balance and ledger over time rather
+  than of the invoice row. Any per-invoice status would have to be inferred
+  (wallet balance at the time? a matching debit within N days?) and would be
+  wrong often enough to be worse than absent. The register reports what was
+  raised; what was collected is the two collection reports. Said on the
+  screen so nobody looks for the column.
+
 - **The four aggregate reports cannot be filtered by subscriber group.** Plan
   mix, growth, ticket resolution and collection read pre-aggregated views —
   `mv_ticket_resolution` is materialised — so no individual subscriber

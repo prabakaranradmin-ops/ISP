@@ -32,6 +32,17 @@ type stubQuerier struct {
 	collection []CollectionRow
 	roster     []SubscriberRosterRow
 
+	// FR-RPT-004
+	expiring        []ExpiringRow
+	planChanges     []PlanChangeRow
+	paymentMethods  []PaymentMethodRow
+	staffCollection []StaffCollectionRow
+	invoiceRegister []InvoiceRegisterRow
+	tax             []TaxRow
+	turnaround      []TurnaroundRow
+	dataUsers       []DataUserRow
+	fupExceeded     []FUPExceededRow
+
 	// calls records the (months, franchiseID) each query was asked for, so a
 	// test can prove the filter reached the store rather than being dropped.
 	calls []stubCall
@@ -45,6 +56,8 @@ type stubCall struct {
 	// GroupID is recorded only by SubscriberRoster, the one query that takes
 	// one — FR-GRP-001.
 	GroupID *int
+	// Limit is recorded only by TopDataUsers, the one query that takes one.
+	Limit int
 }
 
 func (s *stubQuerier) record(method string, months int, f *int) {
@@ -534,5 +547,244 @@ func TestFR_GRP_001_TheRosterIsInTheCatalogue(t *testing.T) {
 	}
 	if !found {
 		t.Error("the roster is missing from Reports(), so it would not be offered or validated")
+	}
+}
+
+// ── FR-RPT-004 stubs ────────────────────────────────────────────────────────
+//
+// Each records the window it was handed, so a test can prove the filter
+// reached the store rather than being dropped — the same reason the original
+// four record theirs.
+
+func (s *stubQuerier) ExpiringSubscribers(_ context.Context, days int, f *int) ([]ExpiringRow, error) {
+	s.record("ExpiringSubscribers", days, f)
+	return s.expiring, s.err
+}
+
+func (s *stubQuerier) PlanChangeHistory(_ context.Context, months int, f *int) ([]PlanChangeRow, error) {
+	s.record("PlanChangeHistory", months, f)
+	return s.planChanges, s.err
+}
+
+func (s *stubQuerier) PaymentsByMethod(_ context.Context, months int, f *int) ([]PaymentMethodRow, error) {
+	s.record("PaymentsByMethod", months, f)
+	return s.paymentMethods, s.err
+}
+
+func (s *stubQuerier) CollectionByStaff(_ context.Context, months int, f *int) ([]StaffCollectionRow, error) {
+	s.record("CollectionByStaff", months, f)
+	return s.staffCollection, s.err
+}
+
+func (s *stubQuerier) InvoiceRegister(_ context.Context, months int, f *int) ([]InvoiceRegisterRow, error) {
+	s.record("InvoiceRegister", months, f)
+	return s.invoiceRegister, s.err
+}
+
+func (s *stubQuerier) TaxCharged(_ context.Context, months int, f *int) ([]TaxRow, error) {
+	s.record("TaxCharged", months, f)
+	return s.tax, s.err
+}
+
+func (s *stubQuerier) TicketTurnaround(_ context.Context, months int, f *int) ([]TurnaroundRow, error) {
+	s.record("TicketTurnaround", months, f)
+	return s.turnaround, s.err
+}
+
+func (s *stubQuerier) TopDataUsers(_ context.Context, months, limit int, f *int) ([]DataUserRow, error) {
+	s.mu.Lock()
+	s.calls = append(s.calls, stubCall{Method: "TopDataUsers", Months: months, FranchiseID: f, Limit: limit})
+	s.mu.Unlock()
+	return s.dataUsers, s.err
+}
+
+func (s *stubQuerier) FUPExceeded(_ context.Context, f *int) ([]FUPExceededRow, error) {
+	s.record("FUPExceeded", 0, f)
+	return s.fupExceeded, s.err
+}
+
+// ── The catalogue — FR-RPT-004 ──────────────────────────────────────────────
+
+// Every catalogue entry must be served by WriteCSV and must name a file.
+//
+// This is the test the catalogue exists for. Adding the roster report for
+// FR-GRP-001 meant touching five separate lists, and one of them — a JSON
+// switch with no default — would have served {"rows": null} with a 200 to
+// anybody who asked for the new report. A registry plus this test turns that
+// class of omission into a compile-or-test failure instead of a silently
+// empty report.
+func TestFR_RPT_004_EveryCatalogueEntryIsServedByEveryPath(t *testing.T) {
+	for _, d := range Catalogue() {
+		t.Run(d.Name, func(t *testing.T) {
+			q := &stubQuerier{}
+			var buf bytes.Buffer
+			if err := WriteCSV(context.Background(), q, d.Name, Filter{}, &buf); err != nil {
+				t.Fatalf("WriteCSV has no case for %q: %v", d.Name, err)
+			}
+			// A header at minimum. A report that writes nothing at all is
+			// indistinguishable from one that is not wired up.
+			if buf.Len() == 0 {
+				t.Error("wrote no bytes, not even a header row")
+			}
+			// Exactly one query, so a report cannot quietly read two stores
+			// or none.
+			if n := len(q.snapshot()); n != 1 {
+				t.Errorf("ran %d queries, want 1", n)
+			}
+			if name := Filename(d.Name, Filter{}, time.Now()); !strings.HasPrefix(name, d.Name) {
+				t.Errorf("Filename = %q, which does not identify the report", name)
+			}
+		})
+	}
+}
+
+// The catalogue's own shape. A report with no title or no area would render
+// as a blank card under a blank heading.
+func TestFR_RPT_004_EveryCatalogueEntryIsDescribed(t *testing.T) {
+	areas := map[string]bool{
+		AreaSubscribers: true, AreaMoney: true, AreaSupport: true, AreaNetwork: true,
+	}
+	seen := map[string]bool{}
+	for _, d := range Catalogue() {
+		if d.Name == "" || d.Title == "" || d.Summary == "" {
+			t.Errorf("%+v is missing a name, title or summary", d)
+		}
+		if !areas[d.Area] {
+			t.Errorf("%q is in unknown area %q, so it would not appear under any heading",
+				d.Name, d.Area)
+		}
+		// The summary is what the filter box searches, so it has to say
+		// something the title does not.
+		if strings.EqualFold(d.Summary, d.Title) {
+			t.Errorf("%q's summary only restates its title", d.Name)
+		}
+		if seen[d.Name] {
+			t.Errorf("%q appears twice in the catalogue", d.Name)
+		}
+		seen[d.Name] = true
+		if d.Name != strings.ToLower(d.Name) || strings.Contains(d.Name, " ") ||
+			strings.Contains(d.Name, "_") {
+			t.Errorf("%q is not kebab-case, but it goes in URLs and filenames", d.Name)
+		}
+	}
+
+	// The nine FR-RPT-004 asked for by name, so the requirement cannot be
+	// reported as met with one of them missing.
+	for _, required := range []string{
+		ReportExpiring, ReportPaymentsByMethod, ReportCollectionByStaff,
+		ReportInvoiceRegister, ReportTaxCharged, ReportTopDataUsers,
+		ReportFUPExceeded, ReportTicketTurnaround, ReportPlanChanges,
+	} {
+		if !seen[required] {
+			t.Errorf("%q is named in FR-RPT-004 and is not in the catalogue", required)
+		}
+	}
+}
+
+// Areas and InArea must partition the catalogue: a report in no area would
+// vanish from the screen even though every other check passed.
+func TestFR_RPT_004_TheAreasCoverEveryReportExactlyOnce(t *testing.T) {
+	var total int
+	for _, area := range Areas() {
+		in := InArea(area)
+		if len(in) == 0 {
+			t.Errorf("area %q is listed with no reports, so it would be an empty heading", area)
+		}
+		total += len(in)
+	}
+	if total != len(Catalogue()) {
+		t.Errorf("the areas hold %d reports but the catalogue has %d", total, len(Catalogue()))
+	}
+	if len(Reports()) != len(Catalogue()) {
+		t.Errorf("Reports() lists %d but the catalogue has %d", len(Reports()), len(Catalogue()))
+	}
+}
+
+// The filter box. Substring over title, area, summary and name — an operator
+// types "GST" or "renewal", and those words are in the summary.
+func TestFR_RPT_004_TheFilterBoxFindsReportsByWhatTheyAnswer(t *testing.T) {
+	cases := []struct {
+		query string
+		want  string
+	}{
+		{"", ReportPlanMix},                 // empty matches everything
+		{"plan mix", ReportPlanMix},         // by title
+		{"PLAN MIX", ReportPlanMix},         // case-insensitively
+		{"GST", ReportTaxCharged},           // by a word only the summary has
+		{"renewal", ReportExpiring},         // likewise
+		{"Money", ReportTaxCharged},         // by area
+		{"fup-exceeded", ReportFUPExceeded}, // by name
+	}
+	for _, tc := range cases {
+		d, ok := Lookup(tc.want)
+		if !ok {
+			t.Fatalf("%q is not in the catalogue", tc.want)
+		}
+		if !d.Matches(tc.query) {
+			t.Errorf("filtering by %q excludes %q, which an operator would expect to find",
+				tc.query, tc.want)
+		}
+	}
+
+	// And it excludes what does not match, or it is not a filter.
+	d, _ := Lookup(ReportPlanMix)
+	if d.Matches("zzz-no-such-thing") {
+		t.Error("the filter box matches a query nothing should match")
+	}
+}
+
+func TestFR_RPT_004_TheWindowsAreClamped(t *testing.T) {
+	if got := NormaliseDays(0); got != DefaultDays {
+		t.Errorf("NormaliseDays(0) = %d, want the default %d — an empty expiry list would "+
+			"stop a day's renewal calls being made", got, DefaultDays)
+	}
+	if got := NormaliseDays(-5); got != DefaultDays {
+		t.Errorf("NormaliseDays(-5) = %d", got)
+	}
+	if got := NormaliseDays(10_000); got != MaxDays {
+		t.Errorf("NormaliseDays(10000) = %d, want %d", got, MaxDays)
+	}
+	if got := NormaliseDays(14); got != 14 {
+		t.Errorf("NormaliseDays(14) = %d", got)
+	}
+
+	if got := NormaliseLimit(0); got != DefaultLimit {
+		t.Errorf("NormaliseLimit(0) = %d", got)
+	}
+	if got := NormaliseLimit(10_000); got != MaxLimit {
+		t.Errorf("NormaliseLimit(10000) = %d", got)
+	}
+}
+
+// The window each report declares must be the one it is actually given.
+func TestFR_RPT_004_EachReportIsGivenTheWindowItDeclares(t *testing.T) {
+	for _, d := range Catalogue() {
+		t.Run(d.Name, func(t *testing.T) {
+			q := &stubQuerier{}
+			f := Filter{Months: 6, Days: 14, Limit: 25}
+			if err := WriteCSV(context.Background(), q, d.Name, f, &bytes.Buffer{}); err != nil {
+				t.Fatalf("WriteCSV: %v", err)
+			}
+			call := q.snapshot()[0]
+			switch d.Window {
+			case WindowMonths:
+				if call.Months != 6 {
+					t.Errorf("%s declares a month window but was given Months=%d",
+						d.Name, call.Months)
+				}
+			case WindowDays:
+				// Carried in the Months field of the recording, since the
+				// stub records one number; what matters is that it is the
+				// day window and not the month one.
+				if call.Months != 14 {
+					t.Errorf("%s declares a day window but was given %d", d.Name, call.Months)
+				}
+			case WindowNone:
+				if call.Months != 0 {
+					t.Errorf("%s is a point-in-time snapshot but was given a window of %d, "+
+						"which implies a history it does not have", d.Name, call.Months)
+				}
+			}
+		})
 	}
 }
