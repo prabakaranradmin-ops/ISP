@@ -574,8 +574,10 @@ func run(ctx context.Context) error {
 		Msg("api: TLS certificate ready (self-signed)")
 
 	apiServer := &http.Server{
-		Addr:              cfg.APIAddr,
-		Handler:           requestLogger(mux),
+		Addr: cfg.APIAddr,
+		// Framing policy on every response, console and portal alike: see
+		// middleware.DenyCrossOriginFraming.
+		Handler:           requestLogger(middleware.DenyCrossOriginFraming(mux)),
 		ReadTimeout:       readTimeout,
 		ReadHeaderTimeout: readTimeout,
 		WriteTimeout:      writeTimeout,

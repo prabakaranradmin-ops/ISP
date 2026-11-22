@@ -1322,3 +1322,30 @@ test.describe('NAS interface traffic (FR-NET-006)', () => {
     await snap(page, 'traffic-router-waiting');
   });
 });
+
+test.describe('Clickjacking protection', () => {
+  // Another site must not be able to load the console or the subscriber
+  // portal inside a frame and line its own button up over ours. Checked the
+  // way an attack would work — a page of a different origin framing the
+  // sign-in form — not only by reading a header, because what matters is that
+  // the browser refuses to show it. The console's own same-origin frame (the
+  // captive-portal preview) is still allowed; the FR-HSP-004 test covers that.
+  for (const path of ['/staff/login', '/ui/login']) {
+    test(`another site cannot frame ${path}`, async ({ page, baseURL }) => {
+      const res = await page.request.get(path);
+      expect(res.headers()['content-security-policy']).toBe("frame-ancestors 'self'");
+      expect(res.headers()['x-frame-options']).toBe('SAMEORIGIN');
+
+      // about:blank with content set is an opaque origin: cross-origin to
+      // the server, like an attacker's page.
+      await page.setContent(`<iframe title="framed" src="${baseURL}${path}" width="800" height="500"></iframe>`);
+      const frame = page.frame({ url: (u) => u.toString() !== 'about:blank' });
+      // Give the frame time to load if it were going to.
+      await page.waitForTimeout(2000);
+      const passwordFields = frame
+        ? await frame.locator('input[type="password"]').count().catch(() => 0)
+        : 0;
+      expect(passwordFields, 'the sign-in form loaded inside a cross-origin frame').toBe(0);
+    });
+  }
+});

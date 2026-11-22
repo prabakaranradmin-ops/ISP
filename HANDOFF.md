@@ -271,15 +271,6 @@ settled the question in seconds.
   take the save shows the old branding for up to `hotspot.BrandingCacheTTL`
   (30 s); only the instance that saved is invalidated at once.
 
-- **Console pages can be framed by any site.** Found while adding the
-  captive-portal preview frame: nothing in the codebase sets
-  `X-Frame-Options` or a `frame-ancestors` CSP, so every `/staff/` page could
-  be loaded inside another site's frame — the precondition for clickjacking a
-  signed-in operator into a click. Not fixed here because it is a site-wide
-  header and deserves its own change and test; the fix is
-  `Content-Security-Policy: frame-ancestors 'self'` on every console response,
-  which still allows the console's own preview frame.
-
 - **The FR-INV-004 vendor backfill is a guess, and the evidence for undoing
   it is the column that now looks redundant.** Migration 071 merged the three
   free-text vendor columns into one master by matching names
