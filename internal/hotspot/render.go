@@ -20,6 +20,7 @@ var assets embed.FS
 var pages = template.Must(template.New("portal").ParseFS(assets, "templates/*.html"))
 
 type landingData struct {
+	Brand   brandView
 	Session sessionRequest
 	// Ready gates the forms. False when there is no usable MAC, since a
 	// submission could not succeed and offering the form would waste the
@@ -29,15 +30,33 @@ type landingData struct {
 }
 
 type grantedData struct {
+	Brand   brandView
 	Session sessionRequest
 }
 
-func renderLanding(w http.ResponseWriter, status int, data landingData) {
+// renderLanding and renderGranted fill in the branding, so no call site can
+// forget it and render one of the refusal pages in the default colours while
+// the landing page beside it wears the venue's.
+func (h *Handler) renderLanding(w http.ResponseWriter, r *http.Request, status int, data landingData) {
+	data.Brand = h.branding.Get(r.Context()).View()
 	renderPage(w, status, "landing", data)
 }
 
-func renderGranted(w http.ResponseWriter, data grantedData) {
+func (h *Handler) renderGranted(w http.ResponseWriter, r *http.Request, data grantedData) {
+	data.Brand = h.branding.Get(r.Context()).View()
 	renderPage(w, http.StatusOK, "granted", data)
+}
+
+// RenderPreview writes the landing page as a visitor would see it under b,
+// with the forms showing and a placeholder device. The console frames it so
+// an operator sees their branding on the real template before a customer
+// does, rather than on an approximation of it.
+func RenderPreview(w http.ResponseWriter, b Branding) {
+	renderPage(w, http.StatusOK, "landing", landingData{
+		Brand:   b.View(),
+		Session: sessionRequest{MAC: "AA:BB:CC:DD:EE:FF"},
+		Ready:   true,
+	})
 }
 
 // renderPage buffers the page before writing it.

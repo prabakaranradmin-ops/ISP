@@ -1,7 +1,7 @@
 {{define "head"}}
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Wi-Fi Sign In</title>
+<title>{{.Brand.Title}}</title>
 <style>
   /* Inlined, not linked. A device on the walled garden has no route off the
      network yet, so a stylesheet on a CDN would not load and a font from
@@ -11,7 +11,7 @@
   * { box-sizing: border-box; }
   body {
     margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-    padding: 1.5rem; background: #f4f5f7; color: #1c1f23;
+    padding: 1.5rem; background: {{.Brand.Background}}; color: #1c1f23;
     font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
   .card {
@@ -19,6 +19,12 @@
     box-shadow: 0 1px 3px rgba(0,0,0,.12), 0 8px 24px rgba(0,0,0,.08);
   }
   h1 { margin: 0 0 .25rem; font-size: 1.4rem; }
+  /* The logo is capped by height so a wide wordmark and a square badge both
+     sit as a header rather than one of them taking over a phone screen. */
+  .logo { display: block; max-height: 64px; max-width: 100%; margin: 0 0 1rem; }
+  .venue { margin: 0 0 .15rem; font-size: .8rem; font-weight: 600; letter-spacing: .04em;
+           text-transform: uppercase; color: #5b6470; }
+  .footer { margin-top: 1.5rem; font-size: .82rem; color: #5b6470; white-space: pre-line; }
   p.sub { margin: 0 0 1.5rem; color: #5b6470; font-size: .92rem; }
   label { display: block; margin: 0 0 .35rem; font-weight: 600; font-size: .85rem; }
   input[type=text], input[type=password] {
@@ -27,10 +33,12 @@
   }
   input.code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }
   button {
-    width: 100%; padding: .75rem; font-size: 1rem; font-weight: 600; color: #fff;
-    background: #1a6dcc; border: 0; border-radius: 8px; cursor: pointer;
+    width: 100%; padding: .75rem; font-size: 1rem; font-weight: 600; color: {{.Brand.AccentText}};
+    background: {{.Brand.Accent}}; border: 0; border-radius: 8px; cursor: pointer;
   }
-  button:hover { background: #155ba9; }
+  /* Darkened rather than a second configured colour, so the hover state
+     follows whatever accent the venue chose. */
+  button:hover { filter: brightness(.9); }
   .notice {
     padding: .7rem .8rem; margin-bottom: 1.25rem; border-radius: 8px; font-size: .9rem;
     background: #fdf0ef; border: 1px solid #f2c3bf; color: #8a2c22;
@@ -39,9 +47,14 @@
   .divider { display: flex; align-items: center; gap: .75rem; margin: 1.5rem 0; color: #8b939d; font-size: .8rem; }
   .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: #e2e6ea; }
   .meta { margin-top: 1.5rem; font-size: .78rem; color: #8b939d; word-break: break-all; }
-  a { color: #1a6dcc; }
+  a { color: {{.Brand.LinkLight}}; }
+  /* In dark mode the venue's background colour is deliberately not used: a
+     light brand background at full brightness around a dark card is exactly
+     what a phone in dark mode is set up to avoid. The accent still applies. */
   @media (prefers-color-scheme: dark) {
     body { background: #14171a; color: #e8eaed; }
+    a { color: {{.Brand.LinkDark}}; }
+    .venue, .footer { color: #9aa3ad; }
     .card { background: #1d2126; box-shadow: none; border: 1px solid #2c3238; }
     p.sub, .meta, .divider { color: #9aa3ad; }
     input[type=text], input[type=password] { background: #14171a; border-color: #39414a; color: #e8eaed; }
@@ -55,6 +68,15 @@
 {{/* Hidden fields carry the NAS's own redirect parameters back through the
      POST. They are echoed, never trusted: the MAC is re-normalised and the
      redirect re-validated on the way in. */}}
+{{define "brand-header"}}
+{{if .LogoURL}}<img class="logo" src="{{.LogoURL}}" alt="{{if .VenueName}}{{.VenueName}}{{else}}Logo{{end}}">{{end}}
+{{if .VenueName}}<p class="venue">{{.VenueName}}</p>{{end}}
+{{end}}
+
+{{define "brand-footer"}}
+{{if .FooterText}}<p class="footer">{{.FooterText}}</p>{{end}}
+{{end}}
+
 {{define "session-fields"}}
 <input type="hidden" name="mac" value="{{.MAC}}">
 {{if .NASID}}<input type="hidden" name="nasid" value="{{.NASID}}">{{end}}
@@ -63,11 +85,12 @@
 
 {{define "landing"}}<!doctype html>
 <html lang="en">
-<head>{{template "head"}}</head>
+<head>{{template "head" .}}</head>
 <body>
 <div class="card">
-  <h1>Wi-Fi Sign In</h1>
-  <p class="sub">Enter your voucher code, or sign in with your account.</p>
+  {{template "brand-header" .Brand}}
+  <h1>{{.Brand.Headline}}</h1>
+  <p class="sub">{{.Brand.WelcomeText}}</p>
 
   {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
 
@@ -94,6 +117,7 @@
 
   <p class="meta">Device: {{.Session.MAC}}</p>
   {{end}}
+  {{template "brand-footer" .Brand}}
 </div>
 </body>
 </html>
@@ -101,9 +125,10 @@
 
 {{define "granted"}}<!doctype html>
 <html lang="en">
-<head>{{template "head"}}</head>
+<head>{{template "head" .}}</head>
 <body>
 <div class="card">
+  {{template "brand-header" .Brand}}
   <h1>You're connected</h1>
   <p class="sub">Your device has been authorised for this network.</p>
 
@@ -117,6 +142,7 @@
   {{end}}
 
   <p class="meta">Device: {{.Session.MAC}}</p>
+  {{template "brand-footer" .Brand}}
 </div>
 </body>
 </html>

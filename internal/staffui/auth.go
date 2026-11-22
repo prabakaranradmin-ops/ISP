@@ -5,8 +5,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -176,6 +178,48 @@ func (h *Handler) requireCSRF(next http.HandlerFunc) http.HandlerFunc {
 		want := h.csrfToken(s.Token)
 		// Constant-time: a byte-by-byte comparison leaks how much of a guessed
 		// token was correct.
+		if !hmac.Equal([]byte(r.PostFormValue("csrf_token")), []byte(want)) {
+			http.Error(w, "forbidden: invalid CSRF token", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// requireCSRFUpload is requireCSRF for a multipart form, with the body capped
+// before anything reads it.
+//
+// requireCSRF cannot simply be reused for an upload. Its token check calls
+// PostFormValue, which on a multipart body parses the whole thing with a
+// 32 MB in-memory allowance before the token has been compared — so any
+// signed-in session, or anybody who can make a signed-in browser submit a
+// form, could have the server buffer 32 MB per request before being refused.
+// Here MaxBytesReader caps the body first and the token is checked straight
+// after parsing, so an oversized or forged upload is turned away without the
+// handler ever seeing it.
+//
+// An oversized body redirects back with a sentence rather than answering 413:
+// the person on the other end chose a file that was too large, and a bare
+// error page would not tell them so.
+func (h *Handler) requireCSRFUpload(maxBytes int64, back string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s, ok := SessionFrom(r.Context())
+		if !ok {
+			http.Redirect(w, r, "/staff/login", http.StatusSeeOther)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		if err := r.ParseMultipartForm(maxBytes); err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				http.Redirect(w, r, back+"?err="+url.QueryEscape(
+					"That file is too large to upload here."), http.StatusSeeOther)
+				return
+			}
+			http.Error(w, "malformed form", http.StatusBadRequest)
+			return
+		}
+		want := h.csrfToken(s.Token)
 		if !hmac.Equal([]byte(r.PostFormValue("csrf_token")), []byte(want)) {
 			http.Error(w, "forbidden: invalid CSRF token", http.StatusForbidden)
 			return

@@ -54,6 +54,10 @@ type Deps struct {
 	Limiter     AttemptLimiter
 	// LoginMinutes overrides DefaultLoginMinutes for credential-based grants.
 	LoginMinutes int
+	// Branding supplies the venue's name, text, colours and logo
+	// (FR-HSP-004). Nil renders the default page, exactly as before branding
+	// existed.
+	Branding *BrandingCache
 }
 
 // Handler serves the walled garden.
@@ -62,6 +66,7 @@ type Handler struct {
 	subscribers  SubscriberCredentialQuerier
 	limiter      AttemptLimiter
 	loginMinutes int
+	branding     *BrandingCache
 }
 
 // NewHandler constructs the captive-portal Handler.
@@ -75,6 +80,7 @@ func NewHandler(deps Deps) *Handler {
 		subscribers:  deps.Subscribers,
 		limiter:      deps.Limiter,
 		loginMinutes: minutes,
+		branding:     deps.Branding,
 	}
 }
 
@@ -91,6 +97,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /hotspot/portal", h.Landing)
 	mux.HandleFunc("POST /hotspot/voucher", h.RedeemVoucher)
 	mux.HandleFunc("POST /hotspot/login", h.Login)
+	// The venue's logo (FR-HSP-004). Served from this host rather than
+	// inlined or linked elsewhere: it is the one origin a device on the
+	// walled garden can already reach, and a separate response lets the
+	// phone cache it while the page itself never is.
+	mux.HandleFunc("GET /hotspot/logo", h.Logo)
 }
 
 // sessionRequest is the NAS-supplied context common to every captive-portal
@@ -187,13 +198,13 @@ func (h *Handler) Landing(w http.ResponseWriter, r *http.Request) {
 		// misconfiguration of the redirect rather than anything the visitor did.
 		// The page still renders so they see something other than a blank
 		// browser error, but with no form: submitting one could not work.
-		renderLanding(w, http.StatusOK, landingData{
+		h.renderLanding(w, r, http.StatusOK, landingData{
 			Notice: "This hotspot is not passing your device address through. " +
 				"Please ask the venue's staff for help.",
 		})
 		return
 	}
-	renderLanding(w, http.StatusOK, landingData{Session: req, Ready: true})
+	h.renderLanding(w, r, http.StatusOK, landingData{Session: req, Ready: true})
 }
 
 // ── Voucher redemption ──────────────────────────────────────────────────────
@@ -212,7 +223,7 @@ func (h *Handler) RedeemVoucher(w http.ResponseWriter, r *http.Request) {
 		// which codes exist, and it matches how the subscriber portal reports a
 		// missing field.
 		portalAttemptsTotal.WithLabelValues("voucher", "malformed").Inc()
-		h.reject(w, req, "Please enter your voucher code.")
+		h.reject(w, r, req, "Please enter your voucher code.")
 		return
 	}
 
@@ -220,7 +231,7 @@ func (h *Handler) RedeemVoucher(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Error().Err(err).Str("mac", req.MAC).Msg("hotspot: voucher redemption failed")
 		portalAttemptsTotal.WithLabelValues("voucher", "error").Inc()
-		h.fail(w, req)
+		h.fail(w, r, req)
 		return
 	}
 	if grantID == 0 {
@@ -229,13 +240,13 @@ func (h *Handler) RedeemVoucher(w http.ResponseWriter, r *http.Request) {
 		// was already used" would confirm to a guesser that they had found a
 		// real code, which is the one bit of information a search needs.
 		portalAttemptsTotal.WithLabelValues("voucher", "refused").Inc()
-		h.refuse(w, req, "That code is not valid. Check it and try again, or ask for a new one.")
+		h.refuse(w, r, req, "That code is not valid. Check it and try again, or ask for a new one.")
 		return
 	}
 
 	portalAttemptsTotal.WithLabelValues("voucher", "granted").Inc()
 	log.Info().Str("mac", req.MAC).Int64("grant_id", grantID).Msg("hotspot: voucher redeemed")
-	renderGranted(w, grantedData{Session: req})
+	h.renderGranted(w, r, grantedData{Session: req})
 }
 
 // ── Subscriber login ────────────────────────────────────────────────────────
@@ -251,20 +262,20 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	username, password := r.PostFormValue("username"), r.PostFormValue("password")
 	if username == "" || password == "" {
 		portalAttemptsTotal.WithLabelValues("login", "malformed").Inc()
-		h.reject(w, req, "Please enter your username and password.")
+		h.reject(w, r, req, "Please enter your username and password.")
 		return
 	}
 
 	subscriberID, err := h.authenticate(r.Context(), username, password)
 	if errors.Is(err, portal.ErrInvalidCredentials) {
 		portalAttemptsTotal.WithLabelValues("login", "refused").Inc()
-		h.refuse(w, req, "Incorrect username or password.")
+		h.refuse(w, r, req, "Incorrect username or password.")
 		return
 	}
 	if err != nil {
 		log.Error().Err(err).Msg("hotspot: subscriber login failed")
 		portalAttemptsTotal.WithLabelValues("login", "error").Inc()
-		h.fail(w, req)
+		h.fail(w, r, req)
 		return
 	}
 
@@ -272,7 +283,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Error().Err(err).Int("subscriber_id", subscriberID).Msg("hotspot: grant failed")
 		portalAttemptsTotal.WithLabelValues("login", "error").Inc()
-		h.fail(w, req)
+		h.fail(w, r, req)
 		return
 	}
 	if grantID == 0 {
@@ -282,14 +293,14 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		// not active" is what sends them to support instead of retyping a
 		// password that was right the first time.
 		portalAttemptsTotal.WithLabelValues("login", "not_active").Inc()
-		h.refuse(w, req, "Your account is not active. Please contact support.")
+		h.refuse(w, r, req, "Your account is not active. Please contact support.")
 		return
 	}
 
 	portalAttemptsTotal.WithLabelValues("login", "granted").Inc()
 	log.Info().Str("mac", req.MAC).Int("subscriber_id", subscriberID).
 		Int64("grant_id", grantID).Msg("hotspot: subscriber signed in")
-	renderGranted(w, grantedData{Session: req})
+	h.renderGranted(w, r, grantedData{Session: req})
 }
 
 // authenticate verifies subscriber credentials, returning their id.
@@ -327,20 +338,20 @@ func (h *Handler) begin(w http.ResponseWriter, r *http.Request, method string) (
 		// 503 rather than silently redeeming without a limiter. An unmetered
 		// voucher endpoint is a worse failure than an unavailable one, so a
 		// deployment that has not configured Redis does not get a captive portal.
-		renderLanding(w, http.StatusServiceUnavailable, landingData{
+		h.renderLanding(w, r, http.StatusServiceUnavailable, landingData{
 			Notice: "The hotspot sign-in service is unavailable. Please try again shortly.",
 		})
 		return sessionRequest{}, false
 	}
 	if err := r.ParseForm(); err != nil {
-		renderLanding(w, http.StatusBadRequest, landingData{Notice: "Something went wrong with that form. Please try again."})
+		h.renderLanding(w, r, http.StatusBadRequest, landingData{Notice: "Something went wrong with that form. Please try again."})
 		return sessionRequest{}, false
 	}
 
 	req, ok := readSessionRequest(r)
 	if !ok {
 		portalAttemptsTotal.WithLabelValues(method, "malformed").Inc()
-		renderLanding(w, http.StatusBadRequest, landingData{
+		h.renderLanding(w, r, http.StatusBadRequest, landingData{
 			Notice: "We could not identify your device. Please reconnect to the Wi-Fi and try again.",
 		})
 		return sessionRequest{}, false
@@ -350,13 +361,13 @@ func (h *Handler) begin(w http.ResponseWriter, r *http.Request, method string) (
 	if err != nil {
 		log.Error().Err(err).Msg("hotspot: attempt limiter unavailable — refusing redemption")
 		portalAttemptsTotal.WithLabelValues(method, "error").Inc()
-		h.fail(w, req)
+		h.fail(w, r, req)
 		return sessionRequest{}, false
 	}
 	if !allowed {
 		portalRateLimitedTotal.Inc()
 		portalAttemptsTotal.WithLabelValues(method, "rate_limited").Inc()
-		renderLanding(w, http.StatusTooManyRequests, landingData{
+		h.renderLanding(w, r, http.StatusTooManyRequests, landingData{
 			Session: req, Ready: true,
 			Notice: "Too many attempts. Please wait a few minutes before trying again.",
 		})
@@ -371,23 +382,55 @@ func (h *Handler) begin(w http.ResponseWriter, r *http.Request, method string) (
 // Every voucher refusal renders through here with the same fixed notice,
 // whatever the underlying reason. That uniformity is the anti-oracle property,
 // so a caller must never pass a message derived from the request.
-func (h *Handler) refuse(w http.ResponseWriter, req sessionRequest, notice string) {
-	renderLanding(w, http.StatusUnauthorized, landingData{Session: req, Ready: true, Notice: notice})
+func (h *Handler) refuse(w http.ResponseWriter, r *http.Request, req sessionRequest, notice string) {
+	h.renderLanding(w, r, http.StatusUnauthorized, landingData{Session: req, Ready: true, Notice: notice})
 }
 
 // reject re-renders after an incomplete submission — a field the visitor left
 // blank, rather than a credential that was wrong.
-func (h *Handler) reject(w http.ResponseWriter, req sessionRequest, notice string) {
-	renderLanding(w, http.StatusUnprocessableEntity, landingData{Session: req, Ready: true, Notice: notice})
+func (h *Handler) reject(w http.ResponseWriter, r *http.Request, req sessionRequest, notice string) {
+	h.renderLanding(w, r, http.StatusUnprocessableEntity, landingData{Session: req, Ready: true, Notice: notice})
 }
 
 // fail reports an internal problem without hinting at what it was.
 //
 // Only reached once a session request has parsed, so the forms are always
 // re-offered: the visitor's next move is to retry, not to reconnect.
-func (h *Handler) fail(w http.ResponseWriter, req sessionRequest) {
-	renderLanding(w, http.StatusInternalServerError, landingData{
+func (h *Handler) fail(w http.ResponseWriter, r *http.Request, req sessionRequest) {
+	h.renderLanding(w, r, http.StatusInternalServerError, landingData{
 		Session: req, Ready: true,
 		Notice: "Something went wrong on our side. Please try again in a moment.",
 	})
+}
+
+// Logo handles GET /hotspot/logo — the venue's logo (FR-HSP-004).
+//
+// The page links it as /hotspot/logo?v=<hash prefix>, so a replaced logo is a
+// different URL and it is safe to let a phone cache this one for a long time.
+// A request for a version that is no longer current is still answered with
+// the current logo rather than a 404: a page rendered a moment before the
+// change should not show a broken image.
+//
+// Content-Type is the type the upload was sniffed as, never what the uploader
+// claimed, and nosniff stops a browser second-guessing it. Together they are
+// what keep this from being a way to serve arbitrary content from the portal's
+// origin.
+func (h *Handler) Logo(w http.ResponseWriter, r *http.Request) {
+	data, contentType, sha := h.branding.Logo(r.Context())
+	if len(data) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	etag := `"` + sha + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	if _, err := w.Write(data); err != nil {
+		log.Debug().Err(err).Msg("hotspot: client went away mid-logo")
+	}
 }

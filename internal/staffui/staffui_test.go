@@ -20,7 +20,7 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 	}{
 		// Dashboard leads every ISP-wide list because Home redirects to the
 		// first allowed section; that order is part of what is pinned here.
-		{"isp_owner", true, []string{"dashboard", "subscribers", "leads", "billing", "tickets", "invoices", "revenue", "catalogue", "products", "bandwidth", "groups", "fair-use", "sessions", "cpe", "nas", "ip-pools", "auth-log", "plan-attributes", "network", "lea", "demo", "accounts", "documents", "audit", "franchise", "procurement", "vendors", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "collections", "inventory", "reports", "announcements", "logs", "tasks"}},
+		{"isp_owner", true, []string{"dashboard", "subscribers", "leads", "billing", "tickets", "invoices", "revenue", "catalogue", "products", "bandwidth", "groups", "fair-use", "sessions", "cpe", "nas", "ip-pools", "auth-log", "plan-attributes", "network", "lea", "demo", "accounts", "documents", "audit", "franchise", "procurement", "vendors", "portal-branding", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "collections", "inventory", "reports", "announcements", "logs", "tasks"}},
 		{"noc_engineer", true, []string{"dashboard", "subscribers", "groups", "sessions", "cpe", "nas", "ip-pools", "auth-log", "plan-attributes", "network", "lea", "inventory", "logs", "tasks"}},
 		{"billing_admin", false, []string{"dashboard", "subscribers", "leads", "billing", "invoices", "catalogue", "products", "bandwidth", "groups", "fair-use", "sessions", "documents", "procurement", "vendors", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "collections", "inventory", "reports", "announcements", "logs", "tasks"}},
 		// Catalogue is deliberately absent for csr and technician: editing a
@@ -56,6 +56,13 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 		// catalogue, and attaching or ending a charge, are gated again
 		// inside the screen to owner/billing (canManageProducts), so what a
 		// CSR gains here is reading, not pricing.
+		//
+		// Captive Portal (FR-HSP-004) is owner only and appears for no other
+		// role. It is the page shown to strangers under the venue's name, so
+		// its wording is the business speaking in public — not a network
+		// setting, even though it sits in the Network menu beside the NAS
+		// screen, and not something a NOC engineer running the hotspot needs
+		// to change.
 		//
 		// Vendors (FR-INV-004) is owner and billing only, reads included, and
 		// deliberately narrower than Inventory beside it. A technician and a

@@ -1,0 +1,81 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Captive portal</h1>
+
+<p class="muted">The sign-in page a hotspot sends a device to before it is allowed online. Everything
+  here is optional: a field left empty uses the default shown beside it, so clearing a field and saving
+  is how it goes back to the default.</p>
+
+{{with $d}}
+<div class="card">
+  <h3>Text and colours</h3>
+  <form method="post" action="/staff/portal-branding" class="formgrid">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Venue name
+      <input name="venue_name" value="{{.B.VenueName}}" maxlength="{{.MaxVenueName}}"
+             placeholder="Shown above the heading and in the browser tab">
+    </label>
+    <label>Heading
+      <input name="headline" value="{{.B.Headline}}" maxlength="{{.MaxHeadline}}"
+             placeholder="{{.DefaultHeadline}}">
+    </label>
+    <label>Welcome line
+      <input name="welcome_text" value="{{.B.WelcomeText}}" maxlength="{{.MaxWelcomeText}}"
+             placeholder="{{.DefaultWelcome}}">
+    </label>
+    <label>Footer
+      <textarea name="footer_text" rows="3" maxlength="{{.MaxFooterText}}"
+                placeholder="Opening hours, a support number, the fair-use line you are obliged to show — one per line">{{.B.FooterText}}</textarea>
+    </label>
+    <label>Accent colour
+      <input name="accent_color" value="{{.B.AccentColor}}" maxlength="7"
+             placeholder="{{.DefaultAccent}}" pattern="#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})">
+    </label>
+    <label>Page background
+      <input name="background_color" value="{{.B.BackgroundColor}}" maxlength="7"
+             placeholder="{{.DefaultBackground}}" pattern="#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})">
+    </label>
+    <button type="submit" class="primary">Save</button>
+  </form>
+  {{if .LinkWarning}}<p class="alert warn" data-link-warning>{{.LinkWarning}}</p>{{end}}
+  <p class="muted small">Colours are hex codes such as #1a6dcc or #16c, as a brand guide gives them. The
+    button's label is chosen automatically — white or black, whichever reads on the accent — so a pale
+    brand colour never produces a button nobody can read. The page background is used in light mode
+    only; a phone in dark mode keeps the dark background it asked for.</p>
+  {{if .B.UpdatedBy}}<p class="muted small">Last changed by {{.B.UpdatedBy}}, {{datetime .B.UpdatedAt}}.</p>{{end}}
+</div>
+
+<div class="card">
+  <h3>Logo</h3>
+  {{if .B.HasLogo}}
+    <p><img src="/hotspot/logo?v={{.B.LogoSHA256}}" alt="Current logo" style="max-height:64px;max-width:100%"></p>
+    <form method="post" action="/staff/portal-branding/logo/clear" class="inline">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+      <button type="submit">Remove logo</button>
+    </form>
+  {{else}}
+    <p class="muted">No logo — the page shows the venue name and heading only.</p>
+  {{end}}
+  <form method="post" action="/staff/portal-branding/logo" enctype="multipart/form-data" class="formgrid">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>{{if .B.HasLogo}}Replace with{{else}}Upload{{end}}
+      <input type="file" name="logo" accept="image/png,image/jpeg" required>
+    </label>
+    <button type="submit" class="primary">Upload logo</button>
+  </form>
+  <p class="muted small">PNG or JPEG, up to {{.MaxLogoKB}} KB. The page loads over the venue's own
+    connection on a phone that is not online yet, and a large image is the difference between a sign-in
+    sheet that appears and one the phone gives up on. SVG is refused: it can carry script, and this page
+    is served to anonymous visitors.</p>
+</div>
+
+<div class="card">
+  <h3>Preview</h3>
+  <p class="muted small">The real sign-in page with what is saved above, as a visitor sees it with the
+    forms showing. <a href="{{.PortalURL}}" target="_blank" rel="noopener">The live portal</a> shows no forms
+    when opened from here, because it has no device address to sign in.</p>
+  <iframe src="/staff/portal-branding/preview?v={{.PreviewVersion}}" title="Captive portal preview"
+          style="width:100%;max-width:28rem;height:40rem;border:1px solid var(--border, #d0d5db);border-radius:8px"></iframe>
+</div>
+{{end}}
+{{end}}

@@ -1165,3 +1165,107 @@ test.describe('The shared vendor master (FR-INV-004)', () => {
     await expect(page.getByText(/15 characters/)).toBeVisible();
   });
 });
+
+test.describe('Captive portal branding (FR-HSP-004)', () => {
+  // A 24x24 PNG in the accent colour below. Real image bytes, because the
+  // server decides the type from the bytes and decodes them — a stub would be
+  // refused, which is the point.
+  const LOGO_PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAJklEQVR4nGPgzvP/T0vMMGrBqAWjFoxaMGrBqAWjFoxa8H9IWAAA4gz/7jrWKAsAAAAASUVORK5CYII=',
+    'base64');
+
+  // Put every field back to its default, so this test leaves the portal as
+  // every other test and every unconfigured deployment expects to find it.
+  async function resetBranding(page: Page) {
+    await page.goto('/staff/portal-branding');
+    const form = page.locator('form[action="/staff/portal-branding"]');
+    for (const name of ['venue_name', 'headline', 'welcome_text', 'accent_color', 'background_color']) {
+      await form.locator(`input[name="${name}"]`).fill('');
+    }
+    await form.locator('textarea[name="footer_text"]').fill('');
+    await form.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText(/Saved\./)).toBeVisible();
+    const remove = page.getByRole('button', { name: 'Remove logo' });
+    if (await remove.count()) {
+      await remove.click();
+      await expect(page.getByText(/Logo removed/)).toBeVisible();
+    }
+  }
+
+  test('only the owner reaches the screen', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/portal-branding');
+    await expect(page.getByRole('heading', { name: 'Captive portal', level: 1 })).toBeVisible();
+
+    // The NOC engineer runs the hotspot NAS, but the portal's wording is the
+    // business speaking in public under the venue's name.
+    await signIn(page, 'noc');
+    expect((await page.goto('/staff/portal-branding'))?.status()).toBe(403);
+  });
+
+  // The requirement end to end: branding set in the console reaches the page
+  // an anonymous visitor is sent to — seen from a separate browser context
+  // with no console session, because that is who sees it.
+  test('branding saved in the console is what an anonymous visitor sees', async ({ page, browser }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/portal-branding');
+
+    const form = page.locator('form[action="/staff/portal-branding"]');
+    await form.locator('input[name="venue_name"]').fill('E2E Corner Cafe');
+    await form.locator('input[name="headline"]').fill('Free Wi-Fi for customers');
+    await form.locator('input[name="accent_color"]').fill('0B6E4F');
+    await form.locator('textarea[name="footer_text"]').fill('Open 7am to 11pm\nHelp: 044-2812 3456');
+    await form.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText(/Saved\./)).toBeVisible();
+    // Stored normalised, as the form shows it back.
+    await expect(form.locator('input[name="accent_color"]')).toHaveValue('#0b6e4f');
+
+    await page.locator('input[name="logo"]').setInputFiles({
+      name: 'logo.png', mimeType: 'image/png', buffer: LOGO_PNG,
+    });
+    await page.getByRole('button', { name: 'Upload logo' }).click();
+    await expect(page.getByText(/Logo uploaded/)).toBeVisible();
+
+    // The preview frame is the real template with the forms showing.
+    const preview = page.frameLocator('iframe[title="Captive portal preview"]');
+    await expect(preview.getByRole('heading', { name: 'Free Wi-Fi for customers' })).toBeVisible();
+    await snap(page, 'portal-branding-console');
+
+    const visitor = await browser.newContext({ ignoreHTTPSErrors: true });
+    try {
+      const v = await visitor.newPage();
+      await v.goto('/hotspot/portal?mac=aa-bb-cc-dd-ee-ff');
+      await expect(v).toHaveTitle('E2E Corner Cafe');
+      await expect(v.getByRole('heading', { name: 'Free Wi-Fi for customers' })).toBeVisible();
+      await expect(v.getByText('Help: 044-2812 3456')).toBeVisible();
+
+      // The colour as the browser applied it, not as the HTML spelled it.
+      const bg = await v.getByRole('button', { name: 'Get online' })
+        .evaluate((el) => getComputedStyle(el).backgroundColor);
+      expect(bg).toBe('rgb(11, 110, 79)');
+
+      // The logo actually loads — served from the portal's own origin, which
+      // is the one a device on the walled garden can reach.
+      const logo = v.locator('img.logo');
+      await expect(logo).toHaveAttribute('alt', 'E2E Corner Cafe');
+      await expect.poll(() => logo.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(24);
+      await snap(v, 'portal-branded');
+    } finally {
+      await visitor.close();
+    }
+
+    await resetBranding(page);
+  });
+
+  test('an SVG logo is refused with the reason', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/portal-branding');
+    await page.locator('input[name="logo"]').setInputFiles({
+      name: 'logo.svg', mimeType: 'image/svg+xml',
+      buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect/></svg>'),
+    });
+    await page.getByRole('button', { name: 'Upload logo' }).click();
+    await expect(page.getByText(/SVG is refused because it can carry script/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Remove logo' })).toHaveCount(0);
+  });
+});

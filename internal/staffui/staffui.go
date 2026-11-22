@@ -217,6 +217,8 @@ type HandlerDeps struct {
 	// Inventory and Procurement — the master both of those write through
 	// (FR-INV-004).
 	Vendors VendorManager
+	// PortalBranding backs the captive-portal branding screen (FR-HSP-004).
+	PortalBranding PortalBrandingManager
 	// GeneralLedger backs the Ledger screen (CRD-EXP-006 Phase 1): chart of
 	// accounts, manual journal entries, trial balance, P&L, balance sheet.
 	GeneralLedger GeneralLedgerStore
@@ -323,6 +325,7 @@ type Handler struct {
 	approvalExecutor   ApprovalExecutor
 	procurement        ProcurementStore
 	vendors            VendorManager
+	portalBranding     PortalBrandingManager
 	generalLedger      GeneralLedgerStore
 	voucherCommissions VoucherCommissionStore
 	networkHealth      NetworkHealthStore
@@ -388,6 +391,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		approvalExecutor:   deps.ApprovalExecutor,
 		procurement:        deps.Procurement,
 		vendors:            deps.Vendors,
+		portalBranding:     deps.PortalBranding,
 		generalLedger:      deps.GeneralLedger,
 		voucherCommissions: deps.VoucherCommissions,
 		networkHealth:      deps.NetworkHealth,
@@ -599,6 +603,12 @@ var sections = []Section{
 	// screens show is fed from here without giving them the screen.
 	{"vendors", "Vendors", "/staff/vendors",
 		[]string{"isp_owner", "billing_admin"}, false},
+	// Captive-portal branding (FR-HSP-004). Owner only: the captive portal is
+	// the one page in the system shown to strangers by design, under the
+	// venue's name, and what it says is the business speaking in public. NOC
+	// staff run the hotspot NAS and have no need to change its wording.
+	{"portal-branding", "Captive Portal", "/staff/portal-branding",
+		[]string{"isp_owner"}, false},
 	// Same reach as every other financial screen. Phase 1 only — see
 	// internal/staffui/ledger.go's own doc comment on what that excludes.
 	{"ledger", "General Ledger", "/staff/ledger",
@@ -825,6 +835,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/franchise/{id}", h.authed(h.FranchiseDetail))
 	mux.Handle("GET /staff/my-subscribers", h.authed(h.MySubscribers))
 	mux.Handle("GET /staff/my-pnl", h.authed(h.MyPnL))
+	mux.Handle("GET /staff/portal-branding", h.authed(h.PortalBranding))
+	mux.Handle("GET /staff/portal-branding/preview", h.authed(h.PortalBrandingPreview))
+	mux.Handle("POST /staff/portal-branding", h.authed(h.requireCSRF(h.SavePortalBrandingForm)))
+	// The upload has its own wrapper: requireCSRF would parse an uncapped
+	// multipart body before checking the token. See requireCSRFUpload.
+	mux.Handle("POST /staff/portal-branding/logo", h.authed(
+		h.requireCSRFUpload(brandingUploadLimit, "/staff/portal-branding", h.UploadPortalLogoForm)))
+	mux.Handle("POST /staff/portal-branding/logo/clear", h.authed(h.requireCSRF(h.ClearPortalLogoForm)))
+
 	mux.Handle("GET /staff/vendors", h.authed(h.Vendors))
 	mux.Handle("POST /staff/vendors", h.authed(h.requireCSRF(h.CreateVendorForm)))
 	mux.Handle("POST /staff/vendors/{id}", h.authed(h.requireCSRF(h.UpdateVendorForm)))

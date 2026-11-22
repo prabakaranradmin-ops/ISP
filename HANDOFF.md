@@ -231,6 +231,28 @@ settled the question in seconds.
   is what a new reference should use; migrating the old two is its own
   change, not a side effect of adding a fourth dimension.
 
+- **Captive-portal branding is one per deployment, not one per venue.**
+  FR-HSP-004 asked for per-deployment branding and migration 072 holds a single
+  row. An operator running hotspots for several venues off one deployment gets
+  the same name and logo on all of them. If that is needed, the shape is a table
+  keyed by `nas_id` that falls back to the singleton, chosen from the `nasid`
+  the NAS already puts in its redirect — not a second singleton.
+
+  Two smaller limits of the same feature. The console's preview shows what is
+  *saved*, not the form's unsaved edits, so an operator saves to see a change.
+  And on a deployment with more than one API instance, an instance that did not
+  take the save shows the old branding for up to `hotspot.BrandingCacheTTL`
+  (30 s); only the instance that saved is invalidated at once.
+
+- **Console pages can be framed by any site.** Found while adding the
+  captive-portal preview frame: nothing in the codebase sets
+  `X-Frame-Options` or a `frame-ancestors` CSP, so every `/staff/` page could
+  be loaded inside another site's frame — the precondition for clickjacking a
+  signed-in operator into a click. Not fixed here because it is a site-wide
+  header and deserves its own change and test; the fix is
+  `Content-Security-Policy: frame-ancestors 'self'` on every console response,
+  which still allows the console's own preview frame.
+
 - **The FR-INV-004 vendor backfill is a guess, and the evidence for undoing
   it is the column that now looks redundant.** Migration 071 merged the three
   free-text vendor columns into one master by matching names

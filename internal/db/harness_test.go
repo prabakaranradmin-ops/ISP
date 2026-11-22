@@ -32,6 +32,11 @@ var truncateOrder = []string{
 	// ON DELETE RESTRICT does not apply to TRUNCATE CASCADE. It is listed
 	// first only to keep this slice's parents-last reading true.
 	// subscriber_group_members is reached by CASCADE from either parent.
+	// Migration 072. A single row nothing references, so CASCADE never
+	// reaches it — and a branding row left by one test would make every later
+	// test that renders the captive portal see a venue's name instead of the
+	// defaults it asserts.
+	"captive_portal_branding",
 	"subscriber_group_members",
 	"subscriber_groups",
 	"lea_audit_log",

@@ -220,6 +220,13 @@ func run(ctx context.Context) error {
 		log.Warn().Msg("api: ARCHIVE_DIR unset — documents are not archived and the Documents screen will say so")
 	}
 
+	// Captive-portal branding (FR-HSP-004), shared by the hotspot handler
+	// that serves it and the API handler whose saves invalidate it. Built
+	// here, before either, because both need the same instance — two caches
+	// would mean a console save invalidating one while visitors were served
+	// from the other.
+	portalBranding := hotspot.NewBrandingCache(database.Hotspot())
+
 	apiHandler := api.NewHandler(api.HandlerDeps{
 		DB:       database.API(),
 		KYC:      database.API(),
@@ -352,9 +359,14 @@ func run(ctx context.Context) error {
 		Procurement: database.Procurement(),
 		// The supplier master both Inventory and Procurement write through
 		// (FR-INV-004 | migration 071).
-		Vendors:       database.Vendors(),
-		GeneralLedger: database.Ledger(),
-		Health:        http.HandlerFunc(healthHandler.GetSubscriberHealth),
+		Vendors: database.Vendors(),
+		// Captive-portal branding (FR-HSP-004). BrandingCache is the same
+		// instance the hotspot handler below reads, so a save from the
+		// console invalidates exactly the copy the portal is serving.
+		PortalBranding: database.Hotspot(),
+		BrandingCache:  portalBranding,
+		GeneralLedger:  database.Ledger(),
+		Health:         http.HandlerFunc(healthHandler.GetSubscriberHealth),
 
 		RazorpayWebhookSecret: cfg.RazorpayWebhookSecret,
 	})
@@ -455,6 +467,9 @@ func run(ctx context.Context) error {
 		// because "who entered this GSTIN" is a question asked of the trail
 		// without caring which screen it came from (FR-INV-004).
 		Vendors: apiHandler,
+		// Through the API handler for the same reason as Vendors: a change to
+		// what strangers see on the captive portal is audited one way.
+		PortalBranding: apiHandler,
 		// Same *db.LedgerStore instance already wired for internal/api.
 		GeneralLedger: database.Ledger(),
 		// Same *db.HotspotStore instance already wired for internal/api.
@@ -511,6 +526,7 @@ func run(ctx context.Context) error {
 		Grants:      database.Hotspot(),
 		Subscribers: database.Portal(),
 		Limiter:     hotspot.NewLimiter(),
+		Branding:    portalBranding,
 	})
 
 	notificationWebhook := notifications.NewWebhookHandler(

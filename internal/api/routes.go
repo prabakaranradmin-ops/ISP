@@ -143,6 +143,8 @@ type Handler struct {
 	archives        ArchiveLookup
 	procurement     ProcurementQuerier
 	vendors         VendorStore
+	portalBranding  PortalBrandingStore
+	brandingCache   BrandingInvalidator
 	generalLedger   GeneralLedgerQuerier
 	// subscriberLister backs revenue.ListSubscribersHandler, which is a
 	// plain http.HandlerFunc rather than a method on Handler — so the
@@ -252,8 +254,13 @@ type HandlerDeps struct {
 	Procurement     ProcurementQuerier
 	// Vendors backs the shared supplier master both Inventory and
 	// Procurement write through (FR-INV-004).
-	Vendors       VendorStore
-	GeneralLedger GeneralLedgerQuerier
+	Vendors VendorStore
+	// PortalBranding and BrandingCache back the captive-portal branding the
+	// console edits (FR-HSP-004). The cache is the one the hotspot handler
+	// reads, so a save shows on the portal at once.
+	PortalBranding PortalBrandingStore
+	BrandingCache  BrandingInvalidator
+	GeneralLedger  GeneralLedgerQuerier
 
 	// Health serves GET /api/v1/subscribers/{id}/health (FR-OBS-004). The
 	// implementation lives in internal/health, which cannot be imported here
@@ -334,6 +341,8 @@ func NewHandler(deps HandlerDeps) *Handler {
 		archives:         deps.Archives,
 		procurement:      deps.Procurement,
 		vendors:          deps.Vendors,
+		portalBranding:   deps.PortalBranding,
+		brandingCache:    deps.BrandingCache,
 		generalLedger:    deps.GeneralLedger,
 		health:           deps.Health,
 

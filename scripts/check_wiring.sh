@@ -198,6 +198,16 @@ COMPONENTS=(
     "AddVendor:adding a supplier to the shared vendor master (FR-INV-004)"
     "PickableVendors:the supplier dropdown on the Inventory and Procurement forms (FR-INV-004)"
     "ResolveVendorByName:resolving a legacy vendor name against the master (FR-INV-004)"
+
+    # Captive-portal branding (FR-HSP-004). NewBrandingCache is what puts the
+    # saved branding in front of the portal: without a caller the console
+    # saves, the audit trail records it, and every visitor still sees the
+    # default page — the failure the screen's own preview would not reveal,
+    # since the preview reads the store directly. RenderPreview is that
+    # preview, which is the operator's only way to check their work before a
+    # customer sees it.
+    "NewBrandingCache:the saved branding reaching the captive portal (FR-HSP-004)"
+    "RenderPreview:the console's preview of the branded captive portal (FR-HSP-004)"
 )
 
 if [ "${1:-}" = "--list" ]; then
