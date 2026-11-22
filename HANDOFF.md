@@ -329,6 +329,39 @@ settled the question in seconds.
   passed just as well had the banner reached nobody at all, which is the
   shape of the captive-portal anti-oracle defect in the list below.
 
+- **The subscriber-facing surface was swept 2026-11-23 and is otherwise
+  clean.** After the portal-token fix above, every subscriber-reachable route
+  was driven with one real `test_user` token against a running server: 9
+  `portal` JSON routes, 17 `portalui` HTML routes (cookie session + CSRF from
+  the form), the 2 `api` subscriber-role routes and the 5 unauthenticated
+  `hotspot` routes. No second instance of the defect. Every anomaly was the
+  sweep's own input, which is worth recording so the next person does not
+  re-investigate them: `/portal/renew` wants `{"amount":"..."}` and not an
+  invoice id (422 otherwise; 503 with the right body, because no Razorpay key
+  is set, which is the documented behaviour); `/ui/static/app.css` does not
+  exist and the assets are `portalui.css` and `htmx.min.js`; `/hotspot/logo`
+  404s correctly when no logo has been uploaded.
+
+  Cross-audience isolation was checked in **both** directions, which is the
+  part that generalises the bug: a portal token gets 401 on the staff API —
+  including `POST /api/v1/subscribers/{id}/terminate` and
+  `/api/v1/subscribers/bulk/credit` — identical to presenting no token, and a
+  staff token gets 401 on every subscriber route. Note that a first pass
+  recorded 404/405 for several staff routes, which proves nothing at all:
+  the path or method had not matched, so the auth middleware never ran. Only
+  the retest with methods the mux actually has is evidence.
+
+  `TestSubscriberRoutesVerifyThePortalKey` now guards the thing the sweep
+  could not: a *third* subscriber route wired to `auth` would 401 every
+  customer with nothing failing anywhere, since the handler, the role gate
+  and its own tests would all be correct. It reads `routes.go` and requires
+  every `RequireRole("subscriber")` to be wrapped in `subscriberAuth`, the
+  same shape as `TestEveryPageTemplateIsRegistered` and for the same reason —
+  the registry was the blind spot, not the behaviour. It fails on all three
+  ways this can rot: the staff-key wiring, a role gate wrapped in neither
+  wrapper, and the role string being renamed so the check matches nothing and
+  asserts nothing.
+
 - **FR-NET-006 has never polled a real router.** This machine has no router
   and no SNMP agent, so the poller is proven only against
   `internal/nastraffic/snmptest`, an agent built on the same library's encoder.
