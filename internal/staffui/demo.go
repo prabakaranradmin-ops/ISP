@@ -2,6 +2,7 @@ package staffui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -35,6 +36,17 @@ type DemoStatus struct {
 func (s DemoStatus) Loaded() bool {
 	return s.Subscribers > 0 || s.Plans > 0 || s.NASDevices > 0
 }
+
+// ErrDemoDataInUse reports that real, non-demo data references the demo rows,
+// so removing them would destroy something a walkthrough did not create.
+//
+// It lives here rather than in internal/db because db imports this package
+// for DemoStatus and the reverse would be an import cycle — the same
+// direction, and for the same reason: this package owns the contract its
+// templates render, db fills it in. Worth a sentinel at all because it is
+// the one removal failure an operator can act on, and the action is
+// specific.
+var ErrDemoDataInUse = errors.New("real data references the demo data")
 
 // DemoStore tags, counts and removes demo data. Satisfied by *db.DemoStore.
 type DemoStore interface {
@@ -322,6 +334,15 @@ func (h *Handler) RemoveDemoData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.demo.Remove(r.Context()); err != nil {
+		// A real subscriber on a demo plan is the one failure with an
+		// obvious remedy, so it gets said out loud rather than buried in a
+		// log the operator may not be able to read.
+		if errors.Is(err, ErrDemoDataInUse) {
+			log.Warn().Err(err).Msg("staffui: remove demo data refused")
+			h.renderDemo(w, r, s, "", "Could not remove the demo data: a real subscriber is on a "+
+				"demo plan. Move them to a real plan under Subscribers, then remove the demo data again.")
+			return
+		}
 		log.Error().Err(err).Msg("staffui: remove demo data failed")
 		h.renderDemo(w, r, s, "", "Could not remove demo data — check the server log.")
 		return

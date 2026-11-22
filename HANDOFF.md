@@ -266,13 +266,47 @@ settled the question in seconds.
   subscribers?" — the operator was told the wrong number at the one moment
   they could still stop.
 
-  Related, not changed: "Remove demo data" deletes demo subscribers'
-  tickets, invoices and wallet entries but nothing else that references a
-  subscriber without cascading — `notification_log`, `live_sessions`,
-  session history, proformas and others. A walkthrough that left a row in any
-  of those makes removal fail as a whole (it is one transaction, so nothing
-  is half-removed); the console says "check the server log". Not verified
-  whether loading demo data on its own produces such rows.
+  **Closed 2026-11-23: "Remove demo data" now survives a walkthrough.** The
+  note that used to sit here said removal might fail if a walkthrough left a
+  row in a table that does not cascade, and that it was unverified whether
+  loading demo data alone produced one. Both halves are now answered.
+
+  Loading alone is safe: it writes only a ticket and an invoice, both of
+  which were already handled, so load-then-remove always worked. **Using**
+  the demo data was not. Removal deletes from `subscribers`, `invoices`,
+  `tickets`, `wallet_ledgers`, `plans` and `nas_devices`, and 21 tables hold
+  a blocking (`NO ACTION`/`RESTRICT`) reference into one of those; three were
+  handled. Loading the demo data and issuing one credit note against its
+  invoice — an obvious thing to show a prospect — made removal fail for good,
+  with the console reporting only "check the server log" and five fabricated
+  subscribers, two plans and a router left in the system with no way out
+  through the UI. Reproduced through the real console, not inferred.
+
+  The credit note did not even fail on a reference to the subscriber: it
+  failed on `approval_requests.invoice_id`. The dependency list therefore
+  follows every row `Remove` deletes, not only the subscribers, which is why
+  it is 21 tables and not 12.
+
+  Two deliberate non-deletions, because tidying a demo must not destroy real
+  data: a lead converted during the walkthrough keeps its row and loses
+  `converted_subscriber_id` (it may have been a real lead before somebody
+  demonstrated conversion on it), and a real subscriber's
+  `subscriber_status_history` keeps its audit row and loses `plan_id`. And
+  one deliberate refusal: a real subscriber **on** a demo plan cannot be
+  resolved automatically — deleting the customer is absurd and deleting the
+  plan under them is impossible — so removal refuses with
+  `staffui.ErrDemoDataInUse` and the console says to move them to a real plan
+  first. The sentinel lives in `staffui` because `internal/db` imports that
+  package for `DemoStatus` and the reverse would cycle.
+
+  `TestDemoRemovalCoversEveryBlockingReference` derives the blocking set from
+  the live schema, so a migration adding a 22nd table fails the test instead
+  of shipping. It also fails when its own query stops matching the schema and
+  would otherwise assert nothing. Verified live end to end: load, credit
+  note, remove ("Demo data removed", nothing left, all four real subscribers
+  intact), then the refusal path and recovery — move a real subscriber onto a
+  demo plan, get the advice and nothing deleted, move them back, removal
+  succeeds.
 
 - **Closed 2026-11-22: subscribers can read portal banners and register push
   tokens.** `GET /api/v1/announcements/portal` and `POST /api/v1/push-tokens`
@@ -725,6 +759,11 @@ execution, across several sessions:
   years, deleting GST records early in a way nobody would ever notice
 - the JWT middleware answering `text/plain` while every handler answered
   JSON, making token expiry the one error a mobile client could not parse
+- "Remove demo data" handling 3 of the 21 tables that can block it, so the
+  first walkthrough action touching any of the other 18 wedged it for good —
+  found by loading the demo data and clicking through it as a salesperson
+  would, not by reading the SQL, which looked complete and had a comment
+  explaining why those three were the ones that mattered
 - two subscriber-facing routes that verified the *staff* JWT secret while
   every real portal token is signed with the portal one, so FR-ANN-002's
   banner feed and FR-NOTIF-013's push registration 401'd every customer on
