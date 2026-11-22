@@ -73,6 +73,13 @@ func (s *DemoStore) Status(ctx context.Context) (staffui.DemoStatus, error) {
 // would fail the subscriber delete with a foreign-key violation instead of
 // silently orphaning anything. Everything runs in one transaction so a
 // failure partway through cannot leave demo data half-removed.
+//
+// Announcements addressed to a demo plan go too, for the same reason and one
+// more: their segment cannot outlive the plan (migration 074 made it
+// RESTRICT), and before that it was nulled instead — which turned a banner
+// for the walkthrough's plan into one on every real subscriber's portal.
+// Such an announcement could only ever reach subscribers on that plan, and
+// by the time the plan can be deleted none are left on it.
 func (s *DemoStore) Remove(ctx context.Context) error {
 	return inTx(ctx, s.pool, func(tx pgx.Tx) error {
 		stmts := []string{
@@ -80,6 +87,7 @@ func (s *DemoStore) Remove(ctx context.Context) error {
 			`DELETE FROM invoices       WHERE subscriber_id IN (SELECT id FROM subscribers WHERE is_demo)`,
 			`DELETE FROM wallet_ledgers WHERE subscriber_id IN (SELECT id FROM subscribers WHERE is_demo)`,
 			`DELETE FROM subscribers WHERE is_demo`,
+			`DELETE FROM announcements  WHERE segment_plan_id IN (SELECT id FROM plans WHERE is_demo)`,
 			`DELETE FROM plans       WHERE is_demo`,
 			`DELETE FROM nas_devices WHERE is_demo`,
 		}

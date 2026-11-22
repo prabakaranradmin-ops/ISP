@@ -131,7 +131,9 @@ func (h *Handler) renderAnnouncements(w http.ResponseWriter, r *http.Request, s 
 		if a.SegmentGroupID != nil {
 			row.GroupName = ad.GroupNames[*a.SegmentGroupID]
 		}
-		if a.Status == notifications.AnnouncementDraft && h.audience != nil {
+		// A list announcement has no segment, and counting its all-NULL
+		// segment would report the whole base as its reach.
+		if a.Status == notifications.AnnouncementDraft && !a.AddressedToList && h.audience != nil {
 			if n, err := h.audience.CountAnnouncementAudience(r.Context(), a.SegmentFranchiseID, a.SegmentPlanID, a.SegmentStatus, a.SegmentGroupID); err == nil {
 				row.Audience = n
 			}

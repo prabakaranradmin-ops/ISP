@@ -110,14 +110,19 @@ func TestFR_ANN_001_SegmentAddressesExactlyTheIntendedSubscribers(t *testing.T) 
 
 	store := database.Announcements()
 
-	// ListSegmentSubscriberIDs checks announcement_recipients first and only
-	// falls through to the segment filters below when that table holds
-	// nothing for the id (migration 041 — an announcement may instead name
-	// an explicit console-selected list). No announcement has id 0, so no
-	// recipient row can ever match it: these subtests are about the segment
-	// query, and this keeps them on that path. The explicit-recipient path
-	// is covered separately by
-	// TestFR_ANN_001_ExplicitRecipientsOverrideSegmentFilters.
+	// ListSegmentSubscriberIDs resolves a recipient list first and only falls
+	// through to the segment filters below when the announcement was not
+	// addressed to one (migration 041 — an announcement may instead name an
+	// explicit console-selected list; migration 074 put which kind it is on
+	// the row). Id 0 belongs to no announcement, so these subtests are about
+	// the segment query alone, and this keeps them on that path.
+	//
+	// Note what that excludes: nothing here resolves an announcement that
+	// exists, so no subtest below can catch a regression in the list/segment
+	// decision itself — a 2026-11-22 negative control broke it so that every
+	// segment announcement reached nobody, and all five still passed. The
+	// cases that do resolve a real id live in
+	// announcement_reach_integration_test.go.
 	const segmentOnly = 0
 
 	t.Run("no filters addresses everyone except terminated", func(t *testing.T) {

@@ -103,6 +103,21 @@ func TestAnnouncementsScreen(t *testing.T) {
 		}
 	})
 
+	t.Run("a list announcement reads as chosen subscribers, never as everyone", func(t *testing.T) {
+		lists := []notifications.Announcement{
+			{ID: 3, Title: "Payment overdue", Body: "x", Channels: []string{}, ShowInPortal: true,
+				AddressedToList: true, Status: "draft", CreatedAt: time.Now()},
+		}
+		h := &Handler{announcer: &fakeAnnouncer{list: lists}, audience: &fakeConsole{}}
+		rows := tableBody(serveAnn(h, "billing_admin", "GET", "/staff/announcements", nil).Body.String())
+		if !strings.Contains(rows, "Chosen subscribers only") {
+			t.Error("a list announcement should say it is addressed to chosen subscribers")
+		}
+		if strings.Contains(rows, "Any plan") || strings.Contains(rows, "Reaches 42") {
+			t.Errorf("a list announcement must not be described by its empty segment, which reads as everyone:\n%s", rows)
+		}
+	})
+
 	t.Run("compose passes the form through and is attributed", func(t *testing.T) {
 		fa := &fakeAnnouncer{}
 		h := &Handler{announcer: fa}

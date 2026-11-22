@@ -63,6 +63,13 @@ type Announcement struct {
 	// GetAnnouncement/ListAnnouncements leaves this empty.
 	SubscriberIDs []int `json:"subscriber_ids,omitempty"`
 
+	// AddressedToList is stored on the row (migration 074) and is what
+	// decides reach: true means only the announcement_recipients rows, even
+	// when none remain. Inferring it from whether recipient rows exist made
+	// a list whose recipients had been deleted read as a segment with every
+	// filter unset — the whole base.
+	AddressedToList bool `json:"addressed_to_list"`
+
 	ShowInPortal   bool       `json:"show_in_portal"`
 	Status         string     `json:"status"`
 	RecipientCount int        `json:"recipient_count"`

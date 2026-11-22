@@ -58,9 +58,11 @@
         <td><strong>{{.Title}}</strong><br><span class="small">{{.Body}}</span><br>
           <span class="muted small">{{range $i, $c := .Channels}}{{if $i}}, {{end}}{{channelLabel $c}}{{end}}{{if .ShowInPortal}}{{if .Channels}}, {{end}}portal banner{{end}} &middot; {{if eq .Class "transactional"}}service notice{{else}}promotional{{end}}</span></td>
         <td class="small">
+          {{if .AddressedToList}}Chosen subscribers only{{else}}
           {{if .PlanName}}Plan {{.PlanName}}{{else if .SegmentPlanID}}Plan #{{deref .SegmentPlanID}}{{else}}Any plan{{end}},
           {{if .SegmentStatus}}{{humanize (optString .SegmentStatus)}}{{else}}any status{{end}}{{if .SegmentGroupID}},
           group {{if .GroupName}}{{.GroupName}}{{else}}#{{deref .SegmentGroupID}}{{end}}{{end}}
+          {{end}}
           {{if eq .Status "draft"}}{{if ge .Audience 0}}<br><strong>Reaches {{.Audience}} now</strong>{{end}}
           {{else}}<br>{{.RecipientCount}} message{{if ne .RecipientCount 1}}s{{end}} queued{{end}}
         </td>

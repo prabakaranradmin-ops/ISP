@@ -17,6 +17,7 @@ var _ api.AnnouncementQuerier = (*AnnouncementStore)(nil)
 const announcementColumns = `
 	id, title, body, channels, class,
 	segment_franchise_id, segment_plan_id, segment_status, segment_group_id,
+	addressed_to_list,
 	show_in_portal, status, recipient_count, created_by_username,
 	created_at, sent_at`
 
@@ -25,6 +26,7 @@ func scanAnnouncement(row interface{ Scan(dest ...any) error }) (*notifications.
 	err := row.Scan(
 		&a.ID, &a.Title, &a.Body, &a.Channels, &a.Class,
 		&a.SegmentFranchiseID, &a.SegmentPlanID, &a.SegmentStatus, &a.SegmentGroupID,
+		&a.AddressedToList,
 		&a.ShowInPortal, &a.Status, &a.RecipientCount, &a.CreatedBy,
 		&a.CreatedAt, &a.SentAt,
 	)
@@ -43,17 +45,18 @@ func (s *AnnouncementStore) CreateAnnouncement(ctx context.Context, a notificati
 			INSERT INTO announcements (
 				title, body, channels, class,
 				segment_franchise_id, segment_plan_id, segment_status, segment_group_id,
-				show_in_portal, created_by_username
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+				show_in_portal, created_by_username, addressed_to_list
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 			RETURNING *
 		)
 		SELECT ` + announcementColumns + ` FROM ins`
+	toList := len(a.SubscriberIDs) > 0
 
-	if len(a.SubscriberIDs) == 0 {
+	if !toList {
 		created, err := scanAnnouncement(s.pool.QueryRow(ctx, insertQ,
 			a.Title, a.Body, a.Channels, a.Class,
 			a.SegmentFranchiseID, a.SegmentPlanID, a.SegmentStatus, a.SegmentGroupID,
-			a.ShowInPortal, a.CreatedBy))
+			a.ShowInPortal, a.CreatedBy, toList))
 		if err != nil {
 			return nil, fmt.Errorf("db: create announcement: %w", err)
 		}
@@ -66,7 +69,7 @@ func (s *AnnouncementStore) CreateAnnouncement(ctx context.Context, a notificati
 		created, err = scanAnnouncement(tx.QueryRow(ctx, insertQ,
 			a.Title, a.Body, a.Channels, a.Class,
 			a.SegmentFranchiseID, a.SegmentPlanID, a.SegmentStatus, a.SegmentGroupID,
-			a.ShowInPortal, a.CreatedBy))
+			a.ShowInPortal, a.CreatedBy, toList))
 		if err != nil {
 			return fmt.Errorf("insert announcement: %w", err)
 		}
@@ -128,16 +131,20 @@ func (s *AnnouncementStore) ListAnnouncements(ctx context.Context, status *strin
 
 // ListPortalAnnouncements returns the banners a subscriber should see.
 //
-// Scoped to sent announcements whose segment the subscriber actually falls
-// in — a banner aimed at one franchise's customers must not appear on
-// everyone's dashboard, which is the same isolation the notification fan-out
-// applies.
+// Scoped to sent announcements the subscriber was actually addressed by — a
+// banner aimed at one franchise's customers, or at three hand-picked ones,
+// must not appear on everyone's dashboard, which is the same isolation the
+// notification fan-out applies. A list announcement carries no segment, so
+// without the list clause its all-NULL segment matches everybody.
 func (s *AnnouncementStore) ListPortalAnnouncements(ctx context.Context, subscriberID int) ([]notifications.Announcement, error) {
 	const q = `
 		SELECT ` + announcementColumns + `
 		FROM announcements a
 		WHERE a.show_in_portal
 		  AND a.status = 'sent'
+		  AND (NOT a.addressed_to_list OR EXISTS (
+		      SELECT 1 FROM announcement_recipients r
+		       WHERE r.announcement_id = a.id AND r.subscriber_id = $1))
 		  AND EXISTS (
 		      SELECT 1 FROM subscribers s
 		      WHERE s.id = $1
@@ -214,8 +221,9 @@ func (s *AnnouncementStore) FinishAnnouncement(ctx context.Context, id int, stat
 }
 
 // ListSegmentSubscriberIDs resolves an announcement to the subscriber ids it
-// targets: an explicit recipient list (announcement_recipients) if one was
-// given at creation, otherwise the franchise/plan/status segment filters.
+// targets: its recipient list (announcement_recipients) if it was addressed
+// to one at creation — what is left of it, possibly nothing — otherwise the
+// franchise/plan/status segment filters.
 //
 // Each NULL filter means "no restriction on this dimension", so a segment
 // announcement with all four unset addresses the whole base. The group
@@ -268,28 +276,30 @@ func (s *AnnouncementStore) ListSegmentSubscriberIDs(ctx context.Context, announ
 	return out, nil
 }
 
-// listExplicitRecipients returns an announcement's console-picked recipient
-// list, or nil (not an empty, non-nil slice) when it has none — the caller
-// uses that nil-ness to decide whether to fall back to the segment filters.
+// listExplicitRecipients returns a list announcement's recipients, or nil
+// (not an empty, non-nil slice) when the announcement is addressed by segment
+// — the caller uses that nil-ness to decide whether to fall back to the
+// segment filters. A list announcement whose recipients have all been deleted
+// returns an empty, non-nil slice: it reaches nobody, never everybody.
 func (s *AnnouncementStore) listExplicitRecipients(ctx context.Context, announcementID int) ([]int, error) {
-	const q = `SELECT subscriber_id FROM announcement_recipients WHERE announcement_id = $1 ORDER BY subscriber_id`
+	const q = `
+		SELECT a.addressed_to_list,
+		       ARRAY(SELECT r.subscriber_id FROM announcement_recipients r
+		              WHERE r.announcement_id = a.id ORDER BY r.subscriber_id)
+		  FROM announcements a
+		 WHERE a.id = $1`
 
-	rows, err := s.pool.Query(ctx, q, announcementID)
+	var toList bool
+	var ids []int
+	err := s.pool.QueryRow(ctx, q, announcementID).Scan(&toList, &ids)
+	if isNoRows(err) || (err == nil && !toList) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("db: list announcement recipients for %d: %w", announcementID, err)
 	}
-	defer rows.Close()
-
-	var out []int
-	for rows.Next() {
-		var id int
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("db: scan announcement recipient: %w", err)
-		}
-		out = append(out, id)
+	if ids == nil {
+		ids = []int{}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("db: iterate announcement recipients: %w", err)
-	}
-	return out, nil
+	return ids, nil
 }
