@@ -327,3 +327,37 @@ fieldset.plain { border: 0; padding: 0; margin: 0; min-width: 0; }
 
 /* A tile carrying a date or a word rather than a count. */
 .tile-num.tile-text { font-size: 16px; }
+
+/* ── Interface traffic chart (FR-NET-006) ─────────────────────────────────
+   Series colours are slots 1 and 2 of the validated chart palette (blue,
+   orange), checked for colour-vision separation and 3:1 contrast against the
+   surface. Text never wears a series colour: labels and values use the ink
+   tokens, and the swatch beside them carries identity. The console has no
+   dark mode, so only the light steps are used. */
+.traffic { --series-in: #2a78d6; --series-out: #eb6834; }
+.traffic-chart { position: relative; }
+.traffic-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.traffic-chart .grid { stroke: var(--rule); stroke-width: 1; }
+.traffic-chart .baseline { stroke: var(--muted); stroke-width: 1; }
+.traffic-chart .tick { fill: var(--muted); font-size: 11px; }
+.traffic-chart .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.traffic-chart .line.in  { stroke: var(--series-in); }
+.traffic-chart .line.out { stroke: var(--series-out); }
+.traffic-chart .crosshair { stroke: var(--muted); stroke-width: 1; visibility: hidden; }
+.traffic-chart .empty-note { fill: var(--muted); font-size: 13px; }
+.traffic-tip { position: absolute; top: 4px; pointer-events: none; display: none;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 4px;
+  padding: 6px 8px; font-size: 12px; color: var(--ink); white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0,0,0,.08); }
+.traffic-legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 0 0 8px; font-size: 13px; color: var(--ink); }
+.swatch { display: inline-block; width: 12px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.swatch.in { background: var(--series-in); }
+.swatch.out { background: var(--series-out); }
+.range-tabs { display: flex; gap: 6px; margin: 0 0 12px; }
+.range-tabs a { padding: 4px 10px; border: 1px solid var(--rule); border-radius: 4px;
+  text-decoration: none; color: var(--ink); font-size: 13px; }
+.range-tabs a[aria-current="page"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* An interface name is case-significant on the router ("sfp-sfpplus1", not
+   "SFP-SFPPLUS1"), so the chart's heading opts out of the upper-cased card
+   heading style — the name is shown exactly as the router reports it. */
+.traffic h3 { text-transform: none; letter-spacing: normal; font-size: 16px; color: var(--ink); }

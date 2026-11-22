@@ -1,0 +1,33 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Interface traffic</h1>
+<p class="muted">Each router's interfaces, polled over SNMP every five minutes and kept for 30 days. A router
+  is only polled once monitoring is turned on for it, with its SNMP community &mdash; open a router to set that
+  up. <a href="/staff/network">Back to the Network Map</a>.</p>
+
+<div class="card">
+  <table>
+    <thead><tr><th>Router</th><th>Description</th><th>Monitoring</th><th class="right">Interfaces</th><th>Last successful poll</th><th></th></tr></thead>
+    <tbody>
+    {{range $d.Routers}}
+      <tr>
+        <td>{{.IP}} <span class="muted small">{{.Vendor}}</span></td>
+        <td>{{if .Description}}{{.Description}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td>
+          {{if not .Enabled}}<span class="pill neutral">off</span>
+          {{else if .Stale $d.Now}}<span class="pill bad">not answering</span>
+          {{else if .LastError}}<span class="pill warn">last poll failed</span>
+          {{else if .LastOKAt}}<span class="pill ok">polling</span>
+          {{else}}<span class="pill neutral">waiting for first poll</span>{{end}}
+        </td>
+        <td class="right num">{{.Interfaces}}</td>
+        <td class="small">{{with .LastOKAt}}{{datetime .}}{{else}}<span class="muted">never</span>{{end}}</td>
+        <td class="right"><a href="/staff/network/traffic/{{.NASID}}">Open</a></td>
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">No routers registered yet &mdash; add one from Routers.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

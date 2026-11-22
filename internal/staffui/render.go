@@ -30,6 +30,15 @@ var staticFS = func() fs.FS {
 func staticHandler() http.Handler { return http.FileServer(http.FS(staticFS)) }
 
 var funcMap = template.FuncMap{
+	// Interface traffic (FR-NET-006): rates and link speeds in SI bit/s, and
+	// the small arithmetic the chart's axis labels need to sit beside the
+	// plot rather than on it.
+	"bps":   FormatBps,
+	"mbps":  func(m int64) string { return FormatBps(m * 1_000_000) },
+	"addf":  func(a, b float64) float64 { return a + b },
+	"subf":  func(a, b float64) float64 { return a - b },
+	"halff": func(a float64) float64 { return a / 2 },
+
 	"money":        func(d decimal.Decimal) string { return d.StringFixed(2) },
 	"datetime":     func(t time.Time) string { return t.Format("02 Jan 2006 15:04") },
 	"date":         func(t time.Time) string { return t.Format("02 Jan 2006") },
@@ -389,7 +398,7 @@ var pageNames = []string{
 	"billing", "tickets", "revenue", "catalogue", "nas", "lea", "demo",
 	"accounts", "change_password", "error", "franchise", "franchise_detail",
 	"inventory", "reports", "tasks", "my_subscribers", "procurement", "ledger", "network",
-	"dashboard", "sessions", "money", "leads", "lead_convert", "cpe", "announcements", "logs", "credit_note", "dunning", "proformas", "diagnostics", "billing_runs", "billing_run", "products", "ip_pools", "audit", "auth_log", "gateway_log", "bandwidth", "plan_attributes", "fair_use", "collections", "documents", "groups", "vendors", "portal_branding",
+	"dashboard", "sessions", "money", "leads", "lead_convert", "cpe", "announcements", "logs", "credit_note", "dunning", "proformas", "diagnostics", "billing_runs", "billing_run", "products", "ip_pools", "audit", "auth_log", "gateway_log", "bandwidth", "plan_attributes", "fair_use", "collections", "documents", "groups", "vendors", "portal_branding", "traffic", "traffic_router",
 }
 
 var pages = func() map[string]*template.Template {

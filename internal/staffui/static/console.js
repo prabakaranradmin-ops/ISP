@@ -16,6 +16,7 @@
     initSelectAll();
     initConfirmForms();
     initNasSecretGenerator();
+    initTrafficCharts();
   });
 
   function onReady(fn) {
@@ -324,6 +325,56 @@
       "  authentication port: 1812\n" +
       "  accounting port:     1813\n" +
       "  CoA/disconnect port: " + coaPort;
+  }
+
+  // Interface traffic chart (FR-NET-006): a crosshair that snaps to the
+  // nearest measured interval and a readout of both series there — average
+  // and peak, in and out. The chart, its legend and its table view all read
+  // without this; it only saves aiming at a 2px line. The readout is text
+  // the server already formatted, set with textContent, never as markup.
+  function initTrafficCharts() {
+    var charts = document.querySelectorAll("[data-traffic-chart]");
+    Array.prototype.forEach.call(charts, function (box) {
+      var points;
+      try { points = JSON.parse(box.getAttribute("data-points") || "[]"); } catch (e) { return; }
+      if (!points.length) { return; }
+      var svg = box.querySelector("svg");
+      var cross = box.querySelector(".crosshair");
+      var tip = box.querySelector(".traffic-tip");
+      if (!svg || !cross || !tip) { return; }
+      var vb = svg.viewBox.baseVal;
+
+      function show(clientX) {
+        var rect = svg.getBoundingClientRect();
+        var x = (clientX - rect.left) / rect.width * vb.width;
+        var best = points[0];
+        for (var i = 1; i < points.length; i++) {
+          if (Math.abs(points[i].X - x) < Math.abs(best.X - x)) { best = points[i]; }
+        }
+        cross.setAttribute("x1", best.X);
+        cross.setAttribute("x2", best.X);
+        cross.style.visibility = "visible";
+        tip.textContent = "";
+        [[best.T, true], ["In  " + best.In + "  (peak " + best.InPeak + ")"],
+         ["Out " + best.Out + "  (peak " + best.OutPeak + ")"]].forEach(function (row) {
+          var line = document.createElement("div");
+          line.textContent = row[0];
+          if (row[1]) { line.style.fontWeight = "600"; }
+          tip.appendChild(line);
+        });
+        tip.style.display = "block";
+        var px = best.X / vb.width * rect.width;
+        var left = px + 12;
+        if (left + tip.offsetWidth > rect.width) { left = px - tip.offsetWidth - 12; }
+        tip.style.left = Math.max(0, left) + "px";
+      }
+      function hide() {
+        cross.style.visibility = "hidden";
+        tip.style.display = "none";
+      }
+      svg.addEventListener("pointermove", function (e) { show(e.clientX); });
+      svg.addEventListener("pointerleave", hide);
+    });
   }
 
   // randomSecret avoids Math.random (not cryptographically secure) in

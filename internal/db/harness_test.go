@@ -180,6 +180,11 @@ var truncateOrder = []string{
 	// Migration 034 seeds nas_devices with explicit ids, so it must be reset
 	// between tests or the second test to seed id=1 collides. plan_nas_profiles
 	// references it and is taken by CASCADE.
+	//
+	// Migration 073's interface tables cascade from nas_devices too, and are
+	// listed only so this slice's parents-last reading stays true.
+	"nas_interface_samples",
+	"nas_interfaces",
 	"nas_devices",
 	// After tickets: tickets.assigned_to references it (migration 023).
 	"staff_users",

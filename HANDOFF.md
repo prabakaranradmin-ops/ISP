@@ -231,6 +231,33 @@ settled the question in seconds.
   is what a new reference should use; migrating the old two is its own
   change, not a side effect of adding a fourth dimension.
 
+- **FR-NET-006 has never polled a real router.** This machine has no router
+  and no SNMP agent, so the poller is proven only against
+  `internal/nastraffic/snmptest`, an agent built on the same library's encoder.
+  That proves the OIDs, the paged walks, the 64-bit handling, the timeouts and
+  the whole path into the database; it cannot prove how a real agent behaves.
+  On the first real deployment, check against one router before trusting the
+  graphs:
+  - its interfaces appear with the names shown on the router (`ifName`), and
+    PPPoE sessions do **not** appear (they are skipped as IANA ifType 23 —
+    if this RouterOS version reports them otherwise, the cap of 256 is all that
+    stops them filling the table);
+  - an uplink's rate matches what the router's own traffic monitor shows over
+    the same five minutes;
+  - a wrong community produces "No answer … check the community" within a
+    minute, and fixing it clears it on the next poll.
+  `snmpwalk -v2c -c <community> <router> 1.3.6.1.2.1.31.1.1.1` from this
+  server is the quickest way to see what the router actually reports.
+
+  Known limits of the same feature: SNMPv2c only, so the community crosses the
+  network in clear text and the router should accept it only from this
+  server's address on a management network; no per-interface "don't graph
+  this" toggle; with many routers that do not answer, a cycle can run long
+  enough (eight workers, up to a minute each) that intervals exceed the
+  fifteen-minute gap rule and show as holes. Every radiusd instance polls, so
+  two instances double the SNMP load on each router; the compare-and-swap
+  only stops them double-recording.
+
 - **Captive-portal branding is one per deployment, not one per venue.**
   FR-HSP-004 asked for per-deployment branding and migration 072 holds a single
   row. An operator running hotspots for several venues off one deployment gets

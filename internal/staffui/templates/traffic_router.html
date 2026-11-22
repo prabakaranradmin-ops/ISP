@@ -1,0 +1,128 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Traffic &mdash; {{$d.Router.IP}}</h1>
+<p class="muted">{{if $d.Router.Description}}{{$d.Router.Description}} &middot; {{end}}{{$d.Router.Vendor}}
+  &middot; <a href="/staff/network/traffic">All routers</a></p>
+
+{{with $d.Router}}
+  {{if not .Enabled}}
+    <p class="alert warn">Monitoring is off for this router. Turn it on below with its SNMP community.</p>
+  {{else if .Stale $d.Now}}
+    <p class="alert bad" data-poll-status>Not answering{{with .LastOKAt}} since {{datetime .}}{{else}} &mdash; never polled successfully{{end}}.
+      {{.LastError}}</p>
+  {{else if .LastError}}
+    <p class="alert warn" data-poll-status>The last poll failed: {{.LastError}}</p>
+  {{else if not .LastOKAt}}
+    <p class="alert" data-poll-status>Waiting for the first poll. {{$d.PollerNote}}</p>
+  {{end}}
+{{end}}
+
+{{if $d.Selected}}
+<div class="card traffic">
+  <h3>{{$d.Selected.Name}}{{if $d.Selected.Alias}} <span class="muted small">{{$d.Selected.Alias}}</span>{{end}}</h3>
+  <nav class="range-tabs" aria-label="Time range">
+    {{range $d.Ranges}}
+      <a href="?range={{.Key}}&if={{$d.Selected.ID}}"{{if eq .Key $d.Range.Key}} aria-current="page"{{end}}>{{.Label}}</a>
+    {{end}}
+  </nav>
+
+  <div class="traffic-legend">
+    <span><span class="swatch in"></span>In{{if not $d.Chart.Empty}} &middot; average {{$d.Chart.AvgIn}} &middot; peak {{$d.Chart.PeakIn}}{{end}}</span>
+    <span><span class="swatch out"></span>Out{{if not $d.Chart.Empty}} &middot; average {{$d.Chart.AvgOut}} &middot; peak {{$d.Chart.PeakOut}}{{end}}</span>
+    {{if $d.Chart.Coverage}}<span class="muted">{{$d.Chart.Coverage}}</span>{{end}}
+  </div>
+
+  {{with $d.Chart}}
+  <div class="traffic-chart" data-traffic-chart data-points="{{.PointsJSON}}">
+    <svg viewBox="0 0 {{.Width}} {{.Height}}" role="img"
+         aria-label="In and out traffic on {{$d.Selected.Name}}, {{.Range.Label}}">
+      {{range .YTicks}}
+        <line class="grid" x1="{{$.Data.Chart.PlotLeft}}" x2="{{$.Data.Chart.PlotRight}}" y1="{{.Pos}}" y2="{{.Pos}}"></line>
+        <text class="tick" x="{{subf $.Data.Chart.PlotLeft 6}}" y="{{.Pos}}" text-anchor="end" dominant-baseline="middle">{{.Label}}</text>
+      {{end}}
+      <line class="baseline" x1="{{.PlotLeft}}" x2="{{.PlotRight}}" y1="{{.PlotBottom}}" y2="{{.PlotBottom}}"></line>
+      {{range .XTicks}}
+        <text class="tick" x="{{.Pos}}" y="{{addf $.Data.Chart.PlotBottom 18}}" text-anchor="middle">{{.Label}}</text>
+      {{end}}
+      {{if .Empty}}
+        <text class="empty-note" x="{{halff .Width}}" y="{{halff .Height}}" text-anchor="middle">No measurements in this period yet.</text>
+      {{else}}
+        <path class="line in" d="{{.InPath}}"></path>
+        <path class="line out" d="{{.OutPath}}"></path>
+      {{end}}
+      <line class="crosshair" x1="0" x2="0" y1="{{.PlotTop}}" y2="{{.PlotBottom}}"></line>
+    </svg>
+    <div class="traffic-tip" role="status"></div>
+  </div>
+  <p class="muted small">Lines are each interval's average; the peak is the busiest single five-minute poll
+    within it, shown on hover and in the table. A break in a line is a period with no measurement &mdash; the
+    router was not answering or the poller was not running &mdash; never drawn across as if traffic carried on.</p>
+
+  {{if .Points}}
+  <details>
+    <summary>Show as a table</summary>
+    <table>
+      <thead><tr><th>Interval starting</th><th class="right">In (avg)</th><th class="right">In (peak)</th>
+        <th class="right">Out (avg)</th><th class="right">Out (peak)</th></tr></thead>
+      <tbody>
+      {{range .Points}}
+        <tr><td>{{.At}}</td><td class="right num">{{.InAvg}}</td><td class="right num">{{.InPeak}}</td>
+          <td class="right num">{{.OutAvg}}</td><td class="right num">{{.OutPeak}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+  </details>
+  {{end}}
+  {{end}}
+</div>
+{{end}}
+
+<div class="card">
+  <h3>Interfaces</h3>
+  <table>
+    <thead><tr><th>Interface</th><th>Status</th><th class="right">Speed</th><th class="right">In now</th><th class="right">Out now</th><th></th></tr></thead>
+    <tbody>
+    {{range $d.Interfaces}}
+      <tr{{if and $d.Selected (eq .ID $d.Selected.ID)}} aria-current="true"{{end}}>
+        <td>{{.Name}}{{if .Alias}}<br><span class="muted small">{{.Alias}}</span>{{end}}</td>
+        <td>{{with .OperUp}}{{if .}}<span class="pill ok">up</span>{{else}}<span class="pill neutral">down</span>{{end}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="right num">{{with .SpeedMbps}}{{mbps .}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        {{if .HasHC}}
+          <td class="right num">{{if .LatestAt}}{{bps .LatestInBps}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td class="right num">{{if .LatestAt}}{{bps .LatestOutBps}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td class="right"><a href="?range={{$d.Range.Key}}&if={{.ID}}">Graph</a></td>
+        {{else}}
+          <td colspan="3" class="muted small">No 64-bit counters reported, so it cannot be graphed reliably.</td>
+        {{end}}
+      </tr>
+    {{else}}
+      <tr><td colspan="6" class="empty">{{if $d.Router.Enabled}}No interfaces yet. {{$d.PollerNote}}{{else}}Turn on monitoring below to see this router's interfaces.{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="muted small">PPPoE and other per-session interfaces are left out on purpose: on a router serving
+    subscribers there is one per connected customer, and per-customer usage is already recorded from RADIUS.</p>
+</div>
+
+<div class="card">
+  <h3>Monitoring settings</h3>
+  <form method="post" action="/staff/network/traffic/{{$d.Router.NASID}}/snmp" class="formgrid">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label><input type="checkbox" name="snmp_enabled" {{if $d.Router.Enabled}}checked{{end}}> Poll this router</label>
+    <label>SNMP community
+      <input name="snmp_community" type="password" autocomplete="off"
+             placeholder="{{if $d.Router.HasCommunity}}Stored — leave blank to keep it{{else}}The router's read-only community{{end}}"
+             {{if not $d.CanEncrypt}}disabled{{end}}>
+    </label>
+    <label>SNMP port
+      <input name="snmp_port" inputmode="numeric" value="{{$d.Router.Port}}">
+    </label>
+    <button type="submit" class="primary">Save</button>
+  </form>
+  {{if not $d.CanEncrypt}}<p class="alert warn">No encryption key is configured on this deployment, so a community cannot be stored.</p>{{end}}
+  <p class="muted small">SNMPv2c. Give the router a <em>read-only</em> community limited to this server's address: on
+    most routers a community grants the whole configuration tree, not just counters. It is stored encrypted and
+    never shown again. On MikroTik: <code>/snmp community add name=&lt;community&gt; addresses=&lt;this server&gt;
+    read-access=yes write-access=no</code> and <code>/snmp set enabled=yes</code>.</p>
+</div>
+{{end}}

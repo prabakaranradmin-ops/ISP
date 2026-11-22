@@ -1269,3 +1269,56 @@ test.describe('Captive portal branding (FR-HSP-004)', () => {
     await expect(page.getByRole('button', { name: 'Remove logo' })).toHaveCount(0);
   });
 });
+
+test.describe('NAS interface traffic (FR-NET-006)', () => {
+  // TEST-NET-2, never a reachable router. The last octet varies per run
+  // because nas_devices.ip is unique.
+  const ip = `198.51.100.${(Date.now() % 250) + 1}`;
+
+  test('the traffic screens are reached from the Network Map, and only by network roles', async ({ page }) => {
+    await signIn(page, 'noc');
+    await page.goto('/staff/network');
+    await page.getByRole('link', { name: 'Interface traffic' }).click();
+    await expect(page.getByRole('heading', { name: 'Interface traffic', level: 1 })).toBeVisible();
+
+    await signIn(page, 'billing');
+    expect((await page.goto('/staff/network/traffic'))?.status()).toBe(403);
+  });
+
+  // The operator's path to monitoring a router, through the real forms: add
+  // the router, open its traffic page, try to turn monitoring on without a
+  // community, then with one. Graph data needs a router answering SNMP, which
+  // this machine does not have; the poller is proven end to end against an
+  // SNMP agent in internal/db, and the graph's rendering in internal/staffui.
+  test('a router is added and its monitoring turned on through the console', async ({ page }) => {
+    await signIn(page, 'noc');
+    await page.goto('/staff/nas');
+    const add = page.locator('form[action="/staff/nas/new"]');
+    await add.locator('input[name="ip"]').fill(ip);
+    await add.locator('input[name="description"]').fill('E2E traffic router');
+    await add.locator('input[name="radius_secret"]').fill('e2e-traffic-secret-0123456789');
+    await add.getByRole('button', { name: 'Register device' }).click();
+    await expect(page.locator('tbody tr', { hasText: ip })).toHaveCount(1);
+
+    await page.goto('/staff/network/traffic');
+    await page.locator('tbody tr', { hasText: ip }).getByRole('link', { name: 'Open' }).click();
+    await expect(page.getByRole('heading', { name: `Traffic — ${ip}` })).toBeVisible();
+    await expect(page.getByText(/Monitoring is off for this router/)).toBeVisible();
+
+    const settings = page.locator(`form[action$="/snmp"]`);
+    await settings.getByLabel('Poll this router').check();
+    await settings.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText(/Enter the router's SNMP community/)).toBeVisible();
+
+    await settings.getByLabel('Poll this router').check();
+    await settings.locator('input[name="snmp_community"]').fill('e2e-ro-community');
+    await settings.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText('Monitoring settings saved.')).toBeVisible();
+    await expect(page.getByText(/Waiting for the first poll/)).toBeVisible();
+    // Stored, and never shown again.
+    await expect(settings.locator('input[name="snmp_community"]'))
+      .toHaveAttribute('placeholder', /Stored — leave blank to keep it/);
+    expect(await page.content()).not.toContain('e2e-ro-community');
+    await snap(page, 'traffic-router-waiting');
+  });
+});

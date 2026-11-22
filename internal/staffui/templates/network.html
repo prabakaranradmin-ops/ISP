@@ -1,7 +1,7 @@
 {{define "content"}}
 {{$d := .Data}}
 <h1>Network Map</h1>
-<p class="muted">The registered NAS estate at a glance &mdash; every router, and how many sessions are live on it right now. Add or edit devices from Routers; this is a read-only view.</p>
+<p class="muted">The registered NAS estate at a glance &mdash; every router, and how many sessions are live on it right now. Add or edit devices from Routers; this is a read-only view. <a href="/staff/network/traffic">Interface traffic</a> graphs each router's ports.</p>
 
 <div class="grid3">
   <div class="card"><h3>{{$d.TotalOnline}}</h3><p class="muted">subscribers online, across all devices</p></div>
@@ -10,7 +10,7 @@
 
 <div class="card">
   <table>
-    <thead><tr><th>ID</th><th>IP</th><th>Vendor</th><th>Description</th><th class="right">Active sessions</th><th>Status</th></tr></thead>
+    <thead><tr><th>ID</th><th>IP</th><th>Vendor</th><th>Description</th><th class="right">Active sessions</th><th>Status</th><th></th></tr></thead>
     <tbody>
     {{range $d.Devices}}
       <tr>
@@ -20,9 +20,10 @@
         <td>{{if .Description}}{{.Description}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
         <td class="right num">{{.ActiveSessions}}</td>
         <td>{{if .ActiveSessions}}<span class="pill ok">active</span>{{else}}<span class="pill neutral">idle</span>{{end}}</td>
+        <td class="right"><a href="/staff/network/traffic/{{.ID}}">Traffic</a></td>
       </tr>
     {{else}}
-      <tr><td colspan="6" class="empty">No NAS devices registered yet &mdash; add one from Routers.</td></tr>
+      <tr><td colspan="7" class="empty">No NAS devices registered yet &mdash; add one from Routers.</td></tr>
     {{end}}
     </tbody>
   </table>

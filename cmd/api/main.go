@@ -470,6 +470,9 @@ func run(ctx context.Context) error {
 		// Through the API handler for the same reason as Vendors: a change to
 		// what strangers see on the captive portal is audited one way.
 		PortalBranding: apiHandler,
+		// Same *db.NASStore as NAS above; the poller writing to it runs in
+		// radiusd (FR-NET-006).
+		Traffic: database.NAS(),
 		// Same *db.LedgerStore instance already wired for internal/api.
 		GeneralLedger: database.Ledger(),
 		// Same *db.HotspotStore instance already wired for internal/api.

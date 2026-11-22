@@ -6,6 +6,7 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20250403032234-65de8f5d025b
 	github.com/chromedp/chromedp v0.13.7
 	github.com/golang-jwt/jwt/v5 v5.2.0
+	github.com/gosnmp/gosnmp v1.42.1
 	github.com/jackc/pgx/v5 v5.5.5
 	github.com/pressly/goose/v3 v3.19.2
 	github.com/prometheus/client_golang v1.18.0

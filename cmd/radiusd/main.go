@@ -36,6 +36,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	"github.com/maaransoft/isp-bss-oss/internal/hotspot"
 	"github.com/maaransoft/isp-bss-oss/internal/nas"
+	"github.com/maaransoft/isp-bss-oss/internal/nastraffic"
 	"github.com/maaransoft/isp-bss-oss/internal/notifications"
 	"github.com/maaransoft/isp-bss-oss/internal/partner"
 	"github.com/maaransoft/isp-bss-oss/internal/radius"
@@ -434,6 +435,27 @@ func run(ctx context.Context) error {
 		reconcileScheduler.Run(ctx)
 		log.Info().Msg("radiusd: revenue reconciliation scheduler stopped")
 	}()
+
+	// ── NAS interface traffic poller ────────────────────────────────────────
+
+	// Polls every router with SNMP monitoring turned on and records its
+	// interface rates (FR-NET-006). Needs the AES keystore, because each
+	// router's community is stored encrypted; without one it is not started,
+	// and says so, rather than polling with nothing.
+	if partnerKeyStore != nil {
+		keys := partnerKeyStore
+		trafficPoller := nastraffic.NewPoller(database.NAS(), nastraffic.NewGoSNMPClient(),
+			func(ct string) (string, error) { return crypto.Decrypt(ct, keys) })
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			log.Info().Msg("radiusd: NAS traffic poller started")
+			trafficPoller.Run(ctx)
+			log.Info().Msg("radiusd: NAS traffic poller stopped")
+		}()
+	} else {
+		log.Warn().Msg("radiusd: AES_KEY_STORE_URL unset — NAS interface traffic is not polled, since SNMP communities are stored encrypted")
+	}
 
 	// ── SLA breach scanner ──────────────────────────────────────────────────
 

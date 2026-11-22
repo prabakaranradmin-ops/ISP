@@ -208,6 +208,14 @@ COMPONENTS=(
     # customer sees it.
     "NewBrandingCache:the saved branding reaching the captive portal (FR-HSP-004)"
     "RenderPreview:the console's preview of the branded captive portal (FR-HSP-004)"
+
+    # NAS interface traffic (FR-NET-006). The poller is the half nothing in
+    # the console would reveal missing: the screens, the settings form and
+    # every store test work with no poller at all, and every router would
+    # simply sit at "waiting for first poll" forever. buildChart is the graph
+    # itself, which the requirement names.
+    "nastraffic.NewPoller:the SNMP poller recording NAS interface traffic (FR-NET-006)"
+    "buildChart:the interface traffic graph on the console (FR-NET-006)"
 )
 
 if [ "${1:-}" = "--list" ]; then

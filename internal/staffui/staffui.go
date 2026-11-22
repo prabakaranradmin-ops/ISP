@@ -219,6 +219,8 @@ type HandlerDeps struct {
 	Vendors VendorManager
 	// PortalBranding backs the captive-portal branding screen (FR-HSP-004).
 	PortalBranding PortalBrandingManager
+	// Traffic backs the interface traffic screens under Network (FR-NET-006).
+	Traffic TrafficStore
 	// GeneralLedger backs the Ledger screen (CRD-EXP-006 Phase 1): chart of
 	// accounts, manual journal entries, trial balance, P&L, balance sheet.
 	GeneralLedger GeneralLedgerStore
@@ -326,6 +328,7 @@ type Handler struct {
 	procurement        ProcurementStore
 	vendors            VendorManager
 	portalBranding     PortalBrandingManager
+	traffic            TrafficStore
 	generalLedger      GeneralLedgerStore
 	voucherCommissions VoucherCommissionStore
 	networkHealth      NetworkHealthStore
@@ -392,6 +395,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		procurement:        deps.Procurement,
 		vendors:            deps.Vendors,
 		portalBranding:     deps.PortalBranding,
+		traffic:            deps.Traffic,
 		generalLedger:      deps.GeneralLedger,
 		voucherCommissions: deps.VoucherCommissions,
 		networkHealth:      deps.NetworkHealth,
@@ -843,6 +847,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /staff/portal-branding/logo", h.authed(
 		h.requireCSRFUpload(brandingUploadLimit, "/staff/portal-branding", h.UploadPortalLogoForm)))
 	mux.Handle("POST /staff/portal-branding/logo/clear", h.authed(h.requireCSRF(h.ClearPortalLogoForm)))
+
+	// Interface traffic (FR-NET-006), under the Network section's own gate.
+	mux.Handle("GET /staff/network/traffic", h.authed(h.Traffic))
+	mux.Handle("GET /staff/network/traffic/{id}", h.authed(h.TrafficRouter))
+	mux.Handle("POST /staff/network/traffic/{id}/snmp", h.authed(h.requireCSRF(h.SaveTrafficSettingsForm)))
 
 	mux.Handle("GET /staff/vendors", h.authed(h.Vendors))
 	mux.Handle("POST /staff/vendors", h.authed(h.requireCSRF(h.CreateVendorForm)))
