@@ -136,8 +136,34 @@ ON CONFLICT DO NOTHING;
 -- in a customer's home would after its first boot. Actions queued against it
 -- stay pending — a demo box has no real CPE to deliver them to — which is
 -- exactly what the screen says will happen.
-INSERT INTO cpe_device_types (name, vendor)
-VALUES ('EchoLife HG8245H', 'Huawei')
+-- The shared vendor master (FR-INV-004). Seeded before the device type below,
+-- because a device type now names a supplier from here rather than carrying a
+-- typed name: without a vendor row, the Inventory and Procurement forms have
+-- an empty dropdown and nothing can be purchased at all.
+--
+-- The GSTIN is checksum-valid (state code 29, Karnataka, matching the address)
+-- because internal/vendors checks the check digit: an invented one would be
+-- refused the first time somebody edited this vendor, and a demo that cannot
+-- save its own seed data is worse than no seed at all. Deliberately not the
+-- registry's published example 27AAPFU0939F1ZV, which the browser suite uses —
+-- two fixtures sharing a GSTIN collide on uq_vendors_gstin_active, and the
+-- failure reads as a broken feature rather than as two fixtures disagreeing.
+INSERT INTO vendors (name, contact_person, phone, email, gstin, address)
+VALUES ('Huawei Technologies India', 'S. Ramesh', '080-4113 2200',
+        'orders@example.com', '29AABCU9603R1ZJ', 'Bengaluru')
+ON CONFLICT DO NOTHING;
+
+-- A second, GSTIN-less vendor: the ordinary case for a local distributor
+-- entered the moment a purchase needs recording, before anybody has dug the
+-- registration number out of an invoice. Seeded so the demo shows both states
+-- of the column rather than implying a GSTIN is always present.
+INSERT INTO vendors (name, contact_person, phone)
+VALUES ('Anna Nagar Cables', 'K. Devi', '044-2812 3456 x14')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO cpe_device_types (name, vendor, vendor_id)
+SELECT 'EchoLife HG8245H', v.name, v.id
+FROM vendors v WHERE v.name = 'Huawei Technologies India'
 ON CONFLICT (name) DO NOTHING;
 
 INSERT INTO cpe_devices (device_type_id, serial_number, status, subscriber_id,

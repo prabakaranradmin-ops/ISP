@@ -81,7 +81,16 @@
         <input name="description" required placeholder="What is this for?">
       </label>
       <label>Vendor
-        <input name="vendor" required placeholder="Supplier or provider name">
+        {{if $d.Vendors}}
+        <select name="vendor_id" required>
+          <option value="">Choose a vendor&hellip;</option>
+          {{range $d.Vendors}}<option value="{{.ID}}">{{.Name}}{{if .GSTIN}} &middot; {{.GSTIN}}{{end}}</option>{{end}}
+        </select>
+        {{else}}
+        <span class="muted small">No vendors yet &mdash; add the supplier on the
+          <a href="/staff/vendors">Vendors</a> screen first. A purchase names a supplier from the shared
+          master rather than a typed name, so the same company cannot end up in the books twice.</span>
+        {{end}}
       </label>
       <label>Category
         <select name="category">

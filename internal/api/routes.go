@@ -142,6 +142,7 @@ type Handler struct {
 	reports         ReportQuerier
 	archives        ArchiveLookup
 	procurement     ProcurementQuerier
+	vendors         VendorStore
 	generalLedger   GeneralLedgerQuerier
 	// subscriberLister backs revenue.ListSubscribersHandler, which is a
 	// plain http.HandlerFunc rather than a method on Handler — so the
@@ -249,7 +250,10 @@ type HandlerDeps struct {
 	Reports         ReportQuerier
 	Archives        ArchiveLookup
 	Procurement     ProcurementQuerier
-	GeneralLedger   GeneralLedgerQuerier
+	// Vendors backs the shared supplier master both Inventory and
+	// Procurement write through (FR-INV-004).
+	Vendors       VendorStore
+	GeneralLedger GeneralLedgerQuerier
 
 	// Health serves GET /api/v1/subscribers/{id}/health (FR-OBS-004). The
 	// implementation lives in internal/health, which cannot be imported here
@@ -329,6 +333,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		reports:          deps.Reports,
 		archives:         deps.Archives,
 		procurement:      deps.Procurement,
+		vendors:          deps.Vendors,
 		generalLedger:    deps.GeneralLedger,
 		health:           deps.Health,
 
@@ -486,6 +491,25 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 		admin(http.HandlerFunc(h.ListPurchases)))
 	mux.Handle("POST /api/v1/cpe/purchases",
 		admin(http.HandlerFunc(h.RecordPurchase)))
+
+	// The shared vendor master (FR-INV-004) — one supplier row that both the
+	// CPE purchases above and the purchase orders below point at. Owner and
+	// billing_admin throughout, read included: a vendor row carries a contact
+	// person and a GSTIN, which is commercial-relationship data rather than
+	// something a technician needs to issue a router.
+	mux.Handle("GET /api/v1/vendors",
+		admin(http.HandlerFunc(h.ListVendors)))
+	mux.Handle("POST /api/v1/vendors",
+		admin(http.HandlerFunc(h.CreateVendor)))
+	mux.Handle("GET /api/v1/vendors/{id}",
+		admin(http.HandlerFunc(h.GetVendor)))
+	mux.Handle("PATCH /api/v1/vendors/{id}",
+		admin(http.HandlerFunc(h.UpdateVendor)))
+	// Retire or restore. There is no DELETE: a vendor's name and GSTIN are
+	// what purchase invoices were issued under, so the row outlives the
+	// relationship.
+	mux.Handle("POST /api/v1/vendors/{id}/active",
+		admin(http.HandlerFunc(h.SetVendorActive)))
 
 	// General procurement (CRD-EXP-007) — purchase orders for anything, not
 	// just CPE restocking above. Owner/billing_admin end to end: requesting,

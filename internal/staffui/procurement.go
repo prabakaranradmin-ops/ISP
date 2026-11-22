@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/maaransoft/isp-bss-oss/internal/procurement"
+	"github.com/maaransoft/isp-bss-oss/internal/vendors"
 	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 )
@@ -30,6 +31,11 @@ type ProcurementStore interface {
 type procurementData struct {
 	Orders       []procurement.PurchaseOrder
 	StatusFilter string
+	// Vendors are the suppliers an order may name (FR-INV-004). The form
+	// showed a text box before; it is now a dropdown off the shared master,
+	// and an empty list is what the template uses to say a vendor has to
+	// exist first.
+	Vendors []vendors.Vendor
 }
 
 // Procurement lists purchase orders and hosts the request form. Owner/
@@ -65,7 +71,11 @@ func (h *Handler) renderProcurement(w http.ResponseWriter, r *http.Request, s Se
 		return
 	}
 
-	d.Data = procurementData{Orders: orders, StatusFilter: statusFilter}
+	d.Data = procurementData{
+		Orders:       orders,
+		StatusFilter: statusFilter,
+		Vendors:      h.pickableVendors(r.Context()),
+	}
 	h.render(w, "procurement", d)
 }
 
@@ -81,10 +91,15 @@ func (h *Handler) CreatePurchaseOrderForm(w http.ResponseWriter, r *http.Request
 	}
 
 	description := strings.TrimSpace(r.PostFormValue("description"))
-	vendor := strings.TrimSpace(r.PostFormValue("vendor"))
 	category := r.PostFormValue("category")
-	if description == "" || vendor == "" {
-		h.renderProcurement(w, r, s, "", "", "Description and vendor are required.")
+	vendorID, vErr := strconv.Atoi(strings.TrimSpace(r.PostFormValue("vendor_id")))
+	if description == "" {
+		h.renderProcurement(w, r, s, "", "", "A description is required.")
+		return
+	}
+	if vErr != nil || vendorID <= 0 {
+		h.renderProcurement(w, r, s, "", "",
+			"Choose a vendor. If the supplier is not in the list, add it on the Vendors screen first.")
 		return
 	}
 	if !procurement.ValidCategory(category) {
@@ -98,10 +113,17 @@ func (h *Handler) CreatePurchaseOrderForm(w http.ResponseWriter, r *http.Request
 	}
 
 	created, err := h.procurement.CreatePurchaseOrder(r.Context(), procurement.NewPurchaseOrder{
-		Description: description, Vendor: vendor, Category: category,
+		Description: description, VendorID: vendorID, Category: category,
 		Amount: amount.StringFixed(2), RequestedBy: s.Username,
 	})
 	if err != nil {
+		// A vendor retired between the page loading and the form posting is
+		// told apart from a storage failure: the first is something the
+		// operator can act on, the second is not.
+		if msg, ok := vendorProblem(err); ok {
+			h.renderProcurement(w, r, s, "", "", msg)
+			return
+		}
 		log.Error().Err(err).Msg("staffui: create purchase order failed")
 		h.renderProcurement(w, r, s, "", "", "Could not file that purchase order.")
 		return

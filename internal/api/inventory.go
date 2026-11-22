@@ -39,7 +39,11 @@ type InventoryQuerier interface {
 // ── Device types ─────────────────────────────────────────────────────────────
 
 type createDeviceTypeRequest struct {
-	Name             string `json:"name"`
+	Name string `json:"name"`
+	// VendorID names a supplier in the shared master (FR-INV-004). Vendor is
+	// the pre-master field, still accepted as a lookup key only — see
+	// Handler.resolveVendorRef.
+	VendorID         int    `json:"vendor_id"`
 	Vendor           string `json:"vendor"`
 	ReorderThreshold *int   `json:"reorder_threshold"`
 }
@@ -56,8 +60,12 @@ func (h *Handler) CreateDeviceType(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", err.Error())
 		return
 	}
-	if req.Name == "" || req.Vendor == "" {
-		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "name and vendor are required")
+	if req.Name == "" {
+		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "name is required")
+		return
+	}
+	vendorID := h.resolveVendorRef(w, r, req.VendorID, req.Vendor)
+	if vendorID == 0 {
 		return
 	}
 	threshold := 5 // matches the column default
@@ -70,14 +78,18 @@ func (h *Handler) CreateDeviceType(w http.ResponseWriter, r *http.Request) {
 	}
 
 	created, err := h.inventory.CreateDeviceType(r.Context(), inventory.DeviceType{
-		Name: req.Name, Vendor: req.Vendor, ReorderThreshold: threshold,
+		Name: req.Name, VendorID: &vendorID, ReorderThreshold: threshold,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "ERR_CONFLICT", "a device type with that name already exists")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "create device type failed")
+		// A vendor retired between the lookup above and the insert, or one
+		// that never existed if vendor_id came straight from the client.
+		// writeVendorError covers anything else with the fallback message, so
+		// there is no case left to fall through to.
+		writeVendorError(w, err, "create device type failed")
 		return
 	}
 
@@ -307,11 +319,13 @@ func (h *Handler) GetStockLevels(w http.ResponseWriter, r *http.Request) {
 }
 
 type recordPurchaseRequest struct {
-	DeviceTypeID int    `json:"device_type_id"`
-	Vendor       string `json:"vendor"`
-	Quantity     int    `json:"quantity"`
-	UnitCost     string `json:"unit_cost"`
-	InvoiceRef   string `json:"invoice_ref"`
+	DeviceTypeID int `json:"device_type_id"`
+	// See createDeviceTypeRequest on vendor_id against vendor.
+	VendorID   int    `json:"vendor_id"`
+	Vendor     string `json:"vendor"`
+	Quantity   int    `json:"quantity"`
+	UnitCost   string `json:"unit_cost"`
+	InvoiceRef string `json:"invoice_ref"`
 }
 
 // RecordPurchase handles POST /api/v1/cpe/purchases.
@@ -326,8 +340,12 @@ func (h *Handler) RecordPurchase(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", err.Error())
 		return
 	}
-	if req.DeviceTypeID <= 0 || req.Vendor == "" {
-		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "device_type_id and vendor are required")
+	if req.DeviceTypeID <= 0 {
+		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "device_type_id is required")
+		return
+	}
+	vendorID := h.resolveVendorRef(w, r, req.VendorID, req.Vendor)
+	if vendorID == 0 {
 		return
 	}
 	if req.Quantity <= 0 {
@@ -341,12 +359,11 @@ func (h *Handler) RecordPurchase(w http.ResponseWriter, r *http.Request) {
 	}
 
 	created, err := h.inventory.RecordPurchase(r.Context(), inventory.Purchase{
-		DeviceTypeID: req.DeviceTypeID, Vendor: req.Vendor, Quantity: req.Quantity,
+		DeviceTypeID: req.DeviceTypeID, VendorID: &vendorID, Quantity: req.Quantity,
 		UnitCost: unitCost, InvoiceRef: req.InvoiceRef,
 		PurchasedBy: middleware.SubjectFromContext(r.Context()),
 	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "record purchase failed")
+	if writeVendorError(w, err, "record purchase failed") {
 		return
 	}
 

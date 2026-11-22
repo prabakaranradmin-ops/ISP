@@ -114,7 +114,16 @@
         <input name="name" required placeholder="hAP ac2">
       </label>
       <label>Vendor
-        <input name="vendor" required placeholder="MikroTik">
+        {{if $d.Vendors}}
+        <select name="vendor_id" required>
+          <option value="">Choose a vendor&hellip;</option>
+          {{range $d.Vendors}}<option value="{{.ID}}">{{.Name}}{{if .GSTIN}} &middot; {{.GSTIN}}{{end}}</option>{{end}}
+        </select>
+        {{else}}
+        <span class="muted small">No vendors yet &mdash; add the supplier on the
+          <a href="/staff/vendors">Vendors</a> screen first. A purchase names a supplier from the shared
+          master rather than a typed name, so the same company cannot end up in the books twice.</span>
+        {{end}}
       </label>
       <label>Reorder threshold
         <input name="reorder_threshold" inputmode="numeric" placeholder="5">
@@ -158,7 +167,16 @@
         </select>
       </label>
       <label>Vendor
-        <input name="vendor" required placeholder="Supplier name">
+        {{if $d.Vendors}}
+        <select name="vendor_id" required>
+          <option value="">Choose a vendor&hellip;</option>
+          {{range $d.Vendors}}<option value="{{.ID}}">{{.Name}}{{if .GSTIN}} &middot; {{.GSTIN}}{{end}}</option>{{end}}
+        </select>
+        {{else}}
+        <span class="muted small">No vendors yet &mdash; add the supplier on the
+          <a href="/staff/vendors">Vendors</a> screen first. A purchase names a supplier from the shared
+          master rather than a typed name, so the same company cannot end up in the books twice.</span>
+        {{end}}
       </label>
       <label>Quantity
         <input name="quantity" inputmode="numeric" required placeholder="20">

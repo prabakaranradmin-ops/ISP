@@ -41,8 +41,8 @@ type Config struct {
 	// fills: every notification would report success and no subscriber would
 	// ever be told anything.
 	MockGatewayURL string
-	LogFormat   string
-	LogLevel    string
+	LogFormat      string
+	LogLevel       string
 	// LogFile redirects log output to a file instead of stdout. Empty
 	// keeps the historical behaviour (stdout), which is what every
 	// container and interactive run wants. A Windows service has no
@@ -313,10 +313,10 @@ func Load(service string) (*Config, error) {
 // marker so a startup log can show what is configured without leaking values.
 func (c *Config) Redact() map[string]string {
 	return map[string]string{
-		"environment":            c.Environment,
+		"environment": c.Environment,
 		// Not redacted: it is a local address, and an operator debugging
 		// "why did nobody get the SMS" needs to see it at a glance.
-		"mock_gateway_url": c.MockGatewayURL,
+		"mock_gateway_url":       c.MockGatewayURL,
 		"log_file":               logFileOrStdout(c.LogFile),
 		"api_addr":               c.APIAddr,
 		"metrics_addr":           c.MetricsAddr,

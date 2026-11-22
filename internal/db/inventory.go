@@ -6,6 +6,7 @@ import (
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/inventory"
+	"github.com/maaransoft/isp-bss-oss/internal/vendors"
 )
 
 // InventoryStore serves CPE stock. Satisfies api.InventoryQuerier.
@@ -15,16 +16,43 @@ var _ api.InventoryQuerier = (*InventoryStore)(nil)
 
 // ── Device types ─────────────────────────────────────────────────────────────
 
+// vendorName is how every read in this file resolves a supplier: the
+// master's current name, falling back to the free text the row was written
+// with (FR-INV-004 | migration 071).
+//
+// COALESCE rather than the joined name alone, so a row the backfill could not
+// link — one whose vendor text was blank, or one a later hand-edit
+// unlinked — still shows whatever it originally said instead of going blank.
+// Losing the vendor from a purchase history is a worse outcome than showing a
+// name that is not in the master yet.
+const vendorName = `COALESCE(v.name, %s.vendor)`
+
 // CreateDeviceType registers a CPE model and its reorder point.
+//
+// The vendor is selected from the master in the same statement as the insert,
+// rather than checked first and then written: a separate check leaves a window
+// in which the vendor is retired in between, and the insert would then carry a
+// vendor the check had approved. It also means the name stored on the row is
+// the master's own, so the two can never disagree at the moment of writing.
 func (s *InventoryStore) CreateDeviceType(ctx context.Context, t inventory.DeviceType) (*inventory.DeviceType, error) {
+	if t.VendorID == nil || *t.VendorID <= 0 {
+		return nil, vendors.ErrRequired
+	}
 	const q = `
-		INSERT INTO cpe_device_types (name, vendor, reorder_threshold)
-		VALUES ($1, $2, $3)
-		RETURNING id, name, vendor, reorder_threshold, created_at`
+		INSERT INTO cpe_device_types (name, vendor, vendor_id, reorder_threshold)
+		SELECT $1, v.name, v.id, $3
+		  FROM vendors v
+		 WHERE v.id = $2 AND v.active
+		RETURNING id, name, vendor, vendor_id, reorder_threshold, created_at`
 
 	var out inventory.DeviceType
-	err := s.pool.QueryRow(ctx, q, t.Name, t.Vendor, t.ReorderThreshold).
-		Scan(&out.ID, &out.Name, &out.Vendor, &out.ReorderThreshold, &out.CreatedAt)
+	err := s.pool.QueryRow(ctx, q, t.Name, *t.VendorID, t.ReorderThreshold).
+		Scan(&out.ID, &out.Name, &out.Vendor, &out.VendorID, &out.ReorderThreshold, &out.CreatedAt)
+	if isNoRows(err) {
+		// No row inserted means the SELECT found no usable vendor — the one
+		// failure the unique-name violation below cannot explain.
+		return nil, vendorWriteFailure(ctx, s.pool, *t.VendorID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("db: create device type %q: %w", t.Name, err)
 	}
@@ -33,7 +61,11 @@ func (s *InventoryStore) CreateDeviceType(ctx context.Context, t inventory.Devic
 
 // ListDeviceTypes returns every registered CPE model.
 func (s *InventoryStore) ListDeviceTypes(ctx context.Context) ([]inventory.DeviceType, error) {
-	const q = `SELECT id, name, vendor, reorder_threshold, created_at FROM cpe_device_types ORDER BY name`
+	q := fmt.Sprintf(`
+		SELECT t.id, t.name, %s, t.vendor_id, t.reorder_threshold, t.created_at
+		  FROM cpe_device_types t
+		  LEFT JOIN vendors v ON v.id = t.vendor_id
+		 ORDER BY t.name`, fmt.Sprintf(vendorName, "t"))
 
 	rows, err := s.pool.Query(ctx, q)
 	if err != nil {
@@ -44,7 +76,8 @@ func (s *InventoryStore) ListDeviceTypes(ctx context.Context) ([]inventory.Devic
 	var out []inventory.DeviceType
 	for rows.Next() {
 		var t inventory.DeviceType
-		if err := rows.Scan(&t.ID, &t.Name, &t.Vendor, &t.ReorderThreshold, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Vendor, &t.VendorID,
+			&t.ReorderThreshold, &t.CreatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan device type: %w", err)
 		}
 		out = append(out, t)
@@ -207,15 +240,16 @@ func (s *InventoryStore) ReturnDevice(ctx context.Context, serial, newStatus str
 // three statuses through three joined subqueries would multiply rows the
 // same way the franchise P&L query had to avoid (MDS §4.10).
 func (s *InventoryStore) GetStockLevels(ctx context.Context, lowOnly bool) ([]inventory.StockLevel, error) {
-	const q = `
-		SELECT t.id, t.name, t.vendor, t.reorder_threshold,
+	q := fmt.Sprintf(`
+		SELECT t.id, t.name, %s, t.vendor_id, t.reorder_threshold,
 		       COUNT(d.id) FILTER (WHERE d.status = 'in_stock') AS in_stock,
 		       COUNT(d.id) FILTER (WHERE d.status = 'issued')   AS issued,
 		       COUNT(d.id) FILTER (WHERE d.status = 'faulty')   AS faulty
 		FROM cpe_device_types t
+		LEFT JOIN vendors v ON v.id = t.vendor_id
 		LEFT JOIN cpe_devices d ON d.device_type_id = t.id
-		GROUP BY t.id, t.name, t.vendor, t.reorder_threshold
-		ORDER BY t.name`
+		GROUP BY t.id, t.name, v.name, t.vendor, t.vendor_id, t.reorder_threshold
+		ORDER BY t.name`, fmt.Sprintf(vendorName, "t"))
 
 	rows, err := s.pool.Query(ctx, q)
 	if err != nil {
@@ -226,8 +260,8 @@ func (s *InventoryStore) GetStockLevels(ctx context.Context, lowOnly bool) ([]in
 	var out []inventory.StockLevel
 	for rows.Next() {
 		var l inventory.StockLevel
-		if err := rows.Scan(&l.DeviceTypeID, &l.DeviceType, &l.Vendor, &l.ReorderThreshold,
-			&l.InStock, &l.Issued, &l.Faulty); err != nil {
+		if err := rows.Scan(&l.DeviceTypeID, &l.DeviceType, &l.Vendor, &l.VendorID,
+			&l.ReorderThreshold, &l.InStock, &l.Issued, &l.Faulty); err != nil {
 			return nil, fmt.Errorf("db: scan stock level: %w", err)
 		}
 		l.IsLow = l.InStock <= l.ReorderThreshold
@@ -242,12 +276,19 @@ func (s *InventoryStore) GetStockLevels(ctx context.Context, lowOnly bool) ([]in
 	return out, nil
 }
 
-// RecordPurchase persists a vendor purchase record.
+// RecordPurchase persists a vendor purchase record. The vendor comes from the
+// master in the same statement as the insert — see CreateDeviceType on why
+// that is one statement and not two.
 func (s *InventoryStore) RecordPurchase(ctx context.Context, p inventory.Purchase) (*inventory.Purchase, error) {
+	if p.VendorID == nil || *p.VendorID <= 0 {
+		return nil, vendors.ErrRequired
+	}
 	const q = `
-		INSERT INTO cpe_purchases (device_type_id, vendor, quantity, unit_cost, invoice_ref, purchased_by_username)
-		VALUES ($1, $2, $3, $4::numeric, NULLIF($5,''), $6)
-		RETURNING id, device_type_id, vendor, quantity, unit_cost::text,
+		INSERT INTO cpe_purchases (device_type_id, vendor, vendor_id, quantity, unit_cost, invoice_ref, purchased_by_username)
+		SELECT $1, v.name, v.id, $3, $4::numeric, NULLIF($5,''), $6
+		  FROM vendors v
+		 WHERE v.id = $2 AND v.active
+		RETURNING id, device_type_id, vendor, vendor_id, quantity, unit_cost::text,
 		          COALESCE(invoice_ref, ''), purchased_by_username, purchased_at`
 
 	var (
@@ -255,9 +296,12 @@ func (s *InventoryStore) RecordPurchase(ctx context.Context, p inventory.Purchas
 		unitCost string
 	)
 	err := s.pool.QueryRow(ctx, q,
-		p.DeviceTypeID, p.Vendor, p.Quantity, p.UnitCost.String(), p.InvoiceRef, p.PurchasedBy,
-	).Scan(&out.ID, &out.DeviceTypeID, &out.Vendor, &out.Quantity, &unitCost,
+		p.DeviceTypeID, *p.VendorID, p.Quantity, p.UnitCost.String(), p.InvoiceRef, p.PurchasedBy,
+	).Scan(&out.ID, &out.DeviceTypeID, &out.Vendor, &out.VendorID, &out.Quantity, &unitCost,
 		&out.InvoiceRef, &out.PurchasedBy, &out.PurchasedAt)
+	if isNoRows(err) {
+		return nil, vendorWriteFailure(ctx, s.pool, *p.VendorID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("db: record purchase: %w", err)
 	}
@@ -272,12 +316,13 @@ func (s *InventoryStore) RecordPurchase(ctx context.Context, p inventory.Purchas
 // ListPurchases returns purchase history, newest first, optionally for one
 // device type.
 func (s *InventoryStore) ListPurchases(ctx context.Context, deviceTypeID *int) ([]inventory.Purchase, error) {
-	const q = `
-		SELECT id, device_type_id, vendor, quantity, unit_cost::text,
-		       COALESCE(invoice_ref, ''), purchased_by_username, purchased_at
-		FROM cpe_purchases
-		WHERE ($1::int IS NULL OR device_type_id = $1)
-		ORDER BY purchased_at DESC`
+	q := fmt.Sprintf(`
+		SELECT p.id, p.device_type_id, %s, p.vendor_id, p.quantity, p.unit_cost::text,
+		       COALESCE(p.invoice_ref, ''), p.purchased_by_username, p.purchased_at
+		FROM cpe_purchases p
+		LEFT JOIN vendors v ON v.id = p.vendor_id
+		WHERE ($1::int IS NULL OR p.device_type_id = $1)
+		ORDER BY p.purchased_at DESC`, fmt.Sprintf(vendorName, "p"))
 
 	rows, err := s.pool.Query(ctx, q, deviceTypeID)
 	if err != nil {
@@ -291,7 +336,7 @@ func (s *InventoryStore) ListPurchases(ctx context.Context, deviceTypeID *int) (
 			p        inventory.Purchase
 			unitCost string
 		)
-		if err := rows.Scan(&p.ID, &p.DeviceTypeID, &p.Vendor, &p.Quantity, &unitCost,
+		if err := rows.Scan(&p.ID, &p.DeviceTypeID, &p.Vendor, &p.VendorID, &p.Quantity, &unitCost,
 			&p.InvoiceRef, &p.PurchasedBy, &p.PurchasedAt); err != nil {
 			return nil, fmt.Errorf("db: scan purchase: %w", err)
 		}

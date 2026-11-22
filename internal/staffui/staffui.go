@@ -213,6 +213,10 @@ type HandlerDeps struct {
 	// Procurement backs the Procurement screen: general purchase orders,
 	// distinct from Inventory's CPE-restocking purchases.
 	Procurement ProcurementStore
+	// Vendors backs the Vendors screen and the supplier dropdowns on
+	// Inventory and Procurement — the master both of those write through
+	// (FR-INV-004).
+	Vendors VendorManager
 	// GeneralLedger backs the Ledger screen (CRD-EXP-006 Phase 1): chart of
 	// accounts, manual journal entries, trial balance, P&L, balance sheet.
 	GeneralLedger GeneralLedgerStore
@@ -318,6 +322,7 @@ type Handler struct {
 	approvals          ApprovalStore
 	approvalExecutor   ApprovalExecutor
 	procurement        ProcurementStore
+	vendors            VendorManager
 	generalLedger      GeneralLedgerStore
 	voucherCommissions VoucherCommissionStore
 	networkHealth      NetworkHealthStore
@@ -382,6 +387,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		approvals:          deps.Approvals,
 		approvalExecutor:   deps.ApprovalExecutor,
 		procurement:        deps.Procurement,
+		vendors:            deps.Vendors,
 		generalLedger:      deps.GeneralLedger,
 		voucherCommissions: deps.VoucherCommissions,
 		networkHealth:      deps.NetworkHealth,
@@ -584,6 +590,14 @@ var sections = []Section{
 	// Same reach as Inventory's own purchase/device-type gating: a spend
 	// decision is procurement, whatever it is being spent on.
 	{"procurement", "Procurement", "/staff/procurement",
+		[]string{"isp_owner", "billing_admin"}, false},
+	// The shared supplier master (FR-INV-004). Same reach as Procurement,
+	// reads included and deliberately not widened to the technicians who can
+	// see Inventory: a vendor row carries a contact person, a phone number
+	// and a GSTIN, which is commercial-relationship data rather than
+	// something needed to issue a router. The supplier dropdown those
+	// screens show is fed from here without giving them the screen.
+	{"vendors", "Vendors", "/staff/vendors",
 		[]string{"isp_owner", "billing_admin"}, false},
 	// Same reach as every other financial screen. Phase 1 only — see
 	// internal/staffui/ledger.go's own doc comment on what that excludes.
@@ -811,6 +825,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /staff/franchise/{id}", h.authed(h.FranchiseDetail))
 	mux.Handle("GET /staff/my-subscribers", h.authed(h.MySubscribers))
 	mux.Handle("GET /staff/my-pnl", h.authed(h.MyPnL))
+	mux.Handle("GET /staff/vendors", h.authed(h.Vendors))
+	mux.Handle("POST /staff/vendors", h.authed(h.requireCSRF(h.CreateVendorForm)))
+	mux.Handle("POST /staff/vendors/{id}", h.authed(h.requireCSRF(h.UpdateVendorForm)))
+	// Retire or restore. There is no delete route, by design — see
+	// SetVendorRetiredForm.
+	mux.Handle("POST /staff/vendors/{id}/retired", h.authed(h.requireCSRF(h.SetVendorRetiredForm)))
+
 	mux.Handle("GET /staff/procurement", h.authed(h.Procurement))
 	mux.Handle("POST /staff/procurement/new", h.authed(h.requireCSRF(h.CreatePurchaseOrderForm)))
 	mux.Handle("POST /staff/procurement/{id}/decide", h.authed(h.requireCSRF(h.DecidePurchaseOrderForm)))

@@ -231,6 +231,35 @@ settled the question in seconds.
   is what a new reference should use; migrating the old two is its own
   change, not a side effect of adding a fourth dimension.
 
+- **The FR-INV-004 vendor backfill is a guess, and the evidence for undoing
+  it is the column that now looks redundant.** Migration 071 merged the three
+  free-text vendor columns into one master by matching names
+  case-insensitively with runs of whitespace collapsed. It deliberately does
+  not merge on punctuation, so “Sri Balaji Cables” and “Sri Balaji, Cables
+  Division” are two suppliers — which is right if they are, and leaves a
+  duplicate to clean up if they are not. The reverse mistake is the dangerous
+  one: if two spellings that were merged turn out to be different companies,
+  one company's spend and input tax credit are now attributed to the other.
+  The `vendor` text column on `cpe_device_types`, `cpe_purchases` and
+  `purchase_orders` is retained for exactly this: it still holds what each row
+  originally said, and it is the only way to split a wrong merge back apart.
+  Do not drop those columns to tidy up. They are commented in the database to
+  say so.
+
+- **The vendor master may contain manufacturers as well as suppliers, and
+  nothing can tell them apart.** `cpe_device_types.vendor` was free text that
+  operators used for both — sometimes the distributor a model is bought from,
+  sometimes its make (“MikroTik”, “TP-Link”). Migration 027's own comment
+  calls it the supplier default, so FR-INV-004 links it to the master like the
+  other two, but the backfill creates a master row from whatever was typed. A
+  deployment may therefore open the Vendors screen and find manufacturer names
+  sitting beside real suppliers, with no GSTIN and no purchases behind them.
+  That is a faithful reflection of what the data said, not a migration defect,
+  and it is a cleanup an operator does by retiring the rows that are not
+  companies they pay. If the distinction ever needs to be held properly, it is
+  a `manufacturer` column on `cpe_device_types` separate from `vendor_id`, not
+  a second kind of row in `vendors`.
+
 - **A ticket rating has no history: re-rating overwrites.** FR-SUP-004 keeps
   the score, its timestamp and its comment as columns on `tickets`, so
   changing a rating replaces it and there is no record of what it was before.

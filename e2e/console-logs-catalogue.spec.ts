@@ -1008,3 +1008,160 @@ test.describe('Report catalogue (FR-RPT-004)', () => {
     expect((await page.goto('/staff/reports/tax-charged.csv'))?.status()).toBe(403);
   });
 });
+
+test.describe('The shared vendor master (FR-INV-004)', () => {
+  // Unique per run: the name index is partial on active, so a leftover live
+  // vendor from an earlier run would make the create collide rather than fail
+  // on anything this test is about.
+  const vendorName = `E2E Cables ${Date.now()}`;
+
+  test('the screen loads over HTTP and refuses a role that should not reach it', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/vendors');
+    await expect(page.getByRole('heading', { name: 'Vendors', level: 1 })).toBeVisible();
+
+    // A technician can reach Inventory but must not reach the master: a
+    // vendor row carries a contact person, a phone number and a GSTIN, which
+    // is commercial-relationship data rather than anything needed to issue a
+    // router. Both halves asserted, because the interesting claim is that the
+    // two screens have different reach.
+    await signIn(page, 'tech');
+    expect((await page.goto('/staff/inventory'))?.status()).toBe(200);
+    expect((await page.goto('/staff/vendors'))?.status()).toBe(403);
+  });
+
+  // The whole feature in one pass, because what no Go test can show is that
+  // the vendor screen, the Inventory purchase form and the Procurement order
+  // form all agree on the same master row — and that a rename reaches all of
+  // them at once, which is the requirement itself.
+  test('a vendor is added, offered to both purchase forms, and a rename reaches every screen', async ({ page }) => {
+    await signIn(page, 'owner');
+    await page.goto('/staff/vendors');
+
+    // Retire anything this test left behind on an earlier run. The name is
+    // unique per run, but the GSTIN below cannot be — generating a valid one
+    // needs the check-digit algorithm, and a test that reimplemented the thing
+    // it is testing would pass against a wrong implementation. Both unique
+    // indexes are partial on active, so retiring the leftovers frees the
+    // GSTIN, which is also exactly the cleanup an operator would do.
+    for (let i = 0; i < 10; i++) {
+      // Unanchored: hasText matches the row's whole text content, which starts
+      // with the whitespace the template indents the cell with, so /^E2E/
+      // never matches and the cleanup would silently do nothing.
+      const stale = page.locator('tbody tr', { hasText: /E2E (Cables|Shape)/ })
+        .locator('form[action$="/retired"]')
+        .getByRole('button', { name: 'Retire' });
+      if ((await stale.count()) === 0) break;
+      await stale.first().click();
+      await expect(page.getByText(/Vendor retired/)).toBeVisible();
+    }
+
+    // The GSTIN is the registry's published example, which is checksum-valid.
+    const add = page.locator('form[action="/staff/vendors"]');
+    await add.locator('input[name="name"]').fill(vendorName);
+    await add.locator('input[name="contact_person"]').fill('R. Kumar');
+    await add.locator('input[name="phone"]').fill('044-2812 3456 x14');
+    await add.locator('input[name="gstin"]').fill('27AAPFU0939F1ZV');
+    await add.getByRole('button', { name: 'Add vendor' }).click();
+    await expect(page.getByText(/Vendor added/)).toBeVisible();
+
+    const row = page.locator('tbody tr', { hasText: vendorName });
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText('27AAPFU0939F1ZV');
+    await snap(page, 'vendors-master');
+
+    // It is now offered on both purchase forms — as an option in a dropdown,
+    // not a text box. This is the half of the requirement an operator
+    // notices.
+    await page.goto('/staff/inventory');
+    const invPicker = page.locator('select[name="vendor_id"]').first();
+    await expect(invPicker).toBeVisible();
+    await expect(invPicker.locator('option', { hasText: vendorName })).toHaveCount(1);
+    await expect(page.locator('input[name="vendor"]')).toHaveCount(0);
+
+    await page.goto('/staff/procurement');
+    const poPicker = page.locator('select[name="vendor_id"]');
+    await expect(poPicker).toBeVisible();
+    await expect(poPicker.locator('option', { hasText: vendorName })).toHaveCount(1);
+    await expect(page.locator('input[name="vendor"]')).toHaveCount(0);
+
+    // File a purchase order against it, so there is a row whose vendor name
+    // the rename below has to reach.
+    const poForm = page.locator('form[action="/staff/procurement/new"]');
+    const poDescription = `E2E order ${Date.now()}`;
+    await poForm.locator('input[name="description"]').fill(poDescription);
+    // By the option's value rather than its label: the label carries the
+    // GSTIN after the name ("Chennai Networks · 27AAPFU0939F1ZV"), so there is
+    // no exact label to match, and selectOption's label option takes a string
+    // rather than a pattern.
+    const vendorOption = await poForm
+      .locator('select[name="vendor_id"] option', { hasText: vendorName })
+      .getAttribute('value');
+    expect(vendorOption).toBeTruthy();
+    await poForm.locator('select[name="vendor_id"]').selectOption(vendorOption!);
+    await poForm.locator('input[name="amount"]').fill('4000.00');
+    await poForm.getByRole('button', { name: /File|Submit|Request/i }).first().click();
+    await expect(page.getByText(/filed for approval/)).toBeVisible();
+    await expect(page.locator('tbody tr', { hasText: poDescription })).toContainText(vendorName);
+
+    // Now correct the name in one place. The order filed above must show the
+    // new name without being touched — that is what holding the vendor in one
+    // place buys, and nothing below the browser can demonstrate it.
+    const renamed = `${vendorName} Pvt Ltd`;
+    await page.goto('/staff/vendors');
+    // The edit link carries the id, and the edit form posts to exactly
+    // /staff/vendors/<id>. Matched on the full action rather than a prefix:
+    // every row's retire form is also /staff/vendors/<id>/..., so a prefix
+    // match plus .first() lands on one of those, which has no name field.
+    const editLink = page.locator('tbody tr', { hasText: vendorName })
+      .locator('a[href*="/staff/vendors?edit="]');
+    const editHref = await editLink.getAttribute('href');
+    const vendorId = editHref!.split('=')[1];
+    await editLink.click();
+
+    const edit = page.locator(`form[action="/staff/vendors/${vendorId}"]`);
+    await edit.locator('input[name="name"]').fill(renamed);
+    await edit.getByRole('button', { name: 'Save vendor' }).click();
+    await expect(page.getByText(/Vendor saved/)).toBeVisible();
+
+    await page.goto('/staff/procurement');
+    await expect(page.locator('tbody tr', { hasText: poDescription })).toContainText(renamed);
+
+    // And retiring it takes it out of the pickers while leaving that order
+    // showing it — the difference between retiring and deleting.
+    await page.goto('/staff/vendors');
+    await page.locator('tbody tr', { hasText: renamed })
+      .locator('form[action$="/retired"]').getByRole('button', { name: 'Retire' }).click();
+    await expect(page.getByText(/Vendor retired/)).toBeVisible();
+
+    await page.goto('/staff/procurement');
+    await expect(page.locator('tbody tr', { hasText: poDescription })).toContainText(renamed);
+    await expect(page.locator('select[name="vendor_id"] option', { hasText: renamed })).toHaveCount(0);
+  });
+
+  // The checksum, through a real form. A transposed pair of digits is still a
+  // perfectly well-shaped GSTIN, so the format check cannot see it — and a
+  // wrong GSTIN on a purchase invoice means the input tax credit is denied.
+  test('a GSTIN with a mistyped character is refused with a message that says why', async ({ page }) => {
+    await signIn(page, 'billing');
+    await page.goto('/staff/vendors');
+
+    const add = page.locator('form[action="/staff/vendors"]');
+    await add.locator('input[name="name"]').fill(`E2E Checksum ${Date.now()}`);
+    await add.locator('input[name="gstin"]').fill('27AAPFU0939F1ZA');
+    await add.getByRole('button', { name: 'Add vendor' }).click();
+
+    await expect(page.getByText(/check digit/)).toBeVisible();
+
+    // And the two GSTIN failures must read differently. The refusal redirects
+    // to an empty form, so the name goes in again — a form that kept the
+    // rejected input would be friendlier, but it does not, and a test that
+    // assumed otherwise would fail on "a vendor name is required" and look
+    // like a GSTIN bug.
+    const retry = page.locator('form[action="/staff/vendors"]');
+    await retry.locator('input[name="name"]').fill(`E2E Shape ${Date.now()}`);
+    await retry.locator('input[name="gstin"]').fill('NOTAGSTIN');
+    await retry.getByRole('button', { name: 'Add vendor' }).click();
+    await expect(page.getByText(/15 characters/)).toBeVisible();
+  });
+});

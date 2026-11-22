@@ -20,9 +20,9 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 	}{
 		// Dashboard leads every ISP-wide list because Home redirects to the
 		// first allowed section; that order is part of what is pinned here.
-		{"isp_owner", true, []string{"dashboard", "subscribers", "leads", "billing", "tickets", "invoices", "revenue", "catalogue", "products", "bandwidth", "groups", "fair-use", "sessions", "cpe", "nas", "ip-pools", "auth-log", "plan-attributes", "network", "lea", "demo", "accounts", "documents", "audit", "franchise", "procurement", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "collections", "inventory", "reports", "announcements", "logs", "tasks"}},
+		{"isp_owner", true, []string{"dashboard", "subscribers", "leads", "billing", "tickets", "invoices", "revenue", "catalogue", "products", "bandwidth", "groups", "fair-use", "sessions", "cpe", "nas", "ip-pools", "auth-log", "plan-attributes", "network", "lea", "demo", "accounts", "documents", "audit", "franchise", "procurement", "vendors", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "collections", "inventory", "reports", "announcements", "logs", "tasks"}},
 		{"noc_engineer", true, []string{"dashboard", "subscribers", "groups", "sessions", "cpe", "nas", "ip-pools", "auth-log", "plan-attributes", "network", "lea", "inventory", "logs", "tasks"}},
-		{"billing_admin", false, []string{"dashboard", "subscribers", "leads", "billing", "invoices", "catalogue", "products", "bandwidth", "groups", "fair-use", "sessions", "documents", "procurement", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "collections", "inventory", "reports", "announcements", "logs", "tasks"}},
+		{"billing_admin", false, []string{"dashboard", "subscribers", "leads", "billing", "invoices", "catalogue", "products", "bandwidth", "groups", "fair-use", "sessions", "documents", "procurement", "vendors", "ledger", "dunning", "diagnostics", "billing-runs", "gateway-log", "collections", "inventory", "reports", "announcements", "logs", "tasks"}},
 		// Catalogue is deliberately absent for csr and technician: editing a
 		// tariff re-prices every subscriber on it and a GST change alters
 		// every invoice raised afterwards, which is not reach either role
@@ -56,6 +56,16 @@ func TestFR_SEC_005_AllowedSections_MatchesTheAPIRoleMatrix(t *testing.T) {
 		// catalogue, and attaching or ending a charge, are gated again
 		// inside the screen to owner/billing (canManageProducts), so what a
 		// CSR gains here is reading, not pricing.
+		//
+		// Vendors (FR-INV-004) is owner and billing only, reads included, and
+		// deliberately narrower than Inventory beside it. A technician and a
+		// NOC engineer can both open Inventory, because issuing and returning
+		// hardware is the job in front of them; a vendor row is a supplier's
+		// contact person, phone number and GSTIN, which is the commercial
+		// relationship rather than the hardware. The supplier dropdown on the
+		// Inventory purchase form is fed from the master without giving those
+		// roles the master itself — which is why this is the one case where a
+		// screen reads data its own viewers cannot browse.
 		//
 		// Subscriber Groups (FR-GRP-001) is the widest of the Subscribers-tier
 		// screens: owner, billing, csr and noc_engineer, and absent for

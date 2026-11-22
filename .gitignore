@@ -38,6 +38,11 @@ Thumbs.db
 # Key material
 config/keys/*.json
 config/keys/*.pem
+# cmd/api issues itself a self-signed certificate into TLS_CERT_DIR on first
+# start (default ./config/tls), so anybody who has run the server locally has
+# an untracked private key sitting here. Ignored so a routine "git add -A"
+# cannot commit it.
+config/tls/
 
 # Playwright E2E (browsers and run artefacts are large and machine-specific)
 node_modules/

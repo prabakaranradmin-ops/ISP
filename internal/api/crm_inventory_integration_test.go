@@ -25,6 +25,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/crm"
 	"github.com/maaransoft/isp-bss-oss/internal/inventory"
+	"github.com/maaransoft/isp-bss-oss/internal/vendors"
 	"github.com/maaransoft/isp-bss-oss/internal/workflow"
 )
 
@@ -268,12 +269,13 @@ func (e *serialError) Error() string { return "duplicate key value violates uniq
 // ── Harness ──────────────────────────────────────────────────────────────────
 
 type crmHarness struct {
-	mux    *http.ServeMux
-	leads  *stubLeads
-	inv    *stubInventory
-	tasks  *stubFieldTasks
-	lifecy *stubLifecycle
-	appr   *stubApprovals
+	mux     *http.ServeMux
+	leads   *stubLeads
+	inv     *stubInventory
+	tasks   *stubFieldTasks
+	lifecy  *stubLifecycle
+	appr    *stubApprovals
+	vendors *stubVendors
 }
 
 func newCRMHarness(t *testing.T) *crmHarness {
@@ -281,11 +283,19 @@ func newCRMHarness(t *testing.T) *crmHarness {
 	h := &crmHarness{
 		leads: newStubLeads(), inv: newStubInventory(),
 		tasks: newStubFieldTasks(), lifecy: &stubLifecycle{}, appr: newStubApprovals(),
+		vendors: newStubVendors(),
 	}
+	// A purchase and a device type name a supplier from the shared master
+	// since FR-INV-004, so the harness seeds the one these tests buy from.
+	// Seeded rather than the tests being rewritten to send vendor_id: they
+	// send a vendor *name*, which is exactly the pre-master request shape a
+	// deployed client still sends, and keeping them that way is what proves
+	// the compatibility path resolves it instead of refusing it.
+	h.vendors.seedActive(vendors.Vendor{Name: "Ingram"})
 	handler := api.NewHandler(api.HandlerDeps{
 		DB: &stubDB{}, KYC: &stubKYC{}, Wallet: billing.NewWalletService(&stubWallet{}),
 		Leads: h.leads, Inventory: h.inv, FieldTasks: h.tasks,
-		Lifecycle: h.lifecy, Approvals: h.appr,
+		Lifecycle: h.lifecy, Approvals: h.appr, Vendors: h.vendors,
 	})
 	h.mux = http.NewServeMux()
 	handler.RegisterRoutes(h.mux, itJWTSecret)

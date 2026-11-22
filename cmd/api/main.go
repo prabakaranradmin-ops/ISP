@@ -347,9 +347,12 @@ func run(ctx context.Context) error {
 		// migration 032 with no HTTP surface serving them; Archives backs the
 		// status lookup for a queued export, which is delivered into the same
 		// archival storage FR-DOC-001 built.
-		Reports:       database.Reporting(),
-		Archives:      database.Archive(),
-		Procurement:   database.Procurement(),
+		Reports:     database.Reporting(),
+		Archives:    database.Archive(),
+		Procurement: database.Procurement(),
+		// The supplier master both Inventory and Procurement write through
+		// (FR-INV-004 | migration 071).
+		Vendors:       database.Vendors(),
 		GeneralLedger: database.Ledger(),
 		Health:        http.HandlerFunc(healthHandler.GetSubscriberHealth),
 
@@ -447,6 +450,11 @@ func run(ctx context.Context) error {
 		ApprovalExecutor: apiHandler,
 		// Same *db.ProcurementStore instance already wired for internal/api.
 		Procurement: database.Procurement(),
+		// The API handler itself, like ApprovalExecutor above: the console's
+		// vendor screen has to validate and audit exactly as the API does,
+		// because "who entered this GSTIN" is a question asked of the trail
+		// without caring which screen it came from (FR-INV-004).
+		Vendors: apiHandler,
 		// Same *db.LedgerStore instance already wired for internal/api.
 		GeneralLedger: database.Ledger(),
 		// Same *db.HotspotStore instance already wired for internal/api.

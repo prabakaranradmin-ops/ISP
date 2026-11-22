@@ -48,9 +48,15 @@ func ValidFulfilmentStatus(s string) bool {
 }
 
 // NewPurchaseOrder is a request to persist.
+//
+// VendorID replaced a free-text Vendor field in FR-INV-004: a purchase order
+// names a supplier from the shared master (internal/vendors), and there is no
+// longer any way to file one against a name typed into a box. The name stored
+// on the row comes from the master in the same statement as the insert, so it
+// cannot disagree with it.
 type NewPurchaseOrder struct {
 	Description string
-	Vendor      string
+	VendorID    int
 	Category    string
 	Amount      string // decimal string; parsed and validated by the caller
 	RequestedBy string
@@ -58,9 +64,14 @@ type NewPurchaseOrder struct {
 
 // PurchaseOrder is a stored request as an operator sees it.
 type PurchaseOrder struct {
-	ID             int        `json:"id"`
-	Description    string     `json:"description"`
+	ID          int    `json:"id"`
+	Description string `json:"description"`
+	// Vendor is the supplier's current name from the master, so correcting a
+	// misspelling there corrects every order on this screen. VendorID is the
+	// link; it is nil only for an order migration 071's backfill could not
+	// match, which means its vendor text was blank.
 	Vendor         string     `json:"vendor"`
+	VendorID       *int       `json:"vendor_id,omitempty"`
 	Category       string     `json:"category"`
 	Amount         string     `json:"amount"`
 	Status         string     `json:"status"`

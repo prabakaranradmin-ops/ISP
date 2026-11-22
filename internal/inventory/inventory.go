@@ -49,9 +49,17 @@ var (
 
 // DeviceType is a model of CPE, and the unit low-stock alerting works in.
 type DeviceType struct {
-	ID               int       `json:"id"`
-	Name             string    `json:"name"`
-	Vendor           string    `json:"vendor"`
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	// Vendor is the supplier's current name, read from the vendor master
+	// (FR-INV-004). Output only: the store takes the name from the master
+	// in the same statement as the insert, so setting this on a write has
+	// no effect — VendorID is what decides who the vendor is.
+	Vendor string `json:"vendor"`
+	// VendorID points into the vendor master. Required on every write;
+	// nil only on a row migration 071's backfill could not link, which
+	// means its free text was blank.
+	VendorID         *int      `json:"vendor_id,omitempty"`
 	ReorderThreshold int       `json:"reorder_threshold"`
 	CreatedAt        time.Time `json:"created_at"`
 }
@@ -74,11 +82,15 @@ type Device struct {
 
 // Purchase is a vendor purchase record (FR-INV-003).
 type Purchase struct {
-	ID           int             `json:"id"`
-	DeviceTypeID int             `json:"device_type_id"`
-	Vendor       string          `json:"vendor"`
-	Quantity     int             `json:"quantity"`
-	UnitCost     decimal.Decimal `json:"-"`
+	ID           int `json:"id"`
+	DeviceTypeID int `json:"device_type_id"`
+	// Vendor is the supplier's current name from the master; VendorID is the
+	// link. Same read/write split as DeviceType above — the name is output
+	// only, and the id is what a write must carry (FR-INV-004).
+	Vendor   string          `json:"vendor"`
+	VendorID *int            `json:"vendor_id,omitempty"`
+	Quantity int             `json:"quantity"`
+	UnitCost decimal.Decimal `json:"-"`
 	// UnitCostStr is the fixed-2dp rendering; money never reaches a JSON
 	// consumer as a float in this codebase (FR-BIL-002).
 	UnitCostStr  string    `json:"unit_cost"`
@@ -91,9 +103,13 @@ type Purchase struct {
 // StockLevel is one device type's current availability, and whether that has
 // fallen to its reorder point.
 type StockLevel struct {
-	DeviceTypeID     int    `json:"device_type_id"`
-	DeviceType       string `json:"device_type"`
+	DeviceTypeID int    `json:"device_type_id"`
+	DeviceType   string `json:"device_type"`
+	// Vendor is the master's current name, so a reorder decision reads the
+	// supplier's details as they stand now rather than as they were typed
+	// when the model was added (FR-INV-004).
 	Vendor           string `json:"vendor"`
+	VendorID         *int   `json:"vendor_id,omitempty"`
 	InStock          int    `json:"in_stock"`
 	Issued           int    `json:"issued"`
 	Faulty           int    `json:"faulty"`

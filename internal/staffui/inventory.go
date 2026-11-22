@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/maaransoft/isp-bss-oss/internal/inventory"
+	"github.com/maaransoft/isp-bss-oss/internal/vendors"
 	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 )
@@ -39,6 +40,11 @@ type inventoryData struct {
 	DeviceTypes  []inventory.DeviceType
 	Purchases    []inventory.Purchase
 	StatusFilter string
+	// Vendors are the suppliers a device type or a purchase may name
+	// (FR-INV-004). Both forms showed a text box before; they are now
+	// dropdowns off the shared master, and an empty list is what the
+	// template uses to say a vendor has to exist first.
+	Vendors []vendors.Vendor
 	// ShowProcurement gates the "Add device type" and "Record purchase"
 	// forms: per the original gap analysis, purchases and catalogue changes
 	// are procurement decisions that stay with billing_admin/isp_owner,
@@ -108,6 +114,7 @@ func (h *Handler) renderInventory(w http.ResponseWriter, r *http.Request, s Sess
 		DeviceTypes:     types,
 		Purchases:       purchases,
 		StatusFilter:    statusFilter,
+		Vendors:         h.pickableVendors(r.Context()),
 		ShowProcurement: s.Role == "isp_owner" || s.Role == "billing_admin",
 	}
 	h.render(w, "inventory", d)
@@ -131,9 +138,14 @@ func (h *Handler) CreateDeviceTypeForm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := strings.TrimSpace(r.PostFormValue("name"))
-	vendor := strings.TrimSpace(r.PostFormValue("vendor"))
-	if name == "" || vendor == "" {
-		h.renderInventory(w, r, s, "", "", "Name and vendor are required.")
+	vendorID, vErr := strconv.Atoi(strings.TrimSpace(r.PostFormValue("vendor_id")))
+	if name == "" {
+		h.renderInventory(w, r, s, "", "", "A name is required.")
+		return
+	}
+	if vErr != nil || vendorID <= 0 {
+		h.renderInventory(w, r, s, "", "",
+			"Choose a vendor. If the supplier is not in the list, add it on the Vendors screen first.")
 		return
 	}
 	threshold, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("reorder_threshold")))
@@ -143,9 +155,13 @@ func (h *Handler) CreateDeviceTypeForm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	created, err := h.inventory.CreateDeviceType(r.Context(), inventory.DeviceType{
-		Name: name, Vendor: vendor, ReorderThreshold: threshold,
+		Name: name, VendorID: &vendorID, ReorderThreshold: threshold,
 	})
 	if err != nil {
+		if msg, ok := vendorProblem(err); ok {
+			h.renderInventory(w, r, s, "", "", msg)
+			return
+		}
 		log.Error().Err(err).Str("name", name).Msg("staffui: create device type failed")
 		h.renderInventory(w, r, s, "", "", "Could not add that device type.")
 		return
@@ -267,10 +283,15 @@ func (h *Handler) RecordPurchaseForm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	deviceTypeID, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("device_type_id")))
-	vendor := strings.TrimSpace(r.PostFormValue("vendor"))
+	vendorID, vErr := strconv.Atoi(strings.TrimSpace(r.PostFormValue("vendor_id")))
 	quantity, qErr := strconv.Atoi(strings.TrimSpace(r.PostFormValue("quantity")))
-	if err != nil || deviceTypeID <= 0 || vendor == "" || qErr != nil || quantity <= 0 {
-		h.renderInventory(w, r, s, "", "", "Device type, vendor and a positive quantity are required.")
+	if err != nil || deviceTypeID <= 0 || qErr != nil || quantity <= 0 {
+		h.renderInventory(w, r, s, "", "", "Device type and a positive quantity are required.")
+		return
+	}
+	if vErr != nil || vendorID <= 0 {
+		h.renderInventory(w, r, s, "", "",
+			"Choose a vendor. If the supplier is not in the list, add it on the Vendors screen first.")
 		return
 	}
 	unitCost, err := decimal.NewFromString(strings.TrimSpace(r.PostFormValue("unit_cost")))
@@ -281,10 +302,14 @@ func (h *Handler) RecordPurchaseForm(w http.ResponseWriter, r *http.Request) {
 	invoiceRef := strings.TrimSpace(r.PostFormValue("invoice_ref"))
 
 	created, err := h.inventory.RecordPurchase(r.Context(), inventory.Purchase{
-		DeviceTypeID: deviceTypeID, Vendor: vendor, Quantity: quantity,
+		DeviceTypeID: deviceTypeID, VendorID: &vendorID, Quantity: quantity,
 		UnitCost: unitCost, InvoiceRef: invoiceRef, PurchasedBy: s.Username,
 	})
 	if err != nil {
+		if msg, ok := vendorProblem(err); ok {
+			h.renderInventory(w, r, s, "", "", msg)
+			return
+		}
 		log.Error().Err(err).Msg("staffui: record purchase failed")
 		h.renderInventory(w, r, s, "", "", "Could not record that purchase.")
 		return

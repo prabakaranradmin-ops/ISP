@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/maaransoft/isp-bss-oss/internal/procurement"
+	"github.com/maaransoft/isp-bss-oss/internal/vendors"
 )
 
 // ProcurementStore serves purchase-order requests (CRD-EXP-007).
@@ -17,7 +18,7 @@ func (d *DB) Procurement() *ProcurementStore { return &ProcurementStore{pool: d.
 func scanPurchaseOrder(row interface{ Scan(dest ...any) error }) (*procurement.PurchaseOrder, error) {
 	var po procurement.PurchaseOrder
 	var decidedBy, decisionReason *string
-	if err := row.Scan(&po.ID, &po.Description, &po.Vendor, &po.Category, &po.Amount,
+	if err := row.Scan(&po.ID, &po.Description, &po.Vendor, &po.VendorID, &po.Category, &po.Amount,
 		&po.Status, &po.RequestedBy, &decidedBy, &decisionReason,
 		&po.CreatedAt, &po.DecidedAt, &po.ReceivedAt); err != nil {
 		return nil, err
@@ -31,22 +32,55 @@ func scanPurchaseOrder(row interface{ Scan(dest ...any) error }) (*procurement.P
 	return &po, nil
 }
 
+// purchaseOrderColumns reads an order with its supplier resolved from the
+// shared vendor master (FR-INV-004 | migration 071): `o` is the order and `v`
+// the LEFT JOINed vendors row, so correcting a misspelled vendor name in the
+// master corrects it on every order at once.
+//
+// COALESCE onto o.vendor for the rows migration 071's backfill could not
+// link — an order whose vendor text was blank — so no order ever loses its
+// supplier from the screen.
+//
+// Every write below wraps its INSERT or UPDATE in a CTE and selects through
+// this list rather than using a bare RETURNING. RETURNING cannot see a joined
+// table, so it would hand back the name stored on the row instead of the
+// master's current one, and a rename would make the response to a decision
+// disagree with the list the operator is looking at.
 const purchaseOrderColumns = `
-	id, description, vendor, category, amount::text, status, requested_by,
-	decided_by, decision_reason, created_at, decided_at, received_at`
+	o.id, o.description, COALESCE(v.name, o.vendor), o.vendor_id, o.category,
+	o.amount::text, o.status, o.requested_by, o.decided_by, o.decision_reason,
+	o.created_at, o.decided_at, o.received_at`
+
+// purchaseOrderVendorJoin resolves the master for a relation aliased `o`.
+const purchaseOrderVendorJoin = ` LEFT JOIN vendors v ON v.id = o.vendor_id`
 
 // CreatePurchaseOrder files a new request, always in status 'requested' —
 // there is no way to create one pre-approved, matching the schema's own
 // default and chk_po_distinct_approver's assumption that a decision always
 // comes after the request exists.
+// The vendor is selected from the master in the same statement as the insert
+// rather than checked beforehand, so an order cannot be filed against a
+// vendor retired between the check and the write, and the name stored on the
+// row is the master's own.
 func (s *ProcurementStore) CreatePurchaseOrder(ctx context.Context, po procurement.NewPurchaseOrder) (*procurement.PurchaseOrder, error) {
+	if po.VendorID <= 0 {
+		return nil, vendors.ErrRequired
+	}
 	q := fmt.Sprintf(`
-		INSERT INTO purchase_orders (description, vendor, category, amount, requested_by)
-		VALUES ($1, $2, $3, $4::numeric, $5)
-		RETURNING %s`, purchaseOrderColumns)
+		WITH ins AS (
+			INSERT INTO purchase_orders (description, vendor, vendor_id, category, amount, requested_by)
+			SELECT $1, v.name, v.id, $3, $4::numeric, $5
+			  FROM vendors v
+			 WHERE v.id = $2 AND v.active
+			RETURNING *
+		)
+		SELECT %s FROM ins o%s`, purchaseOrderColumns, purchaseOrderVendorJoin)
 
-	row := s.pool.QueryRow(ctx, q, po.Description, po.Vendor, po.Category, po.Amount, po.RequestedBy)
+	row := s.pool.QueryRow(ctx, q, po.Description, po.VendorID, po.Category, po.Amount, po.RequestedBy)
 	created, err := scanPurchaseOrder(row)
+	if isNoRows(err) {
+		return nil, vendorWriteFailure(ctx, s.pool, po.VendorID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("db: create purchase order: %w", err)
 	}
@@ -57,9 +91,9 @@ func (s *ProcurementStore) CreatePurchaseOrder(ctx context.Context, po procureme
 // first.
 func (s *ProcurementStore) ListPurchaseOrders(ctx context.Context, status *string) ([]procurement.PurchaseOrder, error) {
 	q := fmt.Sprintf(`
-		SELECT %s FROM purchase_orders
-		WHERE ($1::text IS NULL OR status = $1::text)
-		ORDER BY created_at DESC`, purchaseOrderColumns)
+		SELECT %s FROM purchase_orders o%s
+		WHERE ($1::text IS NULL OR o.status = $1::text)
+		ORDER BY o.created_at DESC`, purchaseOrderColumns, purchaseOrderVendorJoin)
 
 	rows, err := s.pool.Query(ctx, q, status)
 	if err != nil {
@@ -80,7 +114,8 @@ func (s *ProcurementStore) ListPurchaseOrders(ctx context.Context, status *strin
 
 // GetPurchaseOrder returns one request, or nil when no such id exists.
 func (s *ProcurementStore) GetPurchaseOrder(ctx context.Context, id int) (*procurement.PurchaseOrder, error) {
-	q := fmt.Sprintf(`SELECT %s FROM purchase_orders WHERE id = $1`, purchaseOrderColumns)
+	q := fmt.Sprintf(`SELECT %s FROM purchase_orders o%s WHERE o.id = $1`,
+		purchaseOrderColumns, purchaseOrderVendorJoin)
 	po, err := scanPurchaseOrder(s.pool.QueryRow(ctx, q, id))
 	if isNoRows(err) {
 		return nil, nil
@@ -109,10 +144,14 @@ func (s *ProcurementStore) DecidePurchaseOrder(ctx context.Context, id int, appr
 		newStatus = procurement.StatusApproved
 	}
 	q := fmt.Sprintf(`
-		UPDATE purchase_orders SET
-			status = $2, decided_by = $3, decision_reason = $4, decided_at = NOW()
-		WHERE id = $1 AND status = '%s'
-		RETURNING %s`, procurement.StatusRequested, purchaseOrderColumns)
+		WITH upd AS (
+			UPDATE purchase_orders SET
+				status = $2, decided_by = $3, decision_reason = $4, decided_at = NOW()
+			WHERE id = $1 AND status = '%s'
+			RETURNING *
+		)
+		SELECT %s FROM upd o%s`,
+		procurement.StatusRequested, purchaseOrderColumns, purchaseOrderVendorJoin)
 
 	po, err := scanPurchaseOrder(s.pool.QueryRow(ctx, q, id, newStatus, decidedBy, reason))
 	if isNoRows(err) {
@@ -144,9 +183,14 @@ func (s *ProcurementStore) UpdateFulfilment(ctx context.Context, id int, status,
 		receivedAtSet = ", received_at = NOW()"
 	}
 	q := fmt.Sprintf(`
-		UPDATE purchase_orders SET status = $2%s
-		WHERE id = $1 AND status IN ('%s', '%s')
-		RETURNING %s`, receivedAtSet, procurement.StatusApproved, procurement.StatusRequested, purchaseOrderColumns)
+		WITH upd AS (
+			UPDATE purchase_orders SET status = $2%s
+			WHERE id = $1 AND status IN ('%s', '%s')
+			RETURNING *
+		)
+		SELECT %s FROM upd o%s`, receivedAtSet,
+		procurement.StatusApproved, procurement.StatusRequested,
+		purchaseOrderColumns, purchaseOrderVendorJoin)
 
 	var po *procurement.PurchaseOrder
 	err := inTx(ctx, s.pool, func(dbTx pgx.Tx) error {

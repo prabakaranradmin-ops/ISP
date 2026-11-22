@@ -101,6 +101,23 @@ var truncateOrder = []string{
 	"cpe_purchases",
 	"cpe_devices",
 	"cpe_device_types",
+	// Migration 042. Listed from migration 071 onwards, not before: nothing
+	// truncated here has ever referenced purchase_orders, so CASCADE never
+	// reached it and orders simply accumulated — harmless while the table was
+	// standalone. Now that every order holds an ON DELETE RESTRICT reference
+	// into vendors, a leaked order from one test blocks a vendor delete in
+	// another, which fails for a reason that test cannot see.
+	"purchase_orders",
+	// Migration 071, after the three tables that reference it so this slice's
+	// parents-last reading stays true. TRUNCATE ... CASCADE would take those
+	// three from here anyway (CASCADE follows the references, and ON DELETE
+	// RESTRICT does not apply to TRUNCATE), but vendors has to be listed in
+	// its own right: nothing else truncated here references it, so suppliers
+	// would accumulate across tests until two collided on
+	// uq_vendors_name_active — failing whichever test ran second rather than
+	// the one at fault, which is the exact failure subscriber_groups is
+	// listed to prevent.
+	"vendors",
 	// billing_runs has no foreign key to anything truncated here, so
 	// CASCADE would never reach it (migration 057).
 	"billing_run_failures",

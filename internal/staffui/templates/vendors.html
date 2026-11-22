@@ -1,0 +1,127 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Vendors</h1>
+
+<p class="muted">One row per supplier, shared by <a href="/staff/inventory">Inventory</a> and
+  <a href="/staff/procurement">Procurement</a>. Both of those screens used to take the vendor as typed
+  text, so the same supplier spelled two ways was two suppliers to every report, and there was nowhere to
+  keep a GSTIN &mdash; the number that decides whether input tax credit can be claimed on a purchase
+  invoice.</p>
+<p class="muted">Editing a vendor here changes it everywhere at once: correcting a misspelling or a
+  registration number fixes every purchase and order already recorded against it, which is the point of
+  holding it in one place.</p>
+
+{{with $d}}
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Vendor</th><th>Contact</th><th>GSTIN</th>
+      <th class="right">Device types</th><th class="right">Purchases</th><th class="right">Orders</th>
+      <th class="right">Spend</th><th></th>
+    </tr></thead>
+    <tbody>
+    {{range .Vendors}}
+      <tr{{if not .Active}} class="retired"{{end}}>
+        <td>
+          {{.Name}}
+          {{if not .Active}}<br><span class="pill neutral">retired</span>{{end}}
+          {{if .Address}}<br><span class="muted small">{{.Address}}</span>{{end}}
+        </td>
+        <td class="small">
+          {{if .ContactPerson}}{{.ContactPerson}}{{end}}
+          {{if .Phone}}{{if .ContactPerson}}<br>{{end}}{{.Phone}}{{end}}
+          {{if .Email}}<br><span class="muted">{{.Email}}</span>{{end}}
+          {{if not (or .ContactPerson .Phone .Email)}}<span class="muted">&mdash;</span>{{end}}
+        </td>
+        <td class="small mono">
+          {{if .GSTIN}}{{.GSTIN}}{{else}}<span class="muted">not recorded</span>{{end}}
+        </td>
+        <td class="num right">{{.Usage.DeviceTypes}}</td>
+        <td class="num right">{{.Usage.Purchases}}</td>
+        <td class="num right">{{.Usage.PurchaseOrders}}</td>
+        <td class="num right">{{.Usage.SpendStr}}</td>
+        <td class="actions">
+          <a href="/staff/vendors?edit={{.ID}}">Edit</a>
+          <form method="post" action="/staff/vendors/{{.ID}}/retired" class="inline">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="hidden" name="retired" value="{{if .Active}}true{{else}}false{{end}}">
+            <button type="submit">{{if .Active}}Retire{{else}}Offer again{{end}}</button>
+          </form>
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="8" class="empty">
+        No vendors yet. A CPE purchase and a purchase order both name one, so add the supplier here first.
+      </td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="muted small">Spend is the cost of this vendor's CPE purchases plus the amount of every purchase
+    order that reached <em>received</em>. A requested or rejected order is not money that went anywhere, so
+    it is left out &mdash; counting it would make this column disagree with the general ledger for every
+    order still awaiting a decision, which is exactly when somebody would be reading it.</p>
+  <p class="muted small">Retired vendors are listed last rather than hidden: they are where the duplicates
+    to merge and the GSTINs to correct are, and a screen that hid them would hide the work. A vendor is
+    never deleted &mdash; its name and GSTIN are what its invoices were issued under, so the row outlives
+    the relationship.</p>
+</div>
+
+<div class="card">
+  {{if .Editing}}
+    <h3>Edit {{.Editing.Name}}</h3>
+    <form method="post" action="/staff/vendors/{{.Editing.ID}}" class="formgrid">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+      <label>Name <input name="name" value="{{.Editing.Name}}" required maxlength="200"></label>
+      <label>Contact person <input name="contact_person" value="{{.Editing.ContactPerson}}" maxlength="200"></label>
+      <label>Phone <input name="phone" value="{{.Editing.Phone}}" maxlength="30"></label>
+      <label>Email <input name="email" type="email" value="{{.Editing.Email}}" maxlength="255"></label>
+      <label>GSTIN <input name="gstin" value="{{.Editing.GSTIN}}" maxlength="15" placeholder="27AAPFU0939F1ZV"></label>
+      <label>Address <input name="address" value="{{.Editing.Address}}"></label>
+      <label>Notes <input name="notes" value="{{.Editing.Notes}}"></label>
+      <button type="submit" class="primary">Save vendor</button>
+      <a href="/staff/vendors">Cancel</a>
+    </form>
+    <p class="muted small">Every field is replaced, including the ones left empty &mdash; that is how a
+      contact who has left the supplier gets removed.</p>
+  {{else}}
+    <h3>Add a vendor</h3>
+    <form method="post" action="/staff/vendors" class="formgrid">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+      <label>Name <input name="name" placeholder="Chennai Networks Pvt Ltd" required maxlength="200"></label>
+      <label>Contact person <input name="contact_person" placeholder="R. Kumar" maxlength="200"></label>
+      <label>Phone <input name="phone" placeholder="044-2812 3456 x14" maxlength="30"></label>
+      <label>Email <input name="email" type="email" placeholder="kumar@example.com" maxlength="255"></label>
+      <label>GSTIN <input name="gstin" placeholder="27AAPFU0939F1ZV" maxlength="15"></label>
+      <label>Address <input name="address" placeholder="Where their invoices come from"></label>
+      <label>Notes <input name="notes" placeholder="Payment terms, who to chase, anything the next person needs"></label>
+      <button type="submit" class="primary">Add vendor</button>
+    </form>
+  {{end}}
+</div>
+
+<div class="card">
+  <h3>About the GSTIN</h3>
+  <p class="muted small">Optional, and deliberately so: a vendor gets added the moment somebody needs to
+    record a purchase from them, which is reliably before anyone has dug the registration number out of an
+    invoice. Demanding it up front would mean either a blocked purchase or an invented number &mdash; and an
+    invented one is worse than none, because it would look authoritative in the master and be claimed
+    against a registration that does not exist.</p>
+  <p class="muted small">What is entered is checked twice: that it is fifteen characters in the shape the
+    registry issues, and that its last character matches the checksum of the other fourteen. The second
+    catch is the useful one &mdash; a transposed pair of digits is still a perfectly well-shaped GSTIN, and
+    the only moment that mistake is cheap to fix is while the invoice is still in your hand.</p>
+  <p class="muted small">Two live vendors cannot share a GSTIN, because a GSTIN is one legal entity. If the
+    system refuses one on those grounds, the other row is the same company under a different spelling, and
+    merging them is the work this screen exists for.</p>
+</div>
+
+<div class="card">
+  <h3>Phone numbers here are not validated</h3>
+  <p class="muted small">Unlike a subscriber's or a franchise partner's, which have to be E.164 because the
+    notification pipeline dials and texts them. Nothing in this system ever contacts a vendor, so the only
+    reader is a person with the phone in their hand &mdash; and a supplier's number is routinely a landline
+    with an extension, which E.164 cannot express. Constraining it would refuse correct data to serve a
+    purpose this field does not have.</p>
+</div>
+{{end}}
+{{end}}

@@ -33,9 +33,14 @@ type ProcurementQuerier interface {
 
 type createPurchaseOrderRequest struct {
 	Description string `json:"description"`
-	Vendor      string `json:"vendor"`
-	Category    string `json:"category"`
-	Amount      string `json:"amount"`
+	// VendorID names a supplier in the shared master (FR-INV-004). Vendor is
+	// the pre-master field, still accepted as a lookup key only: see
+	// Handler.resolveVendorRef on why an unknown name is refused rather than
+	// created.
+	VendorID int    `json:"vendor_id"`
+	Vendor   string `json:"vendor"`
+	Category string `json:"category"`
+	Amount   string `json:"amount"`
 }
 
 // CreatePurchaseOrder handles POST /api/v1/procurement/orders.
@@ -50,8 +55,12 @@ func (h *Handler) CreatePurchaseOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", err.Error())
 		return
 	}
-	if req.Description == "" || req.Vendor == "" {
-		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "description and vendor are required")
+	if req.Description == "" {
+		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "description is required")
+		return
+	}
+	vendorID := h.resolveVendorRef(w, r, req.VendorID, req.Vendor)
+	if vendorID == 0 {
 		return
 	}
 	if !procurement.ValidCategory(req.Category) {
@@ -65,11 +74,12 @@ func (h *Handler) CreatePurchaseOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	created, err := h.procurement.CreatePurchaseOrder(r.Context(), procurement.NewPurchaseOrder{
-		Description: req.Description, Vendor: req.Vendor, Category: req.Category,
+		Description: req.Description, VendorID: vendorID, Category: req.Category,
 		Amount: amount.StringFixed(2), RequestedBy: middleware.SubjectFromContext(r.Context()),
 	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "create purchase order failed")
+	if writeVendorError(w, err, "create purchase order failed") {
+		// A vendor retired between the lookup above and the insert, or one
+		// that never existed if vendor_id came straight from the client.
 		return
 	}
 

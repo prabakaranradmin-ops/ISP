@@ -179,6 +179,25 @@ COMPONENTS=(
     # the part that could exist with no caller — a rating form nobody can
     # reach is a feature that looks built and collects nothing.
     "RateTicket:subscribers rating their own resolved tickets (FR-SUP-004)"
+
+    # The shared vendor master (FR-INV-004). Three symbols, because the
+    # requirement has three halves that can each be built and left
+    # unreachable, and two of them would look finished from the other.
+    #
+    # AddVendor is the console and API write path: without a caller, the
+    # master exists and nothing can be put in it.
+    #
+    # PickableVendors is the dropdown the Inventory and Procurement forms
+    # read. This is the one that would hide: a vendor master nobody can pick
+    # from leaves those forms with an empty select and no way to record a
+    # purchase at all, while every vendor test still passes.
+    #
+    # ResolveVendorByName is the JSON API's compatibility path for a client
+    # still sending a vendor name. Unwired, such a client gets "vendor_id is
+    # required" and no amount of testing the resolver notices.
+    "AddVendor:adding a supplier to the shared vendor master (FR-INV-004)"
+    "PickableVendors:the supplier dropdown on the Inventory and Procurement forms (FR-INV-004)"
+    "ResolveVendorByName:resolving a legacy vendor name against the master (FR-INV-004)"
 )
 
 if [ "${1:-}" = "--list" ]; then
