@@ -369,6 +369,10 @@ func run(ctx context.Context) error {
 		Health:         http.HandlerFunc(healthHandler.GetSubscriberHealth),
 
 		RazorpayWebhookSecret: cfg.RazorpayWebhookSecret,
+		// The subscriber-facing JSON routes verify portal tokens, which are
+		// signed with this key and not cfg.JWTSecret — the same key
+		// portalHandler and portalUIHandler below are given.
+		PortalJWTSecret: cfg.PortalJWTSecret,
 	})
 
 	portalHandler := portal.NewHandler(

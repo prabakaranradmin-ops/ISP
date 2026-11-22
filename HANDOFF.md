@@ -80,7 +80,7 @@ by one.
 |---|---|
 | Go packages | 35 total; **24 have tests** |
 | Wiring check | **33/33** components have a production caller (2026-11-21) |
-| Migrations | **68** applied (`001`–`068`) |
+| Migrations | **74** applied (`001`–`074`) |
 | Browser tests | **145**, all passing (2026-11-21) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts` and `e2e/console-logs-catalogue.spec.ts` |
 | Lint | **6** findings on default tags, **116** with `--build-tags=integration`; none introduced by recent work, all untriaged |
 | DB integration suite | ~700s in Docker, **1000-1500s on the bundled native cluster**; carry `-timeout 45m` |
@@ -212,24 +212,122 @@ settled the question in seconds.
   say so at startup rather than failing silently, but a deployment that skips
   it has no document retention at all.
 
-- **A deleted plan or franchise silently widens a *sent* announcement's
-  audience to everybody.** `announcements.segment_plan_id` and
-  `segment_franchise_id` (migration 028) are `ON DELETE SET NULL`, and a NULL
-  segment means "no restriction on this dimension". So retiring a plan is
-  safe, but *deleting* one nulls the reference on every announcement that
-  targeted it — including ones already sent — and those then show in every
-  subscriber's portal rather than the slice they were addressed to. Nobody is
-  re-notified, so this is invisible until a customer asks why they can see a
-  notice about a plan they are not on.
+- **Closed 2026-11-22 (migration 074): an announcement's reach can no longer
+  widen to everybody.** A NULL segment means "no restriction", so anything
+  that left an announcement with no segment and no list addressed it to the
+  whole base. Three routes did:
+  - **Bulk "Notify these" with the portal banner ticked** was returned to
+    *every* subscriber by the banner read — it checked only the segment, and
+    a list announcement has none: a payment reminder for three customers was
+    a banner for all. Latent only because no subscriber could fetch banners
+    at all (the endpoint checked the staff signing key — see the next
+    entry); it would have gone live the day that was fixed.
+  - **A list announcement whose recipients were deleted** —
+    `announcement_recipients` cascades, and "no recipient rows" was taken to
+    mean "segment announcement", so a draft would send to everybody.
+  - **Deleting a targeted plan or franchise** nulled the segment
+    (`ON DELETE SET NULL`), including on sent announcements. "Remove demo
+    data" deletes demo plans, so this was reachable from the console — and a
+    *draft* aimed at a demo plan, sent after removal, went to everybody.
 
-  Found while adding `segment_group_id` for FR-GRP-001, which carries
-  `ON DELETE RESTRICT` instead for exactly this reason. The existing two were
-  deliberately left alone: changing them means an `ALTER TABLE` against live
-  rows and a decision about what should happen to an announcement whose plan
-  is being deleted (refuse the delete, or keep the id and let the segment
-  read as "a plan that no longer exists"). RESTRICT is the better default and
-  is what a new reference should use; migrating the old two is its own
-  change, not a side effect of adding a fourth dimension.
+  `announcements.addressed_to_list` now records which kind an announcement
+  is, backfilled from existing recipient rows; the portal, the fan-out and
+  the console list all decide by it. The two segment keys are `RESTRICT`,
+  like `segment_group_id`; demo removal deletes the announcements addressed
+  to its demo plans itself. An announcement already widened before 074 is
+  indistinguishable from one addressed to everyone and was not repaired.
+
+  Verified by execution, not review: the five reach tests in
+  `internal/db/announcement_reach_integration_test.go` pass against a real
+  cluster at migration 74, and each of the six guards was broken deliberately
+  and confirmed to fail on the assertion it is there for — the portal's list
+  clause, the list/segment decision, each of the two `RESTRICT` keys, the
+  CHECK, demo removal's own delete, and the console's two.
+
+  **One of those controls did not fire, and that was the real finding.**
+  Removing the list/segment decision from `listExplicitRecipients` left every
+  reach test green — and silently made *every segment announcement reach
+  nobody*, which is the opposite failure and a worse one. Nothing caught it
+  because every subtest in
+  `TestFR_ANN_001_SegmentAddressesExactlyTheIntendedSubscribers` passes
+  announcement id **0** on purpose, so that no recipient row can match and
+  the segment query alone is under test; the cost is that no test resolved an
+  announcement that exists, which is where the decision is made. pgx scans
+  the empty recipient array into a non-nil empty slice rather than nil, so
+  the fall-through to the segment filters never happened and the fan-out
+  returned zero. `TestAnnouncementReach_ASegmentAnnouncementStillReachesItsSegment`
+  now resolves real ids in both directions and is the test that fails. The
+  comment at that id-0 constant also cited
+  `TestFR_ANN_001_ExplicitRecipientsOverrideSegmentFilters` as covering the
+  other path; no such test has ever existed. Both are corrected.
+
+  Also visible only by running it: without the console's guard, the send
+  confirmation for a three-recipient list read "Send ... to about 42
+  subscribers?" — the operator was told the wrong number at the one moment
+  they could still stop.
+
+  Related, not changed: "Remove demo data" deletes demo subscribers'
+  tickets, invoices and wallet entries but nothing else that references a
+  subscriber without cascading — `notification_log`, `live_sessions`,
+  session history, proformas and others. A walkthrough that left a row in any
+  of those makes removal fail as a whole (it is one transaction, so nothing
+  is half-removed); the console says "check the server log". Not verified
+  whether loading demo data on its own produces such rows.
+
+- **Closed 2026-11-22: subscribers can read portal banners and register push
+  tokens.** `GET /api/v1/announcements/portal` and `POST /api/v1/push-tokens`
+  were wrapped in `api.RegisterRoutes`'s `auth`, which verifies against
+  `JWT_SECRET`, while subscriber tokens from `POST /portal/login` are signed
+  with `PORTAL_JWT_SECRET` — and every deployment path makes those differ
+  (`cmd/bootstrap` generates both; `config.Load` derives the portal one as
+  `JWT_SECRET + "_portal"` when unset, so it can never be equal). Both routes
+  therefore 401'd every real subscriber, and FR-ANN-002's banner and
+  FR-NOTIF-013's push registration had never worked on any deployment. The
+  tests passed throughout by minting tokens with whichever secret the route
+  checked, and the banner feed had no route-level test at all — its only
+  consumer in the whole repo was the 401-walled route, so the feature was
+  reachable by no client by any path.
+
+  The two routes now verify the portal key, which `cmd/api` passes as
+  `HandlerDeps.PortalJWTSecret`. That is a new dep rather than a second
+  argument to `RegisterRoutes` on purpose: the signature has 86 test call
+  sites, and making each pass a secret twice would have rebuilt the same
+  blind spot by letting the harness use one key for both audiences.
+  `itPortalJWTSecret` is deliberately **not** `itJWTSecret`, and a control
+  that collapses them fails
+  `TestFR_ANN_002_APortalSignedTokenReachesTheBannerFeed`.
+
+  **This was also a live replay hole, not only a dead feature.** Under the
+  old wiring a subscriber-role token signed with the *staff* key was accepted
+  by the banner feed — exactly what the comment at `config.Load` says the
+  split exists to prevent ("a leaked staff token cannot be replayed against
+  subscriber endpoints, and vice versa"). Confirmed by negative control
+  (200 before, 401 now) and against a running server.
+
+  A missing portal secret now refuses these routes with
+  `ERR_PORTAL_AUTH_UNCONFIGURED` instead of being handed to the verifier: an
+  empty HMAC key verifies a token anybody can mint, and a control proved it
+  — with the guard removed, a token signed with the empty string got 200 on
+  a subscriber's feed. `cmd/api` cannot reach that state today, because
+  `JWT_SECRET` is `RequiredSecret` for the api service and the portal key
+  derives from it, so the guard is defence in depth rather than a live fix.
+  Note that the handler also answers 503 when its store is nil, so the test
+  asserts the error *code*, not the status.
+
+  Verified against a running server with the two secrets deliberately
+  different, which is the only check that proves `cmd/api` passes the right
+  config field — the unit tests drive the handler directly and would pass
+  either way. A real `test_user` token: 200 from `/portal/me` (as before),
+  and now 200 from both previously-401 routes. A staff-signed token and a
+  subscriber-role token forged with the staff key both get 401.
+
+  The same run closed migration 074 end to end, in production rather than in
+  a test: a broadcast banner and a list banner addressed only to subscriber 4
+  were both sent, and subscriber 1 saw **only** the broadcast while
+  subscriber 4 saw both. Checking the recipient too is what makes that
+  meaningful — a check that only confirmed subscriber 1's absence would have
+  passed just as well had the banner reached nobody at all, which is the
+  shape of the captive-portal anti-oracle defect in the list below.
 
 - **FR-NET-006 has never polled a real router.** This machine has no router
   and no SNMP agent, so the poller is proven only against
@@ -594,6 +692,18 @@ execution, across several sessions:
   years, deleting GST records early in a way nobody would ever notice
 - the JWT middleware answering `text/plain` while every handler answered
   JSON, making token expiry the one error a mobile client could not parse
+- two subscriber-facing routes that verified the *staff* JWT secret while
+  every real portal token is signed with the portal one, so FR-ANN-002's
+  banner feed and FR-NOTIF-013's push registration 401'd every customer on
+  every deployment and had never once worked. Their tests passed by minting
+  tokens with whichever key the route checked: a harness that uses one secret
+  for two audiences cannot tell a route that checks the right key from one
+  that checks the wrong one
+- a whole family of fan-out tests that pinned the announcement id to `0` so
+  the segment query alone was under test, and in doing so could not fail when
+  the list-or-segment decision broke and every segment announcement reached
+  nobody. The id that makes a test precise can be the id that makes it blind;
+  cover the real one too
 - a console screen (Products & Charges, FR-BIL-022) whose handler, routes,
   role gate and template file were all correct and whose name was missing
   from `staffui.pageNames`, so the page answered 500 while the whole Go

@@ -22,16 +22,35 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/notifications"
 )
 
+// itPortalJWTSecret is the key the portal signs subscriber tokens with, and
+// it must never equal itJWTSecret.
+//
+// Production always separates the two — config.Load derives
+// PORTAL_JWT_SECRET as JWT_SECRET+"_portal" when it is unset — so a harness
+// that uses one secret for both cannot tell a route that verifies the right
+// key from one that verifies the wrong one. That is precisely how the
+// subscriber routes shipped broken: they checked the staff key, every real
+// subscriber got a 401, and these tests passed throughout because they minted
+// their tokens with whatever the route happened to check.
+const itPortalJWTSecret = "integration_portal_jwt_secret_32!"
+
 // itSubscriberToken mints a subscriber-role token, the shape portal logins
-// issue. Push-token registration and the banner feed are subscriber routes,
-// so a staff token must not reach them.
+// issue: signed with the PORTAL secret, as a real one is.
 func itSubscriberToken(t *testing.T, subscriberID int) string {
+	t.Helper()
+	return itSubscriberTokenSignedWith(t, subscriberID, itPortalJWTSecret)
+}
+
+// itSubscriberTokenSignedWith mints the same token under a caller-chosen key,
+// so a test can present a subscriber token signed with the *staff* secret and
+// assert it is refused.
+func itSubscriberTokenSignedWith(t *testing.T, subscriberID int, secret string) string {
 	t.Helper()
 	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, middleware.Claims{
 		Role:             "subscriber",
 		SubscriberID:     subscriberID,
 		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))},
-	}).SignedString([]byte(itJWTSecret))
+	}).SignedString([]byte(secret))
 	if err != nil {
 		t.Fatalf("sign subscriber token: %v", err)
 	}
@@ -50,6 +69,12 @@ type stubAnnouncements struct {
 
 	segment  []int
 	finished []string
+
+	// portalBanners is what the banner feed returns, and portalAskedFor
+	// records the subscriber ids it was asked about — the feed must resolve
+	// the subscriber from the token and nothing else.
+	portalBanners  []notifications.Announcement
+	portalAskedFor []int
 }
 
 func newStubAnnouncements() *stubAnnouncements {
@@ -96,8 +121,11 @@ func (s *stubAnnouncements) ListAnnouncements(_ context.Context, status *string)
 	return out, nil
 }
 
-func (s *stubAnnouncements) ListPortalAnnouncements(context.Context, int) ([]notifications.Announcement, error) {
-	return nil, nil
+func (s *stubAnnouncements) ListPortalAnnouncements(_ context.Context, subscriberID int) ([]notifications.Announcement, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.portalAskedFor = append(s.portalAskedFor, subscriberID)
+	return s.portalBanners, nil
 }
 
 func (s *stubAnnouncements) ClaimAnnouncementForSending(_ context.Context, id int) (*notifications.Announcement, error) {
@@ -160,6 +188,7 @@ func newAnnHarness(t *testing.T) *annHarness {
 	handler := api.NewHandler(api.HandlerDeps{
 		DB: &stubDB{}, KYC: &stubKYC{}, Wallet: billing.NewWalletService(&stubWallet{}),
 		Announcements: h.anns, PushTokens: h.tokens, Tasks: h.tasks,
+		PortalJWTSecret: itPortalJWTSecret,
 	})
 	h.mux = http.NewServeMux()
 	handler.RegisterRoutes(h.mux, itJWTSecret)
@@ -425,12 +454,108 @@ func TestFR_NOTIF_013_PushTokenValidates(t *testing.T) {
 	}
 }
 
+// A staff token is refused at the signature now, not at the role.
+//
+// It used to be refused at the role (403): the route verified the staff key,
+// so a staff token parsed fine and only RequireRole turned it away. Now that
+// the route verifies the portal key, a staff token does not survive signature
+// verification at all — 401. That is the stronger of the two refusals and the
+// point of signing the two audiences with different keys: a leaked staff
+// token is not merely the wrong role here, it is unreadable.
 func TestFR_NOTIF_013_StaffTokenCannotRegisterAPushDevice(t *testing.T) {
 	h := newAnnHarness(t)
 	rec := h.do(t, http.MethodPost, "/api/v1/push-tokens",
 		`{"token":"abc","platform":"android"}`, "billing_admin", "ops1")
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("want 403 for a staff token on a subscriber route, got %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("want 401 for a staff-signed token on a subscriber route, got %d — %s",
+			rec.Code, rec.Body.String())
+	}
+	if len(h.tokens.registered) != 0 {
+		t.Errorf("a staff token registered a push device: %+v", h.tokens.registered)
+	}
+}
+
+// ── The portal token the portal actually issues ─────────────────────────────
+
+// FR-ANN-002: a subscriber token signed with the PORTAL secret reaches the
+// banner feed, and one signed with the staff secret does not.
+//
+// This is the test that was missing. Until 2026-11-22 both subscriber routes
+// verified against the staff key while every portal login signed with
+// PORTAL_JWT_SECRET, so a real subscriber got a 401 from the banner feed and
+// from push registration on every deployment path — confirmed against a
+// running server. No test caught it because the only tokens ever presented
+// were minted with the key the route checked, and the banner feed had no
+// route-level test at all.
+func TestFR_ANN_002_APortalSignedTokenReachesTheBannerFeed(t *testing.T) {
+	h := newAnnHarness(t)
+	h.anns.portalBanners = []notifications.Announcement{
+		{ID: 7, Title: "Scheduled maintenance", Body: "Sunday 2am-4am", Status: "sent"},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/announcements/portal", nil)
+	req.Header.Set("Authorization", "Bearer "+itSubscriberToken(t, 42))
+	rec := httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a portal-signed subscriber token must reach its own banner feed, got %d — %s",
+			rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Scheduled maintenance") {
+		t.Errorf("the feed should carry the subscriber's banner, got %s", rec.Body.String())
+	}
+	// The subscriber is taken from the token, never from a path or body.
+	if got := h.anns.portalAskedFor; len(got) != 1 || got[0] != 42 {
+		t.Errorf("the feed must be resolved for the token's own subscriber (42), got %v", got)
+	}
+
+	// The same claims signed with the staff key must not be accepted: if the
+	// route still verified that key, this would pass and the test above would
+	// pass too, which is exactly how the bug hid.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/announcements/portal", nil)
+	req.Header.Set("Authorization", "Bearer "+itSubscriberTokenSignedWith(t, 42, itJWTSecret))
+	rec = httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("a subscriber token signed with the staff key must be refused, got %d — %s",
+			rec.Code, rec.Body.String())
+	}
+}
+
+// A missing portal secret refuses subscriber routes rather than verifying
+// against an empty key, which anybody can sign a token with.
+func TestSubscriberRoutes_WithoutAPortalSecretRefuseEverything(t *testing.T) {
+	handler := api.NewHandler(api.HandlerDeps{
+		DB: &stubDB{}, KYC: &stubKYC{}, Wallet: billing.NewWalletService(&stubWallet{}),
+		Announcements: newStubAnnouncements(), PushTokens: newStubPushTokens(),
+		// PortalJWTSecret deliberately unset.
+	})
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux, itJWTSecret)
+
+	for _, tc := range []struct{ name, token string }{
+		{"a token signed with the empty key", itSubscriberTokenSignedWith(t, 42, "")},
+		{"a token signed with the staff key", itSubscriberTokenSignedWith(t, 42, itJWTSecret)},
+		{"a portal-signed token", itSubscriberToken(t, 42)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/announcements/portal", nil)
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Errorf("want 503 with no portal secret configured, got %d — %s",
+					rec.Code, rec.Body.String())
+			}
+			// Asserted on the code, not just the status: the handler returns
+			// 503 too when its store is nil, and a test that accepted any 503
+			// could not tell "refused, unconfigured auth" from "got through
+			// auth, store missing".
+			if !strings.Contains(rec.Body.String(), "ERR_PORTAL_AUTH_UNCONFIGURED") {
+				t.Errorf("the refusal must name the unconfigured portal secret, got %s", rec.Body.String())
+			}
+		})
 	}
 }
 

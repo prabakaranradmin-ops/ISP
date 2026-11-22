@@ -153,6 +153,15 @@ type Handler struct {
 	health           http.Handler
 
 	razorpayWebhookSecret string
+
+	// portalJWTSecret verifies subscriber tokens, which the portal signs
+	// with a different key than the staff tokens the rest of this handler
+	// accepts — deliberately, so a leaked staff token cannot be replayed
+	// against a subscriber endpoint or the reverse (see config.Load). The
+	// subscriber-facing routes below are the only ones that may verify
+	// against it, and without it they refuse everything rather than fall
+	// back to the staff key.
+	portalJWTSecret string
 }
 
 // HandlerDeps bundles every Handler dependency.
@@ -274,6 +283,13 @@ type HandlerDeps struct {
 	Health http.Handler
 
 	RazorpayWebhookSecret string
+
+	// PortalJWTSecret is the key the subscriber portal signs its tokens
+	// with (config.PortalJWTSecret). Leave it unset and the two
+	// subscriber-facing routes refuse every request: an empty HMAC key
+	// verifies a token an attacker can mint for themselves, so failing
+	// closed is the only safe default.
+	PortalJWTSecret string
 }
 
 // NewHandler constructs the API Handler.
@@ -347,6 +363,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		health:           deps.Health,
 
 		razorpayWebhookSecret: deps.RazorpayWebhookSecret,
+		portalJWTSecret:       deps.PortalJWTSecret,
 	}
 }
 
@@ -681,8 +698,29 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, jwtSecret string) {
 
 	// Subscriber-facing: the banner feed and push-token registration both
 	// derive their subscriber from the token, never from a path or body.
+	//
+	// These verify against the PORTAL secret, not the staff one `auth` holds.
+	// Until 2026-11-22 they used `auth`, and so rejected every real
+	// subscriber with a 401: the portal signs its tokens with
+	// PORTAL_JWT_SECRET, which config.Load derives as JWT_SECRET+"_portal"
+	// when it is unset and can therefore never equal JWT_SECRET. FR-ANN-002's
+	// banner and FR-NOTIF-013's push registration had consequently never
+	// worked for a real subscriber on any deployment path, while their tests
+	// passed by minting tokens with whichever secret the route checked.
+	//
+	// An empty key verifies a token anybody can mint, so a missing portal
+	// secret refuses the request instead of being passed to the verifier.
+	subscriberAuth := middleware.JWTMiddleware(h.portalJWTSecret)
+	if h.portalJWTSecret == "" {
+		subscriberAuth = func(http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeError(w, http.StatusServiceUnavailable, "ERR_PORTAL_AUTH_UNCONFIGURED",
+					"subscriber endpoints are unavailable: no portal token secret is configured")
+			})
+		}
+	}
 	subscriberSelf := func(next http.Handler) http.Handler {
-		return auth(middleware.RequireRole("subscriber")(next))
+		return subscriberAuth(middleware.RequireRole("subscriber")(next))
 	}
 	mux.Handle("GET /api/v1/announcements/portal",
 		subscriberSelf(http.HandlerFunc(h.GetPortalAnnouncements)))
