@@ -1,6 +1,17 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
+# CI for the ISP BSS/OSS platform.
+#
+# Until 2026-11-23 this workflow ran `go build`, `go vet` and `go test ./...`
+# and nothing else. That is a narrower gate than it looks: the integration
+# suite is behind `//go:build integration`, so `go test ./...` never ran a line
+# of it, and neither the browser suite nor the linter was here at all.
+#
+# It was not theoretical. Seventeen integration tests were broken by the vendor
+# master (commit aa0fc57) and stayed broken for days with CI green throughout,
+# because nothing in this file could have run them. They were found by hand.
+#
+# Running the integration suite here became practical when it dropped from
+# 18 minutes to 3 (commit d813ebd). Speed decides whether a developer runs a
+# suite locally; this file decides whether anyone finds out when they do not.
 name: Go
 
 on:
@@ -46,22 +57,209 @@ jobs:
     - name: Vet
       run: go vet ./...
 
-    # The integration suite is behind `//go:build integration`, so every
-    # other step in this workflow skips it entirely — it is not in `go
-    # build ./...`, not in `go vet ./...`, and not in `go test ./...`.
-    # That invisibility let it rot until it no longer compiled at all:
-    # five interfaces moved (ListSegmentSubscriberIDs gaining an
-    # announcement id, ClearSpeedOverride/SetSpeedOverride,
-    # GetVoucherCommissionSummary, and the franchise queriers' commission
-    # methods) and each left its test double behind, with nothing to
-    # report it. The suite did not fail; it could not build.
-    #
-    # This step is the cheap guard against that recurring. It compiles
-    # and vets the tagged files without needing PostgreSQL, so it runs
-    # here in seconds while the tests themselves still require the real
-    # database that scripts/run_db_tests.sh provisions.
+    # Compiles and vets the tagged files without needing PostgreSQL, so it
+    # catches a test double left behind by an interface change in seconds.
+    # The integration job below actually runs them; this step stays because
+    # it fails fast and on both operating systems.
     - name: Vet (integration-tagged tests)
       run: go vet -tags=integration ./...
 
     - name: Test
       run: go test -v ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v4
+      with:
+        go-version: '1.23'
+
+    # Both tag sets, because they lint different files and the project has
+    # been bitten by the difference: the exclusions in .golangci.yml sat
+    # under `issues:` (where golangci-lint v1 wanted them) while the file
+    # declared version 2, and `run` ignores an unknown key silently. Every
+    # exclusion was dead for months. `config verify` is the only thing that
+    # reports it, so it runs first and the whole job depends on it.
+    - name: Verify lint configuration
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: v2.12.2
+        args: config verify
+
+    - name: Lint
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: v2.12.2
+        args: --timeout=10m ./...
+
+    - name: Lint (integration-tagged tests)
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: v2.12.2
+        args: --timeout=10m --build-tags=integration ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          # The database must be called exactly this. Migration 019 hardcodes
+          # the name in `GRANT CONNECT ON DATABASE isp_bss_oss`, so any other
+          # name fails at 019 with "database does not exist" — which reads
+          # like a connection problem and is not one.
+          POSTGRES_DB: isp_bss_oss
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DB_DSN: postgres://postgres:postgres@localhost:5432/isp_bss_oss?sslmode=disable
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v4
+      with:
+        go-version: '1.23'
+
+    - name: Apply migrations
+      run: |
+        go run github.com/pressly/goose/v3/cmd/goose@v3.19.2 \
+          -dir ./migrations postgres "$TEST_DB_DSN" up
+
+    # -p 1 is not optional. Every package's integration tests share this one
+    # database and the harness TRUNCATEs ~64 tables before each test, so
+    # packages running concurrently would wipe each other's fixtures and fail
+    # in whichever test was unlucky. Verified locally: 36 packages, 0
+    # failures, with internal/db alone about 3 minutes of it.
+    - name: Integration tests
+      run: go test -tags=integration -p 1 -timeout 30m ./...
+
+  browser:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: isp_bss_oss
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_DSN: postgres://postgres:postgres@localhost:5432/isp_bss_oss?sslmode=disable
+      # Deliberately different from JWT_SECRET. The portal signs subscriber
+      # tokens with this one, and two subscriber-facing routes shipped broken
+      # for months because they verified the staff secret instead — a harness
+      # that used one secret for both audiences could not have caught it.
+      JWT_SECRET: ci_staff_jwt_secret_32_chars_ok!!
+      PORTAL_JWT_SECRET: ci_portal_jwt_secret_32_chars!!!
+      API_ADDR: 127.0.0.1:18443
+      METRICS_ADDR: 127.0.0.1:19101
+      PORTAL_URL: https://127.0.0.1:18443
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v4
+      with:
+        go-version: '1.23'
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Apply migrations and seed
+      run: |
+        go run github.com/pressly/goose/v3/cmd/goose@v3.19.2 \
+          -dir ./migrations postgres "$DB_DSN" up
+        PGPASSWORD=postgres psql -h localhost -U postgres -d isp_bss_oss \
+          -v ON_ERROR_STOP=1 -1 -f scripts/seed_local.sql
+
+    # The AES key store encrypts KYC data at rest, and cmd/api refuses to
+    # start without it. `local:` takes a file path, not inline JSON.
+    - name: Generate an AES key store
+      run: |
+        mkdir -p ci/keys ci/tls ci/archive
+        python3 - <<'PY'
+        import base64, json, os
+        json.dump({"active_version": "v1",
+                   "keys": {"v1": base64.b64encode(os.urandom(32)).decode()}},
+                  open("ci/keys/aes.json", "w"))
+        PY
+
+    - name: Start the API
+      run: |
+        go build -o ci/api ./cmd/api
+        AES_KEY_STORE_URL="local:$PWD/ci/keys/aes.json" \
+        TLS_CERT_DIR="$PWD/ci/tls" ARCHIVE_DIR="$PWD/ci/archive" \
+        ENVIRONMENT=development ./ci/api &
+        for _ in $(seq 1 30); do
+          curl -sk -o /dev/null https://127.0.0.1:18443/staff/login && break
+          sleep 2
+        done
+        curl -sk -o /dev/null -w 'api responded %{http_code}\n' https://127.0.0.1:18443/staff/login
+
+    # Eight tests assert the "online" state from live_sessions, whose reads
+    # filter updated_at against a 30-minute TTL. A stale row fails all eight
+    # at once and reads as eight broken screens.
+    - name: Refresh the live session fixture
+      env:
+        # psql from PATH on the runner, and the service container's port
+        # rather than the bundled Windows cluster this script defaults to.
+        PGBIN: /usr/bin
+        PGPORT: '5432'
+      run: bash scripts/refresh_e2e_session.sh
+
+    - name: Install Playwright
+      run: |
+        npm ci || npm install
+        npx playwright install --with-deps chromium
+
+    - name: Browser tests
+      run: npx playwright test
+
+    - name: Upload the report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: playwright-report
+        path: e2e/playwright-report/
+        retention-days: 14
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v4
+      with:
+        go-version: '1.23'
+
+    # Known CVEs in the dependency tree and in the Go toolchain itself.
+    # govulncheck reports only vulnerabilities that are actually reachable
+    # from this code, so a finding here is a call path, not a version number.
+    - name: Vulnerability scan
+      uses: golang/govulncheck-action@v1
+      with:
+        go-version-input: '1.23'
+        go-package: ./...
+
+    # An SBOM is a procurement gate as much as a security one: enterprise and
+    # government ISP tenders routinely ask for one before they will look at
+    # the product. Published as a build artefact so a release can carry it.
+    - name: Generate SBOM (CycloneDX)
+      run: |
+        go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.6.0 \
+          mod -json -output sbom.cdx.json .
+
+    - name: Upload SBOM
+      uses: actions/upload-artifact@v4
+      with:
+        name: sbom
+        path: sbom.cdx.json
+        retention-days: 90

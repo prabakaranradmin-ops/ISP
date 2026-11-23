@@ -17,7 +17,19 @@
 # together.
 set -euo pipefail
 
+# PGBIN defaults to the bundled PostgreSQL this project installs on Windows,
+# and falls back to whatever psql is on PATH — which is what CI and any Linux
+# host have. Without the fallback this script is Windows-only, and the CI job
+# that runs the browser suite would fail on a path that does not exist there.
 PGBIN="${PGBIN:-/c/Program Files/ISP BSS/pgsql/bin}"
+if [ ! -x "$PGBIN/psql" ] && [ ! -x "$PGBIN/psql.exe" ]; then
+    if command -v psql >/dev/null 2>&1; then
+        PGBIN="$(dirname "$(command -v psql)")"
+    else
+        echo "refresh_e2e_session: no psql in $PGBIN or on PATH" >&2
+        exit 1
+    fi
+fi
 PGHOST="${PGHOST:-127.0.0.1}"
 PGPORT="${PGPORT:-55432}"
 PGUSER="${PGUSER:-postgres}"
@@ -67,3 +79,20 @@ SQL
                                          WHERE stop_time IS NULL) ||
           ', age=' || COALESCE(age(now(), max(updated_at))::text, 'n/a')
      FROM live_sessions"
+
+# Fail if the refresh produced nothing.
+#
+# Every statement above is conditional on subscriber `test_user` existing, so
+# against an unseeded or truncated database this script did its work, found
+# nothing to work on, printed "live_sessions=0" and exited 0. The eight tests
+# that assert the online state then fail together, which reads as eight broken
+# screens rather than as a fixture that was never created — and in CI the
+# seeding step before it would have looked like it passed.
+rows="$("$PGBIN/psql" -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -t -A -c \
+  "SELECT count(*) FROM live_sessions")"
+if [ "${rows:-0}" -eq 0 ]; then
+    echo "refresh_e2e_session: no live session was created." >&2
+    echo "  Everything here hangs off subscriber 'test_user'; seed the database" >&2
+    echo "  (scripts/seed_local.sql) before running this." >&2
+    exit 1
+fi
