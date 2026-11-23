@@ -28,7 +28,7 @@
 <div class="card">
   <h3>Devices</h3>
   <form class="searchbar" method="get" action="/staff/inventory">
-    <select name="status" onchange="this.form.submit()">
+    <select name="status" aria-label="Filter by status" onchange="this.form.submit()">
       <option value="" {{if eq $d.StatusFilter ""}}selected{{end}}>All statuses</option>
       <option value="in_stock" {{if eq $d.StatusFilter "in_stock"}}selected{{end}}>In stock</option>
       <option value="issued" {{if eq $d.StatusFilter "issued"}}selected{{end}}>Issued</option>

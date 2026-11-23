@@ -6,7 +6,7 @@
 <div class="card">
   <h3>Purchase orders</h3>
   <form class="searchbar" method="get" action="/staff/procurement">
-    <select name="status" onchange="this.form.submit()">
+    <select name="status" aria-label="Filter by status" onchange="this.form.submit()">
       <option value="" {{if eq $d.StatusFilter ""}}selected{{end}}>All statuses</option>
       <option value="requested" {{if eq $d.StatusFilter "requested"}}selected{{end}}>Requested</option>
       <option value="approved" {{if eq $d.StatusFilter "approved"}}selected{{end}}>Approved</option>

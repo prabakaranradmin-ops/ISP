@@ -3,12 +3,12 @@
 <h1>General Ledger</h1>
 <p class="muted">The business's own books &mdash; distinct from a subscriber's wallet and a franchise partner's commission ledger. Every entry here is posted manually; nothing else in the console writes to it yet.</p>
 
-<div class="tabbar" role="tablist">
+<nav class="tabbar" aria-label="Ledger views">
   <a class="tab-btn {{if eq $d.Tab "journal"}}on{{end}}" href="?tab=journal">Journal</a>
   <a class="tab-btn {{if eq $d.Tab "trial-balance"}}on{{end}}" href="?tab=trial-balance">Trial balance</a>
   <a class="tab-btn {{if eq $d.Tab "income-statement"}}on{{end}}" href="?tab=income-statement">Income statement</a>
   <a class="tab-btn {{if eq $d.Tab "balance-sheet"}}on{{end}}" href="?tab=balance-sheet">Balance sheet</a>
-</div>
+</nav>
 
 {{if eq $d.Tab "journal"}}
 <div class="card">
@@ -44,7 +44,7 @@
       <tbody>
         <tr>
           <td>
-            <select name="account_id_1">
+            <select name="account_id_1" aria-label="Account for journal line 1">
               <option value="">&mdash; not used &mdash;</option>
               {{range $d.Accounts}}<option value="{{.ID}}">{{.Code}} {{.Name}}</option>{{end}}
             </select>
@@ -54,7 +54,7 @@
         </tr>
         <tr>
           <td>
-            <select name="account_id_2">
+            <select name="account_id_2" aria-label="Account for journal line 2">
               <option value="">&mdash; not used &mdash;</option>
               {{range $d.Accounts}}<option value="{{.ID}}">{{.Code}} {{.Name}}</option>{{end}}
             </select>
@@ -64,7 +64,7 @@
         </tr>
         <tr>
           <td>
-            <select name="account_id_3">
+            <select name="account_id_3" aria-label="Account for journal line 3">
               <option value="">&mdash; not used &mdash;</option>
               {{range $d.Accounts}}<option value="{{.ID}}">{{.Code}} {{.Name}}</option>{{end}}
             </select>
@@ -74,7 +74,7 @@
         </tr>
         <tr>
           <td>
-            <select name="account_id_4">
+            <select name="account_id_4" aria-label="Account for journal line 4">
               <option value="">&mdash; not used &mdash;</option>
               {{range $d.Accounts}}<option value="{{.ID}}">{{.Code}} {{.Name}}</option>{{end}}
             </select>

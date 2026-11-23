@@ -6,7 +6,7 @@
   --bg: #eef1f4;
   --surface: #fff;
   --ink: #17212b;
-  --muted: #616f7c; /* AA 4.55:1 on --bg; #63727f was 4.36 */
+  --muted: #616e7b; /* AA on every background it sits on: 5.22 on #fff, 4.60 on --bg, 4.52 on the #e6f0f7 active tile (#63727f was 4.36/4.46) */
   --rule: #d6dde4;
   --accent: #17608f;
   --ok-bg: #e2f3e8; --ok-fg: #17663a;

@@ -5,7 +5,7 @@
 {{end}}
 
 <div data-tabs>
-  <div class="tabbar" role="tablist">
+  <div class="tabbar" role="group" aria-label="Subscriber sections">
     <button type="button" class="tab-btn" data-tab="overview">Overview</button>
     {{if $d.ShowBilling}}<button type="button" class="tab-btn" data-tab="billing">Billing</button>{{end}}
     {{if $d.ShowTickets}}<button type="button" class="tab-btn" data-tab="tickets">Tickets</button>{{end}}

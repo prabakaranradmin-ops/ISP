@@ -2,7 +2,7 @@
 <div class="card">
   <h2>Invoices &amp; Payments</h2>
   {{if .Invoices}}
-  <div class="table-scroll">
+  <div class="table-scroll" role="region" aria-label="Invoices" tabindex="0">
   <table>
     <thead>
       <tr><th>Invoice</th><th>Date</th><th>Amount</th><th></th></tr>
@@ -25,7 +25,7 @@
 
   <h3>Payments</h3>
   {{if .Payments}}
-  <div class="table-scroll">
+  <div class="table-scroll" role="region" aria-label="Payments" tabindex="0">
   <table>
     <thead>
       <tr><th>Receipt</th><th>Date</th><th>Amount</th><th>Paid by</th><th></th></tr>

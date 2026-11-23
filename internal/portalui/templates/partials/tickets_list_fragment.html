@@ -4,7 +4,7 @@
   {{if .Message}}<div class="alert alert-success" role="status">{{.Message}}</div>{{end}}
   {{if .Tickets}}
   {{$csrf := .CSRFToken}}
-  <div class="table-scroll">
+  <div class="table-scroll" role="region" aria-label="Support tickets" tabindex="0">
   <table>
     <thead>
       <tr><th>Category</th><th>Description</th><th>Status</th><th>Filed</th><th>Your rating</th></tr>
