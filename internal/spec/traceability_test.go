@@ -84,6 +84,15 @@ func readSRS(t *testing.T) []requirement {
 // renders a coverage table listing all 143 ids, so a sweep that walked it
 // counted the report as evidence of its own completeness — which is exactly
 // the circular measurement this test is meant to replace.
+//
+// internal/spec is excluded for the same reason, one level in: these files
+// name requirement ids while explaining themselves, and a comment in the
+// measuring code is not an implementation of the thing being measured. The
+// range notation made it concrete — FR-NAS-001..004 appears in a comment
+// here, so without this exclusion four requirements would have counted
+// themselves cited by the test that checks whether they are. (They are
+// genuinely cited, in cmd/api and internal/api; the hole was real and
+// unoccupied.)
 func citedInCode(t *testing.T) map[string]bool {
 	t.Helper()
 	skipDir := map[string]bool{
@@ -91,6 +100,7 @@ func citedInCode(t *testing.T) map[string]bool {
 		"docs": true, "screenshots": true, "playwright-report": true,
 		"test-results": true,
 	}
+	selfDir := filepath.Clean(filepath.Join(repoRoot, "internal", "spec"))
 	wanted := map[string]bool{
 		".go": true, ".sql": true, ".sh": true, ".ts": true, ".html": true, ".ps1": true,
 	}
@@ -101,7 +111,7 @@ func citedInCode(t *testing.T) map[string]bool {
 			return nil // an unreadable path is not this test's business
 		}
 		if info.IsDir() {
-			if skipDir[info.Name()] {
+			if skipDir[info.Name()] || filepath.Clean(path) == selfDir {
 				return filepath.SkipDir
 			}
 			return nil

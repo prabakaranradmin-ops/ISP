@@ -14,6 +14,7 @@ require (
 	github.com/prometheus/client_model v0.5.0
 	github.com/rs/zerolog v1.31.0
 	github.com/shopspring/decimal v1.3.1
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.57.0
 	layeh.com/radius v0.0.0-20231213012653-1006025d24f8
 )
@@ -37,7 +38,6 @@ require (
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
 )

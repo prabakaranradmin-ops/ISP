@@ -1,5 +1,6 @@
 # Document 7: API Contract Design (OpenAPI 3.0 Specification)
-**Version:** 2.0 | **Status:** Draft | **Date:** 2025-06-01
+**Version:** 2.1 | **Status:** Draft | **Date:** 2026-11-23
+**New in v2.1:** the document now parses. Fourteen `description:` values contained an unquoted `: ` and made the embedded OpenAPI document invalid YAML, so no validator or client generator had ever loaded it. Seven operations that nothing serves were removed and recorded in §7.1 below; the WhatsApp delivery callback was moved onto the URL this document publishes. Checked against the running routes by `internal/spec/apicontract_test.go`.
 **Document ID:** API
 **Traces From:** [SRS](02_SRS_System_Requirements.md) → [MDS](04_MDS_Module_Design.md) → [DDS](05_DDS_Detailed_Design.md)
 **Traces To:** [TST](13_TST_Test_Strategy.md)
@@ -145,7 +146,7 @@ paths:
   /api/v1/subscribers/{id}:
     get:
       summary: Get subscriber profile
-      description: Required roles: noc_engineer, billing_admin, csr, technician
+      description: "Required roles: noc_engineer, billing_admin, csr, technician"
       parameters:
         - name: id
           in: path
@@ -166,7 +167,7 @@ paths:
 
     patch:
       summary: Update subscriber plan or status
-      description: Required role: billing_admin
+      description: "Required role: billing_admin"
       requestBody:
         content:
           application/json:
@@ -227,7 +228,7 @@ paths:
   /api/v1/wallets/{subscriber_id}/ledger:
     get:
       summary: Fetch wallet ledger entries
-      description: Required roles: billing_admin, csr
+      description: "Required roles: billing_admin, csr"
       parameters:
         - name: subscriber_id
           in: path
@@ -259,7 +260,7 @@ paths:
   /api/v1/sessions/{subscriber_id}/active:
     get:
       summary: Get active session for subscriber
-      description: Required roles: noc_engineer, csr, technician
+      description: "Required roles: noc_engineer, csr, technician"
       parameters:
         - name: subscriber_id
           in: path
@@ -291,7 +292,7 @@ paths:
   /api/v1/sessions/{session_id}/fup-override:
     post:
       summary: Manually apply or remove FUP throttle on an active session
-      description: Required role: noc_engineer
+      description: "Required role: noc_engineer"
       requestBody:
         content:
           application/json:
@@ -311,7 +312,7 @@ paths:
   /api/v1/invoices/{subscriber_id}:
     get:
       summary: List invoices for subscriber
-      description: Required roles: billing_admin, csr
+      description: "Required roles: billing_admin, csr"
       parameters:
         - name: subscriber_id
           in: path
@@ -325,7 +326,7 @@ paths:
   /api/v1/invoices/{invoice_id}/pdf:
     get:
       summary: Download GST-compliant invoice PDF
-      description: Required roles: billing_admin, csr, subscriber (self-service)
+      description: "Required roles: billing_admin, csr, subscriber (self-service)"
       parameters:
         - name: invoice_id
           in: path
@@ -351,7 +352,7 @@ paths:
   /api/v1/tickets:
     post:
       summary: Create support ticket
-      description: Required roles: csr, subscriber (self-service)
+      description: "Required roles: csr, subscriber (self-service)"
       requestBody:
         content:
           application/json:
@@ -373,7 +374,7 @@ paths:
   /api/v1/tickets/{ticket_id}:
     patch:
       summary: Update ticket status or assign technician
-      description: Required roles: csr, technician
+      description: "Required roles: csr, technician"
       responses:
         '200':
           description: Ticket updated
@@ -411,22 +412,6 @@ paths:
           description: Caller lacks lea_access permission
         '404':
           description: No subscriber found for given tuple
-
-  # ── CGNAT ─────────────────────────────────────────────────────────────────────
-
-  /api/v1/cgnat/allocations/{subscriber_id}:
-    get:
-      summary: Get CGNAT port-block allocation history for subscriber
-      description: Required role: noc_engineer
-      parameters:
-        - name: subscriber_id
-          in: path
-          required: true
-          schema:
-            type: integer
-      responses:
-        '200':
-          description: List of CGNAT allocation records
 
   # ── Webhooks (inbound) ────────────────────────────────────────────────────────
 
@@ -524,112 +509,12 @@ paths:
                       sent_at: { type: string, format: date-time }
                       delivery_status: { type: string }
 
-  # ── Subscriber usage (new — FR-SUB-001, used by portal) ──────────────────────
-
-  /api/v1/subscribers/{id}/usage:
-    get:
-      summary: Real-time data usage for subscriber portal (reads from Redis)
-      description: Required roles: billing_admin, csr, or subscriber-scoped JWT.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: integer }
-      responses:
-        '200':
-          description: Current session usage
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  gb_used: { type: number }
-                  gb_total: { type: integer }
-                  pct_used: { type: integer }
-                  fup_status: { type: string }
-                  speed_profile: { type: string }
-
-  # ── Notification log (new — FR-NOTIF-009, FR-SUB-005) ────────────────────────
-
-  /api/v1/subscribers/{id}/notifications:
-    get:
-      summary: Notification delivery history for a subscriber
-      description: >
-        Returns all notification_log entries for the subscriber.
-        Used by CSR to answer "why was I disconnected" calls and by subscriber portal.
-        Required roles: billing_admin, csr, or subscriber-scoped JWT.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema: { type: integer }
-        - name: limit
-          in: query
-          schema: { type: integer, default: 20, maximum: 100 }
-      responses:
-        '200':
-          description: Notification log entries
-
-  # ── Revenue assurance (new — FR-REV-001..004) ────────────────────────────────
-
-  /api/v1/revenue/unbilled:
-    get:
-      summary: Unbilled active subscribers report
-      description: >
-        Lists active subscribers with no invoice in current billing cycle.
-        Required role: billing_admin.
-      responses:
-        '200':
-          description: Unbilled subscriber list with count and total at-risk revenue
-
-  /api/v1/revenue/reconciliation:
-    get:
-      summary: Ledger reconciliation — wallet balance vs ledger net
-      description: >
-        Returns variance between subscriber wallet balances and ledger net.
-        Should be zero. Required role: billing_admin.
-      responses:
-        '200':
-          description: Reconciliation result with variance amount
-
-  /api/v1/revenue/collections-forecast:
-    get:
-      summary: 30-day forward collections forecast
-      description: >
-        Segments subscribers into will-renew / at-risk / lapsed with expected revenue.
-        Required role: billing_admin.
-      parameters:
-        - name: days
-          in: query
-          schema: { type: integer, default: 30, maximum: 90 }
-      responses:
-        '200':
-          description: Collections forecast by segment
-
-  /api/v1/revenue/gstr1-export:
-    get:
-      summary: GSTR-1 compatible GST export
-      description: >
-        Produces B2B/B2C invoice breakdown, HSN summary, and state-wise aggregate
-        for the specified billing month. Required role: billing_admin.
-      parameters:
-        - name: month
-          in: query
-          required: true
-          schema: { type: string, example: "2025-05" }
-        - name: format
-          in: query
-          schema: { type: string, enum: [json, csv], default: json }
-      responses:
-        '200':
-          description: GSTR-1 export data
-
   # ── Franchise / LCO (new — FR-FRN-001..003) ──────────────────────────────────
 
   /api/v1/franchises:
     get:
       summary: List all LCO / franchise partners
-      description: Required role: billing_admin
+      description: "Required role: billing_admin"
       responses:
         '200':
           description: Franchise list
@@ -637,7 +522,7 @@ paths:
   /api/v1/franchises/{franchise_id}/pnl:
     get:
       summary: P&L summary for a specific LCO franchise
-      description: Required role: billing_admin
+      description: "Required role: billing_admin"
       parameters:
         - name: franchise_id
           in: path
@@ -656,8 +541,41 @@ paths:
   /api/v1/franchises/consolidated-pnl:
     get:
       summary: Consolidated P&L across all LCO partners
-      description: Required role: billing_admin
+      description: "Required role: billing_admin"
       responses:
         '200':
           description: Consolidated franchise P&L
 ```
+
+---
+
+## 7.1 Endpoints this document used to publish
+
+Checked by `internal/spec/apicontract_test.go`, which routes a request for
+every operation above through the patterns the server actually registers.
+When it was first written, eight of the twenty-eight published operations did
+not exist. One was a defect in the server and is fixed; the other seven
+described a design that was superseded while this document stood still.
+
+They are recorded rather than deleted, because "we used to publish that" is
+the question someone will ask.
+
+| Was published as | What serves that capability now | Why |
+|---|---|---|
+| `GET /api/v1/subscribers/{id}/usage` | `GET /portal/dashboard` | FR-SUB-001 asks for a portal display, not an API. The portal derives the subscriber from its own token instead of taking an id in the path, so one subscriber cannot ask for another's usage — the authorisation bug this path invited. Its description also said "reads from Redis", which has not been in the system since ADR-007 |
+| `GET /api/v1/subscribers/{id}/notifications` | `GET /portal/notifications`, and Admin → Audit Trail for staff | FR-SUB-005 and FR-NOTIF-009 are satisfied by the portal and the console. Same id-in-path problem |
+| `GET /api/v1/revenue/unbilled` | Console → Revenue (`/staff/revenue`) | FR-REV-001 asks for a report. The store method (`GetUnbilledActiveSubscribers`) exists and is what the console reads; only the JSON route was never built |
+| `GET /api/v1/revenue/reconciliation` | Console → Revenue | FR-REV-002, via `GetLedgerVariance` and `GetTotalWalletBalance` |
+| `GET /api/v1/revenue/collections-forecast` | Console → Revenue | FR-REV-004, via `BuildCollectionsForecast` |
+| `GET /api/v1/revenue/gstr1-export` | Console → Billing → GSTR-1 (`/staff/billing/gstr1`) | FR-BIL-006 asks for an export; the console produces the file |
+| `GET /api/v1/cgnat/allocations/{subscriber_id}` | `POST /api/v1/lea/lookup` | FR-NET-001 requires the allocations to be *recorded*; FR-NET-002 requires the lookup, which exists. Browsing one subscriber's port blocks was never a requirement, and it is a surface worth not having |
+
+### If a partner API is wanted later
+
+The four revenue operations are the ones worth reinstating first: the store
+methods are there, so each is a handler and a role check. Treat that as a
+decision about who the API is for, with the authentication question answered
+first — a BI tool needs a service credential, which this platform does not
+issue today. Do not reinstate the two subscriber paths in their published
+form: an endpoint that takes a subscriber id in the path and accepts a
+subscriber token has to prove, at every call, that the two match.
