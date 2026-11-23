@@ -316,7 +316,7 @@ func TestFR_INV_001_DeviceLifecycle(t *testing.T) {
 
 	store := database.Inventory()
 	dt, err := store.CreateDeviceType(ctx, inventory.DeviceType{
-		Name: "Archer C6", Vendor: "TP-Link", ReorderThreshold: 2,
+		Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link"), ReorderThreshold: 2,
 	})
 	if err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
@@ -394,7 +394,7 @@ func TestFR_INV_002_ConcurrentIssuesGiveTheDeviceToExactlyOneSubscriber(t *testi
 	}
 
 	store := database.Inventory()
-	dt, err := store.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"})
+	dt, err := store.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")})
 	if err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestFR_INV_002_SchemaRejectsIssuedWithoutSubscriber(t *testing.T) {
 	ctx := context.Background()
 
 	store := database.Inventory()
-	dt, err := store.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"})
+	dt, err := store.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")})
 	if err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
@@ -455,11 +455,11 @@ func TestFR_INV_002_SchemaRejectsIssuedWithoutSubscriber(t *testing.T) {
 }
 
 func TestFR_INV_001_DuplicateSerialIsRejected(t *testing.T) {
-	database, _ := newTestDB(t)
+	database, pool := newTestDB(t)
 	ctx := context.Background()
 
 	store := database.Inventory()
-	dt, err := store.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"})
+	dt, err := store.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")})
 	if err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
@@ -485,7 +485,7 @@ func TestFR_INV_003_StockLevelsFlagLowStockAtTheThreshold(t *testing.T) {
 
 	store := database.Inventory()
 	dt, err := store.CreateDeviceType(ctx, inventory.DeviceType{
-		Name: "Archer C6", Vendor: "TP-Link", ReorderThreshold: 2,
+		Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link"), ReorderThreshold: 2,
 	})
 	if err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
@@ -541,11 +541,11 @@ func TestFR_INV_003_StockLevelsFlagLowStockAtTheThreshold(t *testing.T) {
 // the franchise P&L query had: counting three statuses must not multiply the
 // per-type row.
 func TestFR_INV_003_StockLevelsDoNotMultiplyRows(t *testing.T) {
-	database, _ := newTestDB(t)
+	database, pool := newTestDB(t)
 	ctx := context.Background()
 
 	store := database.Inventory()
-	dt, err := store.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"})
+	dt, err := store.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")})
 	if err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
@@ -568,11 +568,11 @@ func TestFR_INV_003_StockLevelsDoNotMultiplyRows(t *testing.T) {
 }
 
 func TestFR_INV_003_PurchaseRecordsKeepMoneyExact(t *testing.T) {
-	database, _ := newTestDB(t)
+	database, pool := newTestDB(t)
 	ctx := context.Background()
 
 	store := database.Inventory()
-	dt, err := store.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"})
+	dt, err := store.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")})
 	if err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
@@ -580,7 +580,7 @@ func TestFR_INV_003_PurchaseRecordsKeepMoneyExact(t *testing.T) {
 	// 3 × 1799.99 = 5399.97 — a total that binary floating point would not
 	// reproduce exactly.
 	created, err := store.RecordPurchase(ctx, inventory.Purchase{
-		DeviceTypeID: dt.ID, Vendor: "Ingram Micro", Quantity: 3,
+		DeviceTypeID: dt.ID, VendorID: seedVendorID(ctx, t, pool, "Ingram Micro"), Quantity: 3,
 		UnitCost: mustDecimal(t, "1799.99"), InvoiceRef: "INV-77", PurchasedBy: "priya.billing",
 	})
 	if err != nil {

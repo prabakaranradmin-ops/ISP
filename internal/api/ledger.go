@@ -11,13 +11,18 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 )
 
-// General ledger endpoints — CRD-EXP-006 Phase 1 | DBD §6.2 "General ledger".
+// General ledger endpoints — CRD-EXP-006 | DBD §6.2 "General ledger".
 //
 // Owner/billing_admin only, same reach as every other financial screen in
-// this package. Phase 1 only: there is no route here that posts a journal
-// entry on behalf of a wallet recharge, franchise commission, or purchase
-// order — those are Phase 2, not authorized by the design this implements
-// (see the CRD). Every entry reachable through these routes is 'manual'.
+// this package. Every entry reachable through these routes is 'manual': no
+// route here posts on behalf of a business event.
+//
+// The events that do post are driven from the paths that handle them rather
+// than over HTTP — wallet movements, received purchase orders and franchise
+// commission, tagged 'wallet_ledger', 'purchase_order' and 'lco_commission'.
+// This comment previously said those were "Phase 2, not authorized", which
+// stopped being true some months before anybody noticed. Migration 075 makes
+// each of them post at most once per source event.
 
 // GeneralLedgerQuerier is the persistence surface the general ledger needs.
 // Named to avoid colliding with invoices.go's own LedgerQuerier (the

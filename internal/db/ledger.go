@@ -2,10 +2,12 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/maaransoft/isp-bss-oss/internal/ledger"
 )
@@ -83,12 +85,25 @@ func (s *LedgerStore) PostJournalEntry(ctx context.Context, e ledger.NewJournalE
 	var entryID int
 	var entryDate, createdAt time.Time
 	err := inTx(ctx, s.pool, func(tx pgx.Tx) error {
+		// An entry with no source is manual, which is what the console
+		// posts and all Phase 1 writes. One that names its source is held to
+		// migration 075's uniqueness rule, so a retried job cannot post the
+		// same event twice.
+		sourceType := e.SourceType
+		if sourceType == "" {
+			sourceType = ledger.SourceManual
+		}
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO gl_journal_entries (description, source_type, created_by)
-			VALUES ($1, 'manual', $2)
+			INSERT INTO gl_journal_entries (description, source_type, source_id, created_by)
+			VALUES ($1, $2, $3, $4)
 			RETURNING id, entry_date, created_at`,
-			e.Description, e.CreatedBy,
+			e.Description, sourceType, e.SourceID, e.CreatedBy,
 		).Scan(&entryID, &entryDate, &createdAt); err != nil {
+			// The duplicate is the expected outcome of a retry, not a fault:
+			// the posting this task exists to make is already in the ledger.
+			if alreadyPosted(err) {
+				return fmt.Errorf("%w: %s %d", ledger.ErrAlreadyPosted, sourceType, *e.SourceID)
+			}
 			return fmt.Errorf("insert journal entry: %w", err)
 		}
 
@@ -104,21 +119,35 @@ func (s *LedgerStore) PostJournalEntry(ctx context.Context, e ledger.NewJournalE
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, ledger.ErrAlreadyPosted) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("db: post journal entry: %w", err)
 	}
 
 	return s.GetJournalEntry(ctx, entryID)
 }
 
+// alreadyPosted recognises migration 075's partial unique index. 23505 is
+// unique_violation, and the constraint name is checked rather than just the
+// code so that some other unique index on this table could never be reported
+// as "already posted" — which would turn a real fault into a task that
+// reports success and writes nothing.
+func alreadyPosted(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+		pgErr.ConstraintName == "uq_gl_journal_entries_source"
+}
+
 // GetJournalEntry loads one entry with its lines, or nil when no such id.
 func (s *LedgerStore) GetJournalEntry(ctx context.Context, id int) (*ledger.JournalEntry, error) {
 	const headQ = `
-		SELECT id, entry_date, description, source_type, created_by, created_at
+		SELECT id, entry_date, description, source_type, source_id, created_by, created_at
 		  FROM gl_journal_entries WHERE id = $1`
 
 	var e ledger.JournalEntry
 	err := s.pool.QueryRow(ctx, headQ, id).Scan(
-		&e.ID, &e.EntryDate, &e.Description, &e.SourceType, &e.CreatedBy, &e.CreatedAt)
+		&e.ID, &e.EntryDate, &e.Description, &e.SourceType, &e.SourceID, &e.CreatedBy, &e.CreatedAt)
 	if isNoRows(err) {
 		return nil, nil
 	}
@@ -159,7 +188,7 @@ func (s *LedgerStore) ListJournalEntries(ctx context.Context, limit int) ([]ledg
 		limit = 100
 	}
 	const q = `
-		SELECT id, entry_date, description, source_type, created_by, created_at
+		SELECT id, entry_date, description, source_type, source_id, created_by, created_at
 		  FROM gl_journal_entries
 		 ORDER BY entry_date DESC, id DESC
 		 LIMIT $1`
@@ -173,7 +202,7 @@ func (s *LedgerStore) ListJournalEntries(ctx context.Context, limit int) ([]ledg
 	out := make([]ledger.JournalEntry, 0, 16)
 	for rows.Next() {
 		var e ledger.JournalEntry
-		if err := rows.Scan(&e.ID, &e.EntryDate, &e.Description, &e.SourceType, &e.CreatedBy, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.EntryDate, &e.Description, &e.SourceType, &e.SourceID, &e.CreatedBy, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan journal entry row: %w", err)
 		}
 		out = append(out, e)

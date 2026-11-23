@@ -9,11 +9,13 @@ package db_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/maaransoft/isp-bss-oss/internal/db"
 	"github.com/shopspring/decimal"
@@ -127,6 +129,20 @@ var truncateOrder = []string{
 	// CASCADE would never reach it (migration 057).
 	"billing_run_failures",
 	"billing_runs",
+	// Before wallet_ledgers, whose ids these entries reference by value.
+	// Listed explicitly and not left to CASCADE: nothing truncated here
+	// points at gl_journal_entries, so journal entries would survive between
+	// tests while wallet_ledgers RESTART IDENTITY sent ledger ids back to 1 —
+	// and migration 075's unique index on (source_type, source_id) would then
+	// fail the *next* test's first recharge as a duplicate posting, which is
+	// a collision between two tests rather than anything the code did. Same
+	// reason vendors and products are listed above.
+	//
+	// gl_journal_lines follows by CASCADE. chart_of_accounts must NOT be
+	// listed: migration 043 seeds it, nothing here references it, and
+	// truncating it would leave every posting unable to resolve an account —
+	// the sla_policies mistake in a different table.
+	"gl_journal_entries",
 	"wallet_ledgers",
 	// Before invoices and gst_rates, which it references (migration 056).
 	"proforma_invoices",
@@ -287,6 +303,40 @@ func seedStaffUser(ctx context.Context, t *testing.T, pool *pgxpool.Pool, id int
 	if err != nil {
 		t.Fatalf("seed staff user %d: %v", id, err)
 	}
+}
+
+// seedVendorID puts a supplier in the vendor master and returns its id, for
+// the writes that require one.
+//
+// Needed because the harness truncates vendors (deliberately — see
+// truncateOrder) while migration 071 is what seeds them, so a test starts
+// with an empty master. Since FR-INV-004 a device type, purchase or purchase
+// order must name a vendor by id: free text is read back from the master and
+// ignored on a write. Eleven tests were still passing a Vendor name and
+// nothing else, and had been failing since that feature landed.
+//
+// Idempotent, so two calls in one test do not collide on
+// uq_vendors_name_active.
+func seedVendorID(ctx context.Context, t *testing.T, pool *pgxpool.Pool, name string) *int {
+	t.Helper()
+	var id int
+	err := pool.QueryRow(ctx, `
+		INSERT INTO vendors (name) VALUES ($1)
+		ON CONFLICT DO NOTHING
+		RETURNING id`, name).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// ON CONFLICT DO NOTHING returned no row: already there from an
+		// earlier call in this test.
+		if err := pool.QueryRow(ctx,
+			`SELECT id FROM vendors WHERE name = $1`, name).Scan(&id); err != nil {
+			t.Fatalf("read back seeded vendor %q: %v", name, err)
+		}
+		return &id
+	}
+	if err != nil {
+		t.Fatalf("seed vendor %q: %v", name, err)
+	}
+	return &id
 }
 
 func seedFranchise(ctx context.Context, t *testing.T, pool *pgxpool.Pool, id int, name, ratePct, status string) {

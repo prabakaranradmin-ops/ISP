@@ -57,6 +57,11 @@ e2e/snapshots/
 # stack, not by the committed suite) — same reasoning as e2e/snapshots/
 e2e/live-test/
 
+# Screen captures from playwright.capture.config.ts. Regenerated from a
+# running stack on demand, forty-odd PNGs per pass — the spec that produces
+# them is committed, the output is not.
+e2e/screenshots/
+
 # Demo walkthrough recordings (scripts/record_demo.sh). Multi-megabyte binaries
 # regenerated from the live stack on demand — the specs that produce them are
 # committed, the output is not.

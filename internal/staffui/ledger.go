@@ -12,11 +12,21 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// GeneralLedgerStore backs the Ledger screen — CRD-EXP-006 Phase 1, the
-// console counterpart to internal/api/ledger.go. Every entry reachable
-// through this screen is a manual entry; there is no button that auto-posts
-// on behalf of a wallet recharge, franchise commission, or purchase order
-// (Phase 2, not implemented — see the CRD).
+// GeneralLedgerStore backs the Ledger screen — CRD-EXP-006, the console
+// counterpart to internal/api/ledger.go. Every entry reachable through this
+// screen is a manual one: there is no button here that posts on behalf of
+// anything.
+//
+// That is not the same as nothing posting automatically, which is how this
+// comment read until 2026-11-23. Three event kinds already write journal
+// entries from the paths that handle them — wallet movements
+// (internal/db/billing.go, source_type 'wallet_ledger'), received purchase
+// orders (internal/db/procurement.go, 'purchase_order') and franchise
+// commission (internal/db/revenue.go, 'lco_commission'). They are triggered
+// by the business event, not by a screen, which is why none of them appears
+// here. What genuinely does not post is an invoice being raised; see
+// docs/ledger_phase2_posting_rules_DRAFT.md for why that is an accounting
+// decision rather than a missing feature.
 //
 // Redefined per package rather than sharing api.GeneralLedgerQuerier,
 // matching every other store interface in this file. Satisfied by

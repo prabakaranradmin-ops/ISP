@@ -11,7 +11,10 @@
 // orders is Phase 2, explicitly out of scope here; see the CRD.
 package ledger
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // Account types and their normal balance side. Stored per account rather
 // than derived at query time (see AccountType's own doc), but these are the
@@ -72,22 +75,58 @@ type NewJournalLine struct {
 	Credit    string
 }
 
-// NewJournalEntry is a manual entry to post — Phase 1's only source_type.
+// ErrAlreadyPosted reports that this source event already has a journal
+// entry, so the caller's work is done rather than failed.
+//
+// The distinction is the entire point of recording a source: Phase 2 posts
+// from a retrying job queue, and a handler that treats "already posted" as an
+// error would retry until it gave up, leaving a task in the dead letter queue
+// describing a posting that is sitting in the ledger correctly.
+var ErrAlreadyPosted = errors.New("ledger: this source event is already posted")
+
+// SourceManual is the source_type of an entry a person posted, and the
+// default migration 043 gave the column. The source kinds 043 anticipated for
+// Phase 2 — wallet_recharge, lco_commission, purchase_order — are not
+// declared here yet: each should arrive with the posting rules that define
+// what it debits and credits, not before them.
+const SourceManual = "manual"
+
+// NewJournalEntry is an entry to post.
+//
+// SourceType and SourceID say what caused it. Both empty is a manual entry —
+// what an operator types into the console, and all Phase 1 ever writes. An
+// automated posting names its cause, and migration 075 then allows it exactly
+// once: a second attempt with the same pair comes back ErrAlreadyPosted.
 type NewJournalEntry struct {
 	Description string
 	Lines       []NewJournalLine
 	CreatedBy   string
+
+	// SourceType is "manual" (or empty, which means the same) for an entry a
+	// person posted, and otherwise names the kind of event — the values 043
+	// anticipated are "wallet_recharge", "lco_commission" and
+	// "purchase_order". Deliberately not a CHECK in the schema, so adding one
+	// is a Go change.
+	SourceType string
+	// SourceID is the id of the row that caused this posting, within
+	// SourceType. nil for a manual entry, and only a non-nil value is held to
+	// the uniqueness rule.
+	SourceID *int
 }
 
 // JournalEntry is a stored entry with its lines, as an operator sees it.
 type JournalEntry struct {
-	ID          int           `json:"id"`
-	EntryDate   time.Time     `json:"entry_date"`
-	Description string        `json:"description"`
-	SourceType  string        `json:"source_type"`
-	CreatedBy   string        `json:"created_by"`
-	CreatedAt   time.Time     `json:"created_at"`
-	Lines       []JournalLine `json:"lines"`
+	ID          int       `json:"id"`
+	EntryDate   time.Time `json:"entry_date"`
+	Description string    `json:"description"`
+	SourceType  string    `json:"source_type"`
+	// SourceID is the row that caused this posting, or nil for a manual
+	// entry. Read back so a caller can tell an automated posting from one
+	// somebody typed, which the trial balance cannot.
+	SourceID  *int          `json:"source_id,omitempty"`
+	CreatedBy string        `json:"created_by"`
+	CreatedAt time.Time     `json:"created_at"`
+	Lines     []JournalLine `json:"lines"`
 }
 
 // JournalLine is one leg of a stored entry, with the account's own code/name

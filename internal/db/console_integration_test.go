@@ -529,7 +529,7 @@ func TestConsole_ListACSDevices(t *testing.T) {
 	seedSubscriber(ctx, t, pool, 1, seedOpts{Username: "alice", MobileNumber: "+919800000001"})
 
 	inv := database.Inventory()
-	dt, err := inv.CreateDeviceType(ctx, inventory.DeviceType{Name: "HG8245", Vendor: "Huawei"})
+	dt, err := inv.CreateDeviceType(ctx, inventory.DeviceType{Name: "HG8245", VendorID: seedVendorID(ctx, t, pool, "Huawei")})
 	if err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}

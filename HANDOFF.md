@@ -34,6 +34,29 @@ wrong for this reason rather than a business one.
 
 ### The FR ledger, reconciled 2026-08-16
 
+**Re-derived 2026-11-23: the SRS holds 143 FRs, not 99.** Roughly 138 are
+implemented and 5 are deferred by design. The "98 of 99" below was measured
+on 2026-08-16 against a smaller SRS and has been wrong ever since the
+Jaze-parity roadmap landed — 143 has been the count for at least 40 commits.
+
+Measured rather than asserted: 131 of the 143 are cited by id somewhere in
+Go, SQL or shell. Of the 12 that are not, seven are implemented and simply
+never cited — `FR-CON-001`, `-002`, `-003`, `-004` and `-007` are the console
+nav, the dashboard, the subscriber directory, the Sessions screen and the
+lead pipeline, all of which you can look at, plus `FR-OBS-001`/`-002`. The
+other five are deferred with a reason written into the SRS row itself:
+`FR-BIL-024` postpaid billing ("the platform is prepaid by design"),
+`FR-BIL-025` GST e-invoice IRN ("needs a GSP/IRP account"), `FR-CAT-005`
+OTT/IPTV provisioning, `FR-NET-007` OLT/ONU monitoring ("every OLT make has
+its own MIB") and `FR-NET-008` the S3 off-machine copy.
+
+`e2e/screens.capture.ts` renders this table from the SRS at capture time
+rather than keeping a second copy, which is what let the number drift this
+far unnoticed.
+
+The original 2026-08-16 reckoning, kept because its method is still the right
+one:
+
 **98 implemented, 1 deferred (FR-AAA-005), 0 outstanding.**
 
 The SRS contains exactly 99 `FR-*` requirements. Count them with a word
@@ -80,7 +103,7 @@ by one.
 |---|---|
 | Go packages | 35 total; **24 have tests** |
 | Wiring check | **33/33** components have a production caller (2026-11-21) |
-| Migrations | **74** applied (`001`–`074`) |
+| Migrations | **75** applied (`001`–`075`) |
 | Browser tests | **182**, all passing with **0 skipped** (2026-11-23) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts`, `e2e/console-logs-catalogue.spec.ts`, `e2e/accessibility.spec.ts`, `e2e/mobile-accessibility.spec.ts`. Needs `ARCHIVE_DIR` set, or the FR-DOC-003 archival test skips itself |
 | Lint | **0** on default tags and **0** with `--build-tags=integration` (2026-11-23), from 155 and 116. `golangci-lint config verify` is the check that matters: `run` ignores an invalid config section silently, which is how the project's exclusions were dead for months |
 | DB integration suite | ~700s in Docker, **1000-1500s on the bundled native cluster**; carry `-timeout 45m` |
@@ -505,6 +528,53 @@ is cheaper to decide before the console grows past 53 templates than after.
   wrapper, and the role string being renamed so the check matches nothing and
   asserts nothing.
 
+- **The general ledger posts automatically, and did before anybody said so.**
+  Worth stating plainly because two code comments and a handoff note all said
+  the opposite. `internal/staffui/ledger.go` said auto-posting was "Phase 2,
+  not implemented" and `internal/api/ledger.go` said it was "not authorized
+  by the design this implements". Both were narrowly true — no button and no
+  route posts on behalf of anything — and both led a reader to conclude
+  nothing did. Three event kinds have been posting for months, from the paths
+  that handle the events:
+
+  | source_type | Written by | Accounts |
+  |---|---|---|
+  | `wallet_ledger` | `internal/db/billing.go` | 1000/1200/4000/5200/1300, with the GST output split to 2200 |
+  | `purchase_order` | `internal/db/procurement.go` | 5100 debit, 2000 credit |
+  | `lco_commission` | `internal/db/revenue.go` | 5000 debit, 2100 credit |
+
+  **What genuinely does not post is an invoice being raised**, which makes the
+  automated side cash-basis: revenue reaches 4000 when money moves through the
+  wallet, not when the invoice is issued, and that is why the chart has no
+  Accounts Receivable. For a GST-registered company that is a real accounting
+  question rather than a missing feature, and it is the only one that blocks
+  code — moving to accrual changes the working wallet posting, or revenue
+  would be counted twice. See `docs/ledger_phase2_posting_rules_DRAFT.md`.
+
+- **Closed 2026-11-23 (migration 075): a ledger posting happens once per
+  source event.** `gl_journal_entries` has carried `source_type`/`source_id`
+  since 043 and nothing enforced uniqueness, so a retried job could double
+  the books — the kind of wrong nobody notices until a trial balance is held
+  against a bank statement. A partial unique index on
+  `(source_type, source_id) WHERE source_id IS NOT NULL` now refuses it, and
+  the store maps the violation to `ledger.ErrAlreadyPosted` so a handler
+  treats a retry as done instead of retrying into the dead-letter queue.
+  Partial on purpose: manual entries carry no `source_id` and an operator may
+  post the same correction twice. Verified on a real cluster first — three
+  `('manual', NULL)` rows are accepted and a second `('wallet_recharge', 7)`
+  is refused.
+
+  **Adding it broke five billing tests, and that was the harness, not the
+  index.** `gl_journal_entries` was not in the harness's `truncateOrder`
+  while `wallet_ledgers` was, so journal entries survived between tests while
+  `RESTART IDENTITY` sent ledger ids back to 1 — and the next test's first
+  recharge collided with a previous test's posting. The table is listed now,
+  with `chart_of_accounts` deliberately left out: migration 043 seeds it, and
+  truncating it would leave every posting unable to resolve an account, which
+  is the `sla_policies` mistake in a different table. The lesson generalises:
+  **a unique index over a table the harness does not truncate will fail the
+  next test rather than the one at fault.**
+
 - **FR-NET-006 has never polled a real router.** This machine has no router
   and no SNMP agent, so the poller is proven only against
   `internal/nastraffic/snmptest`, an agent built on the same library's encoder.
@@ -880,6 +950,21 @@ execution, across several sessions:
   tokens with whichever key the route checked: a harness that uses one secret
   for two audiences cannot tell a route that checks the right key from one
   that checks the wrong one
+- seventeen integration tests that had been failing since the vendor master
+  landed (`aa0fc57`), because it made `CreateDeviceType` and `RecordPurchase`
+  require a `VendorID` and nobody updated the callers still passing a
+  free-text `Vendor:`. Nothing caught it for days: the `internal/db` suite
+  takes twenty minutes, so it is run rarely, and the cost of running it is
+  exactly why the breakage survived. Fixing them by call shape missed six —
+  the multi-line literals and the `Purchase` ones — so the sweep was redone
+  by *type*, which is the version that found all seventeen
+- two code comments and a handoff note all saying the general ledger's
+  auto-posting was "Phase 2, not implemented" while three event kinds had
+  been posting for months. Each statement was narrowly true about its own
+  file — no button, no route — and together they described a system that did
+  not exist. I repeated the claim in a design document before checking, which
+  is the part worth remembering: `grep "INSERT INTO gl_journal"` would have
+  settled it in one command
 - an open decision asking a person to choose a Redis Sentinel timeout, which
   had already been chosen and verified three months earlier and then stopped
   applying altogether when Redis was deleted from the system. The status

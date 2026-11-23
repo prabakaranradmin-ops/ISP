@@ -37,7 +37,7 @@ func TestFR_CPE_001_InformFromAKnownDeviceUpdatesItInPlace(t *testing.T) {
 	ctx := context.Background()
 
 	inv := database.Inventory()
-	dt, err := inv.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"})
+	dt, err := inv.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")})
 	if err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
@@ -78,11 +78,11 @@ func TestFR_CPE_001_InformFromAKnownDeviceUpdatesItInPlace(t *testing.T) {
 // still has to be managed, but it never passed stock control — counting it
 // as warehouse stock would corrupt FR-INV-003's reorder numbers.
 func TestFR_CPE_001_InformFromAnUnknownDeviceIsDiscoveredNotStock(t *testing.T) {
-	database, _ := newTestDB(t)
+	database, pool := newTestDB(t)
 	ctx := context.Background()
 
 	if _, err := database.Inventory().CreateDeviceType(ctx,
-		inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"}); err != nil {
+		inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")}); err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
 
@@ -111,11 +111,11 @@ func TestFR_CPE_001_InformFromAnUnknownDeviceIsDiscoveredNotStock(t *testing.T) 
 // must not walk a provisioned device back to 'registered' and trigger a
 // re-push every fifteen minutes.
 func TestFR_CPE_001_RoutineInformDoesNotUndoProvisioning(t *testing.T) {
-	database, _ := newTestDB(t)
+	database, pool := newTestDB(t)
 	ctx := context.Background()
 
 	if _, err := database.Inventory().CreateDeviceType(ctx,
-		inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"}); err != nil {
+		inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")}); err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
 	store := database.TR069()
@@ -140,11 +140,11 @@ func TestFR_CPE_001_RoutineInformDoesNotUndoProvisioning(t *testing.T) {
 // conditional claim exists for. A reboot delivered twice is a second,
 // unexplained outage.
 func TestFR_CPE_003_ConcurrentClaimsDeliverATaskExactlyOnce(t *testing.T) {
-	database, _ := newTestDB(t)
+	database, pool := newTestDB(t)
 	ctx := context.Background()
 
 	if _, err := database.Inventory().CreateDeviceType(ctx,
-		inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"}); err != nil {
+		inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")}); err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
 	store := database.TR069()
@@ -191,11 +191,11 @@ func TestFR_CPE_003_ConcurrentClaimsDeliverATaskExactlyOnce(t *testing.T) {
 // TestFR_CPE_003_TaskQueueOrderAndCompletion covers priority ordering and
 // the outcome record.
 func TestFR_CPE_003_TaskQueueOrderAndCompletion(t *testing.T) {
-	database, _ := newTestDB(t)
+	database, pool := newTestDB(t)
 	ctx := context.Background()
 
 	if _, err := database.Inventory().CreateDeviceType(ctx,
-		inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"}); err != nil {
+		inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")}); err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
 	store := database.TR069()
@@ -278,7 +278,7 @@ func TestFR_CPE_003_ExpiredTasksAreNotDelivered(t *testing.T) {
 	ctx := context.Background()
 
 	if _, err := database.Inventory().CreateDeviceType(ctx,
-		inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"}); err != nil {
+		inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")}); err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
 	store := database.TR069()
@@ -315,7 +315,7 @@ func TestFR_CPE_002_ProvisioningPlanDerivesFromThePlan(t *testing.T) {
 	seedSubscriber(ctx, t, pool, 1, seedOpts{Username: "ravi@isp"})
 
 	inv := database.Inventory()
-	dt, err := inv.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"})
+	dt, err := inv.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")})
 	if err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestFR_CPE_002_UnissuedDeviceHasNothingToProvision(t *testing.T) {
 	ctx := context.Background()
 
 	inv := database.Inventory()
-	dt, err := inv.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", Vendor: "TP-Link"})
+	dt, err := inv.CreateDeviceType(ctx, inventory.DeviceType{Name: "Archer C6", VendorID: seedVendorID(ctx, t, pool, "TP-Link")})
 	if err != nil {
 		t.Fatalf("CreateDeviceType: %v", err)
 	}
