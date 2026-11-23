@@ -60,8 +60,8 @@ type subscribersData struct {
 	PrevURL   string
 	NextURL   string
 	ViewLabel string
-	Statuses   []string
-	Views      []string
+	Statuses  []string
+	Views     []string
 	// ShowBulkActions gates the checkbox column and bulk-action card, same
 	// tier as the API's own "admin" middleware (billing_admin, isp_owner)
 	// that BulkChangeSubscriberPlan/BulkUpdateStatus/BulkWalletCredit sit
