@@ -291,11 +291,11 @@ the same data, and a hidden control is never the only protection.
 
 | FR ID | Requirement | CRD Ref | Module |
 |---|---|---|---|
-| FR-CAT-005 | ⏸ OTT, IPTV and voice packages. **Billing-only add-ons are covered by FR-BIL-022.** Provisioning needs an aggregator / IPTV-middleware / SIP-provider contract and its API; there is nothing to integrate against until one is chosen | CRD-EXP-015 | — |
-| FR-NET-007 | ⏸ OLT/ONU monitoring (optical power, uptime). Every OLT make has its own SNMP MIB or CLI; needs the vendor and model list actually deployed | CRD-EXP-015 | — |
-| FR-BIL-024 | ⏸ Postpaid ("pay later") billing with credit limits. The platform is prepaid by design (FR-BIL-009); needs an owner decision on whether postpaid customers exist | CRD-EXP-015 | — |
-| FR-BIL-025 | ⏸ GST e-invoice IRN generation. Needs a GSP/IRP account and applies only to B2B invoicing above the turnover threshold | CRD-EXP-015 | — |
-| FR-NET-008 | ⏸ Off-machine copy of NAT/flow logs and archived documents to S3-compatible storage. The `archive.Store` interface is the seam; needs a bucket and credentials | CRD-EXP-015 | archive |
+| FR-CAT-005 | ⏸ OTT, IPTV and voice packages. **Billing-only add-ons are covered by FR-BIL-022.** **Out of scope for v1 (2026-11-23):** provisioning needs an aggregator / IPTV-middleware / SIP-provider contract and its API. Nothing can be written against it until one is chosen — code written blind to a middleware API is wrong in ways no test here could detect | CRD-EXP-015 | — |
+| FR-NET-007 | ⏸ OLT/ONU monitoring (optical power, uptime). **Out of scope for v1 (2026-11-23):** every OLT make has its own SNMP MIB or CLI, so this needs the vendor and model list actually deployed. The SNMP poller from FR-NET-006 (`internal/nastraffic`) is the seam it would plug into, so supplying the make and model is the whole unblock | CRD-EXP-015 | — |
+| FR-BIL-024 | ⛔ Postpaid ("pay later") billing with credit limits. **Not applicable — closed by owner decision (2026-11-23):** the platform is prepaid by design (FR-BIL-009) and there are no postpaid customers. Reopen only if that changes; it would touch billing, suspension and the grace/FUP logic together | CRD-EXP-015 | — |
+| FR-BIL-025 | ⏸ GST e-invoice IRN generation. **Out of scope for v1 (2026-11-23):** needs a GSP/IRP account, and applies only to B2B invoicing above the turnover threshold. The GST calculation and invoice numbering it would build on already exist | CRD-EXP-015 | — |
+| FR-NET-008 | ✅ Off-machine copy of NAT/flow logs and archived documents to S3-compatible storage. **Implemented 2026-11-23**: `archive.S3Store` (minio-go) behind the existing `archive.Store` seam, selected by `ARCHIVE_S3_BUCKET` and taking precedence over `ARCHIVE_DIR`. Works against AWS S3, Wasabi, Backblaze B2 or MinIO. Tested against a server speaking S3’s HTTP API, so it needs no bucket or credentials to verify; an operator still supplies those to turn it on | CRD-EXP-015 | archive |
 
 ---
 

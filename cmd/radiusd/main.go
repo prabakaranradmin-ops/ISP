@@ -86,6 +86,19 @@ func main() {
 	}
 }
 
+// archiveS3Config maps the ARCHIVE_S3_* settings onto the store's own config.
+func archiveS3Config(cfg *config.Config) archive.S3Config {
+	return archive.S3Config{
+		Endpoint:        cfg.ArchiveS3Endpoint,
+		Bucket:          cfg.ArchiveS3Bucket,
+		Prefix:          cfg.ArchiveS3Prefix,
+		AccessKeyID:     cfg.ArchiveS3AccessKey,
+		SecretAccessKey: cfg.ArchiveS3SecretKey,
+		Region:          cfg.ArchiveS3Region,
+		UseSSL:          cfg.ArchiveS3UseSSL,
+	}
+}
+
 func run(ctx context.Context) error {
 	cfg, err := config.Load("radiusd")
 	if err != nil {
@@ -532,11 +545,11 @@ func run(ctx context.Context) error {
 	// scheduled-export worker below: an export with nowhere to deliver would
 	// run the query, produce the CSV and drop it.
 	var reportArchiver *archive.Archiver
-	if cfg.ArchiveDir != "" {
-		archiveStore, err := archive.NewLocalStore(cfg.ArchiveDir)
-		if err != nil {
-			return fmt.Errorf("document archive storage: %w", err)
-		}
+	archiveStore, archiveErr := archive.NewStore(cfg.ArchiveDir, archiveS3Config(cfg))
+	if archiveErr != nil {
+		return fmt.Errorf("document archive storage: %w", archiveErr)
+	}
+	if archiveStore != nil {
 		reportArchiver = archive.NewArchiver(archiveStore, database.Archive())
 		purgeScanner := archive.NewPurgeScanner(archiveStore, database.Archive(), 0)
 		wg.Add(1)

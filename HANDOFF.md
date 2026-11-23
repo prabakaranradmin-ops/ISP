@@ -34,8 +34,24 @@ wrong for this reason rather than a business one.
 
 ### The FR ledger, reconciled 2026-08-16
 
-**Re-derived 2026-11-23: the SRS holds 143 FRs, not 99.** Roughly 138 are
-implemented and 5 are deferred by design. The "98 of 99" below was measured
+**Re-derived 2026-11-23: the SRS holds 143 FRs, not 99.** 138 are
+implemented; 5 are not, and all five are now closed out rather than left
+reading as pending engineering:
+
+| FR | Disposition (2026-11-23) |
+|---|---|
+| FR-NET-008 off-machine S3 copy | **Implemented.** `archive.S3Store` behind the existing seam — see below |
+| FR-BIL-024 postpaid billing | **Not applicable**, by owner decision: the platform is prepaid by design and there are no postpaid customers |
+| FR-AAA-005 CHAP | **Stays deferred**, by owner decision: CHAP needs a recoverable password, and every NAS in use speaks PAP or EAP |
+| FR-CAT-005 OTT/IPTV/voice | **Out of scope for v1** — needs an aggregator/middleware contract and its API |
+| FR-NET-007 OLT/ONU monitoring | **Out of scope for v1** — needs the deployed OLT vendor and model list; the FR-NET-006 SNMP poller is the seam |
+| FR-BIL-025 GST e-invoice IRN | **Out of scope for v1** — needs a GSP/IRP account |
+
+The three out-of-scope ones were left as code-shaped work for months when
+each is really waiting on a contract, a vendor list or an account. Writing
+them speculatively would produce an IPTV or IRN integration that is wrong in
+ways no test here can detect and that looks finished, which is worse than an
+honest gap. The "98 of 99" below was measured
 on 2026-08-16 against a smaller SRS and has been wrong ever since the
 Jaze-parity roadmap landed — 143 has been the count for at least 40 commits.
 
@@ -574,6 +590,31 @@ is cheaper to decide before the console grows past 53 templates than after.
   is the `sla_policies` mistake in a different table. The lesson generalises:
   **a unique index over a table the harness does not truncate will fail the
   next test rather than the one at fault.**
+
+- **Off-machine archival (FR-NET-008) is implemented but has never written to
+  a real bucket.** `archive.S3Store` speaks S3 through minio-go and is chosen
+  by `ARCHIVE_S3_BUCKET`, which takes precedence over `ARCHIVE_DIR` — a copy
+  on the same disk as the database is not disaster recovery, which is the
+  whole point of the requirement. Works against AWS S3, Wasabi, Backblaze B2
+  or MinIO.
+
+  It is tested against a server that speaks S3's HTTP API rather than a
+  mocked client, so the verbs, keys and bytes on the wire are what is
+  asserted — the same approach as `internal/nastraffic/snmptest`. That is
+  what let it be built while the bucket is still an open question, and it is
+  also the limit: **no real bucket has ever been written to.** What a live
+  run would add is credentials, TLS to a real endpoint, and the first
+  multi-megabyte object.
+
+  Two things worth knowing before that run. The upload buffers the document
+  in memory (capped, default 64 MiB) because `Store` requires the size and
+  checksum *as written* and a single-request PUT wants a length up front —
+  streaming an unknown length means a multipart upload, which leaves parts
+  behind on an interruption, exactly the partial visibility the interface
+  forbids. And over plain HTTP the client signs the body with a streaming
+  signature that wraps it in `aws-chunked` framing; over TLS it does not.
+  Anything inspecting the request has to account for that, which is why the
+  test serves TLS.
 
 - **FR-NET-006 has never polled a real router.** This machine has no router
   and no SNMP agent, so the poller is proven only against

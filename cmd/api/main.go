@@ -97,6 +97,19 @@ func main() {
 	}
 }
 
+// archiveS3Config maps the ARCHIVE_S3_* settings onto the store's own config.
+func archiveS3Config(cfg *config.Config) archive.S3Config {
+	return archive.S3Config{
+		Endpoint:        cfg.ArchiveS3Endpoint,
+		Bucket:          cfg.ArchiveS3Bucket,
+		Prefix:          cfg.ArchiveS3Prefix,
+		AccessKeyID:     cfg.ArchiveS3AccessKey,
+		SecretAccessKey: cfg.ArchiveS3SecretKey,
+		Region:          cfg.ArchiveS3Region,
+		UseSSL:          cfg.ArchiveS3UseSSL,
+	}
+}
+
 func run(ctx context.Context) error {
 	cfg, err := config.Load("api")
 	if err != nil {
@@ -208,16 +221,16 @@ func run(ctx context.Context) error {
 	// ARCHIVE_DIR is unset, and every path that uses it answers a readable
 	// 503 rather than panicking.
 	var docArchiver *archive.Archiver
-	if cfg.ArchiveDir != "" {
-		archiveStore, err := archive.NewLocalStore(cfg.ArchiveDir)
-		if err != nil {
-			return fmt.Errorf("document archive storage: %w", err)
-		}
+	archiveStore, err := archive.NewStore(cfg.ArchiveDir, archiveS3Config(cfg))
+	if err != nil {
+		return fmt.Errorf("document archive storage: %w", err)
+	}
+	if archiveStore != nil {
 		docArchiver = archive.NewArchiver(archiveStore, database.Archive())
-		log.Info().Str("dir", cfg.ArchiveDir).
+		log.Info().Str("backend", archive.Describe(cfg.ArchiveDir, archiveS3Config(cfg))).
 			Msg("api: document archival enabled; invoices are archived on render and retrievable with checksum verification")
 	} else {
-		log.Warn().Msg("api: ARCHIVE_DIR unset — documents are not archived and the Documents screen will say so")
+		log.Warn().Msg("api: neither ARCHIVE_DIR nor ARCHIVE_S3_BUCKET is set — documents are not archived and the Documents screen will say so")
 	}
 
 	// Captive-portal branding (FR-HSP-004), shared by the hotspot handler

@@ -75,6 +75,12 @@ COMPONENTS=(
     # which under the DPDP Act is a violation the system documented against
     # itself.
     "archive.NewPurgeScanner:document retention purge (deletes archives past retain_until)"
+    # FR-NET-008's off-machine copy. Tracked because a storage backend nobody
+    # selects is the same failure this file exists for: the S3 driver could be
+    # complete and tested while every deployment silently kept writing to the
+    # local disk, which is not disaster recovery. NewStore is what chooses,
+    # so it is the call that proves the backend is reachable at all.
+    "archive.NewStore:archival backend selection, local or S3 (FR-NET-008)"
     # data_cap_bytes sat unread for a release: a voucher sold as "1 GB" was
     # limited only by its duration. Nothing else can enforce it, because
     # voucher sessions have no subscriber row for the FUP scanner to find.

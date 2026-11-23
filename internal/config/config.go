@@ -64,6 +64,21 @@ type Config struct {
 	// deployment that has not chosen where its invoices and KYC scans live
 	// should not have that decided for it by a constant.
 	ArchiveDir string
+	// ArchiveS3* configure the off-machine copy (FR-NET-008). A bucket turns
+	// it on and takes precedence over ArchiveDir, because a copy on the same
+	// disk as the database is not disaster recovery — which is the whole
+	// point of the requirement. All of it is optional: unset means local-only
+	// archival, exactly as before.
+	ArchiveS3Endpoint  string
+	ArchiveS3Bucket    string
+	ArchiveS3Prefix    string
+	ArchiveS3AccessKey string
+	ArchiveS3SecretKey string
+	ArchiveS3Region    string
+	// ArchiveS3UseSSL defaults to true. These are KYC scans and invoices;
+	// plaintext HTTP is only reasonable to an endpoint in the same rack, and
+	// an operator who wants that has to say so.
+	ArchiveS3UseSSL bool
 
 	// TLSCertDir roots the self-signed certificate pkg/tlscert generates and
 	// persists for the API service to terminate TLS itself (replacing the
@@ -179,8 +194,16 @@ func Load(service string) (*Config, error) {
 		RadiusAddr:     env("RADIUS_ADDR", ":1812"),
 		RadiusAcctAddr: env("RADIUS_ACCT_ADDR", ":1813"),
 		ArchiveDir:     env("ARCHIVE_DIR", ""),
-		TLSCertDir:     env("TLS_CERT_DIR", "./config/tls"),
-		TLSHostname:    env("TLS_HOSTNAME", "localhost"),
+
+		ArchiveS3Endpoint:  env("ARCHIVE_S3_ENDPOINT", ""),
+		ArchiveS3Bucket:    env("ARCHIVE_S3_BUCKET", ""),
+		ArchiveS3Prefix:    env("ARCHIVE_S3_PREFIX", ""),
+		ArchiveS3AccessKey: env("ARCHIVE_S3_ACCESS_KEY", ""),
+		ArchiveS3SecretKey: env("ARCHIVE_S3_SECRET_KEY", ""),
+		ArchiveS3Region:    env("ARCHIVE_S3_REGION", ""),
+		ArchiveS3UseSSL:    env("ARCHIVE_S3_USE_SSL", "true") != "false",
+		TLSCertDir:         env("TLS_CERT_DIR", "./config/tls"),
+		TLSHostname:        env("TLS_HOSTNAME", "localhost"),
 
 		DBDSN:         env("DB_DSN", ""),
 		DBMaxConns:    int32(envInt("DB_MAX_CONNS", 25)), //nolint:gosec // bounded by envInt
@@ -323,6 +346,9 @@ func (c *Config) Redact() map[string]string {
 		"radius_addr":            c.RadiusAddr,
 		"radius_acct_addr":       c.RadiusAcctAddr,
 		"archive_dir":            c.ArchiveDir,
+		"archive_s3_bucket":      c.ArchiveS3Bucket,
+		"archive_s3_endpoint":    c.ArchiveS3Endpoint,
+		"archive_s3_secret":      setOrUnset(c.ArchiveS3SecretKey),
 		"tls_cert_dir":           c.TLSCertDir,
 		"tls_hostname":           c.TLSHostname,
 		"db_dsn":                 redactDSN(c.DBDSN),
