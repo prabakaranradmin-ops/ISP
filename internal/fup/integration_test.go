@@ -307,6 +307,62 @@ func itStubNAS(t *testing.T, secret []byte, respondWith radius.Code) (int, <-cha
 	return conn.LocalAddr().(*net.UDPAddr).Port, received
 }
 
+// The auto-revert sweep: an expired speed override is cleared and a CoA is
+// queued to put the subscriber back on their real rate.
+//
+// This had no test at all. The stub carried `expiredOverrides` to feed
+// ListExpiredSpeedOverrides and `cleared` to record what ClearSpeedOverride
+// was called for, with a comment saying it existed "so a test can assert the
+// auto-revert swept what it claimed to" — and nothing ever set the first or
+// read the second, so scanExpiredOverrides was never exercised. Found on
+// 2026-11-23 because `unused` flagged the accessor nobody called.
+//
+// Both halves matter. Clearing the override without the CoA leaves the
+// subscriber throttled on the router until they next reconnect; the CoA
+// without the clear un-throttles them and then re-throttles them on the next
+// Access-Accept.
+func TestFR_FUP_001_AnExpiredOverrideIsClearedAndReverted(t *testing.T) {
+	_, client, inspector := itQueue(t)
+
+	db := &itFUPDB{expiredOverrides: []int{7, 9}}
+	scanner := NewScanner(db, client)
+	if err := scanner.scan(context.Background()); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	cleared := db.clearedOverrides()
+	for _, id := range []int{7, 9} {
+		if !cleared[id] {
+			t.Errorf("subscriber %d's expired override was not cleared", id)
+		}
+	}
+	if len(cleared) != 2 {
+		t.Errorf("cleared %d overrides, want exactly the 2 that expired: %v", len(cleared), cleared)
+	}
+
+	pending := itPendingTasks(t, inspector, QueueNetCommands)
+	if len(pending) != 2 {
+		t.Fatalf("%s queue: want one revert CoA per expired override (2), got %d",
+			QueueNetCommands, len(pending))
+	}
+	queued := map[int]bool{}
+	for _, task := range pending {
+		if task.Type != TaskTypeCoA {
+			t.Errorf("task type: want %q, got %q", TaskTypeCoA, task.Type)
+		}
+		var payload CoAPayload
+		if err := json.Unmarshal(task.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal CoA payload: %v", err)
+		}
+		queued[payload.SubscriberID] = true
+	}
+	for _, id := range []int{7, 9} {
+		if !queued[id] {
+			t.Errorf("no revert CoA was queued for subscriber %d, so the router keeps throttling them", id)
+		}
+	}
+}
+
 // ── INT-FUP-001 ─────────────────────────────────────────────────────────────
 
 // TestFR_FUP_001_FUPScanner_EnqueuesCoAOn100Pct verifies a session at or above its FUP
@@ -650,7 +706,7 @@ func TestFR_NET_002_PoDTask_NoLiveSessionSkipsRetry(t *testing.T) {
 		t.Fatal("expected an error when there is no live session")
 	}
 	if !errorIsSkipRetry(err) {
-		t.Errorf("a missing session must wrap jobqueue.SkipRetry, got: %v", err)
+		t.Errorf("a missing session must wrap jobqueue.ErrSkipRetry, got: %v", err)
 	}
 }
 
@@ -789,13 +845,13 @@ func TestFR_FUP_004_FUPWarningTask_MalformedPayloadSkipsRetry(t *testing.T) {
 		t.Fatal("expected an error for a malformed payload")
 	}
 	if !errorIsSkipRetry(err) {
-		t.Errorf("malformed payload must wrap jobqueue.SkipRetry, got: %v", err)
+		t.Errorf("malformed payload must wrap jobqueue.ErrSkipRetry, got: %v", err)
 	}
 }
 
 func errorIsSkipRetry(err error) bool {
 	for e := err; e != nil; {
-		if e == jobqueue.SkipRetry { //nolint:errorlint,err113
+		if e == jobqueue.ErrSkipRetry { //nolint:errorlint,err113
 			return true
 		}
 		unwrapper, ok := e.(interface{ Unwrap() []error })

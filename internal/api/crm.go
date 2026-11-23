@@ -257,7 +257,10 @@ func (h *Handler) ConvertLead(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "ERR_FORBIDDEN", "not entitled to this lead")
 		return
 	}
-	res, err := h.ConvertLeadToSubscriber(r.Context(), id, ConvertLeadInput{
+	// Field by field rather than a type conversion, for the reason given at
+	// the same pattern in announcements.go: the wire type and the domain
+	// input are deliberately separate and are expected to diverge.
+	res, err := h.ConvertLeadToSubscriber(r.Context(), id, ConvertLeadInput{ //nolint:staticcheck // S1016: see above
 		CAFNumber: req.CAFNumber, Username: req.Username, Password: req.Password,
 		PlanID: req.PlanID, RegisteredState: req.RegisteredState,
 		Aadhaar: req.Aadhaar, PAN: req.PAN, CPESerial: req.CPESerial,

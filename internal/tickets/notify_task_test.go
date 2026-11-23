@@ -66,7 +66,7 @@ func TestUpdateHandler_ProcessTask_DispatchesWithTemplateAndVars(t *testing.T) {
 }
 
 // A malformed payload must not retry: it will never become valid, and Asynq
-// only skips retry when the handler wraps jobqueue.SkipRetry into the error it
+// only skips retry when the handler wraps jobqueue.ErrSkipRetry into the error it
 // returns.
 func TestUpdateHandler_ProcessTask_MalformedPayloadSkipsRetry(t *testing.T) {
 	h := NewUpdateHandler(&stubNotifier{})
@@ -75,8 +75,8 @@ func TestUpdateHandler_ProcessTask_MalformedPayloadSkipsRetry(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for malformed payload")
 	}
-	if !errors.Is(err, jobqueue.SkipRetry) {
-		t.Errorf("expected error to wrap jobqueue.SkipRetry, got: %v", err)
+	if !errors.Is(err, jobqueue.ErrSkipRetry) {
+		t.Errorf("expected error to wrap jobqueue.ErrSkipRetry, got: %v", err)
 	}
 }
 

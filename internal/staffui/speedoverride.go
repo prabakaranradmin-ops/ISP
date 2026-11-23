@@ -111,7 +111,7 @@ func (h *Handler) ClearSpeedOverride(w http.ResponseWriter, r *http.Request) {
 // JSON API's own speed-override endpoint use. NasIP is left blank
 // deliberately — fup.CoAHandler.ProcessTask resolves the live NAS session
 // fresh at execution time rather than trusting a snapshot.
-func (h *Handler) enqueueSpeedOverrideCoA(ctx context.Context, subscriberID int) {
+func (h *Handler) enqueueSpeedOverrideCoA(_ context.Context, subscriberID int) {
 	payload, err := json.Marshal(fup.CoAPayload{SubscriberID: subscriberID})
 	if err != nil {
 		log.Error().Err(err).Int("subscriber_id", subscriberID).Msg("staffui: marshal speed-override CoA payload failed")

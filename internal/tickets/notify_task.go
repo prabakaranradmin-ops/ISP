@@ -63,7 +63,7 @@ func (h *UpdateHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error
 	var p UpdatePayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		// A malformed payload will never become valid on retry.
-		return fmt.Errorf("ticket update: unmarshal payload: %w: %w", err, jobqueue.SkipRetry)
+		return fmt.Errorf("ticket update: unmarshal payload: %w: %w", err, jobqueue.ErrSkipRetry)
 	}
 	if h.notifier == nil {
 		return fmt.Errorf("ticket update: notifier not configured")

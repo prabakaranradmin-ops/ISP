@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -140,7 +141,13 @@ func assemble(cols map[string][]gosnmp.SnmpPDU) (Result, error) {
 			case oidIfAlias:
 				r.alias = asString(p)
 			case oidIfType:
-				if v, ok := asUint(p); ok {
+				// Bounded before narrowing. Everything in this switch comes
+				// off the wire from an agent we do not control, and an
+				// ifType is an IANA code in the low hundreds — a value that
+				// cannot be one is worth ignoring rather than converting,
+				// which on a 32-bit build would wrap to something that looks
+				// like a real interface type.
+				if v, ok := asUint(p); ok && v <= math.MaxInt32 {
 					r.ifType, r.hasType = int(v), true
 				}
 			case oidIfOperStatus:
@@ -149,7 +156,10 @@ func assemble(cols map[string][]gosnmp.SnmpPDU) (Result, error) {
 					r.oper = &up
 				}
 			case oidIfHighSpeed:
-				if v, ok := asUint(p); ok {
+				// Same reasoning: ifHighSpeed is megabits per second, so even
+				// a terabit port is seven figures. Anything above MaxInt64
+				// would land negative and read as a backwards interface.
+				if v, ok := asUint(p); ok && v <= math.MaxInt64 {
 					s := int64(v)
 					r.speed = &s
 				}

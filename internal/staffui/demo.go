@@ -164,6 +164,8 @@ const demoState = "TN"
 // demoSecret is 24 characters — comfortably over the 16-character RADIUS
 // minimum — and, like the NAS IP, obviously a placeholder rather than
 // anything meant to authenticate a real device.
+//
+//nolint:gosec // G101: the walkthrough's placeholder, as the comment above says
 const demoSecret = "demo-router-secret-do-not-use"
 
 // LoadDemoData seeds a presentable console: two plans, five subscribers
@@ -258,7 +260,7 @@ func (h *Handler) LoadDemoData(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if ds.withInvoice && h.invoiceSeeder != nil {
-			if err := h.seedDemoInvoice(ctx, created.ID, ds.planName, planIDs); err != nil {
+			if err := h.seedDemoInvoice(ctx, created.ID, ds.planName); err != nil {
 				log.Warn().Err(err).Str("username", ds.username).Msg("staffui: demo invoice skipped")
 				invoiceSkipped = true
 			}
@@ -295,7 +297,7 @@ func (h *Handler) LoadDemoData(w http.ResponseWriter, r *http.Request) {
 // subscriber. Best-effort: a deployment with no GST rate configured yet
 // cannot raise any invoice, real or demo, so this is skipped rather than
 // failing the whole load.
-func (h *Handler) seedDemoInvoice(ctx context.Context, subscriberID int, planName string, planIDs map[string]int) error {
+func (h *Handler) seedDemoInvoice(ctx context.Context, subscriberID int, planName string) error {
 	rate, err := h.invoiceSeeder.GetActiveGstRate(ctx)
 	if err != nil {
 		return fmt.Errorf("no active GST rate: %w", err)

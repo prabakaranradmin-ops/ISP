@@ -268,8 +268,8 @@ func TestFR_CAT_002_ValidateRefusesWhatTheDatabaseWould(t *testing.T) {
 	}
 
 	cases := []struct {
-		name   string
-		break_ func(*BandwidthProfile)
+		name    string
+		breakIt func(*BandwidthProfile)
 		// The phrase an operator should see. Asserted so the message stays
 		// an explanation rather than decaying into "invalid input".
 		want string
@@ -292,7 +292,7 @@ func TestFR_CAT_002_ValidateRefusesWhatTheDatabaseWould(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := ok()
-			tc.break_(&p)
+			tc.breakIt(&p)
 			p = p.Normalise()
 			err := p.Validate()
 			if err == nil {

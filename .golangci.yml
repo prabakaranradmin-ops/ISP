@@ -2,7 +2,11 @@
 
 run:
   timeout: 5m
-  go: "1.22"
+  # Matches go.mod. It said 1.22 while go.mod said 1.23, which told every
+  # linter to assume APIs that have been available for a while do not exist —
+  # noctx in particular, since httptest.NewRequestWithContext arrived in 1.23
+  # and was the reason those findings were considered unfixable.
+  go: "1.23"
   modules-download-mode: readonly
 
 linters:
@@ -13,7 +17,6 @@ linters:
     - staticcheck
     - unused
     - bodyclose
-    - contextcheck
     - gosec
     - misspell
     - noctx
@@ -21,6 +24,23 @@ linters:
     - revive
     - unconvert
     - unparam
+  # contextcheck is deliberately NOT enabled. It produced 18 findings on
+  # 2026-11-23 and every one was wrong, in two ways it cannot see past:
+  #
+  #   - The audit sink, the gateway log and the RADIUS auth-log flush detach
+  #     on purpose, with `context.WithTimeout(context.WithoutCancel(
+  #     context.Background()), …)`. WithoutCancel exists in the standard
+  #     library for exactly this — keep the values, drop the cancellation —
+  #     because an audit row must still be written when the client hangs up
+  #     or the daemon is shutting down. Each site already carries a comment
+  #     saying so. contextcheck sees context.Background() and stops.
+  #   - staffui's leadCtx(r, s) returns middleware.WithSubject(r.Context(),
+  #     …), which does inherit the request context. The linter cannot see
+  #     through a helper that builds one.
+  #
+  # What this gives up: a genuinely accidental detached context would no
+  # longer be flagged. That is worth less than 18 false positives, which is
+  # enough noise to hide the real finding this file exists to surface.
   settings:
     gosec:
       excludes:
@@ -38,26 +58,43 @@ linters:
         - name: package-comments
           disabled: true
 
-formatters:
-  enable:
-    - gofmt
-    - goimports
-
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
+  # These exclusions lived under `issues:` until 2026-11-23, which is where
+  # golangci-lint v1 wanted them. In v2 they belong here, and `run` ignores
+  # an unknown `issues.exclusions` key silently rather than failing — so every
+  # exclusion below had been dead since the v2 migration, and 51 findings the
+  # project had deliberately excluded were being counted again.
+  # `golangci-lint config verify` reports it; `golangci-lint run` does not.
   exclusions:
     rules:
+      # Test code is held to a different standard on these four deliberately:
+      # a test that ignores a Close error, hardcodes a credential or builds a
+      # request without a context is not a defect.
       - path: "_test\\.go"
         linters:
           - gosec
           - unparam
           - errcheck
           - noctx
-      - text: "Error return value of `.*\\.Close\\(\\)` is not checked"
+          # prealloc for the same reason: a test helper appending five rows
+          # is not a hot path, and `var out []string` reads better than a
+          # make() with a capacity nobody will maintain. `unused` stays on
+          # in tests — dead stub fields there are worth deleting, and twice
+          # on this branch a dead one marked an assertion somebody meant to
+          # write.
+          - prealloc
+      # errcheck's message lost the parentheses somewhere between
+      # golangci-lint v1 and v2 — it now reads "value of `file.Close` is not
+      # checked" — so a pattern requiring them matched nothing.
+      - text: "Error return value of `.*\\.Close` is not checked"
         linters:
           - errcheck
       - text: "Error return value of `.*\\.Write\\("
+        linters:
+          - errcheck
+      # Same reasoning as Write above, and the same cause: a failed write to
+      # an http.ResponseWriter means the client hung up, and there is nothing
+      # left to report it to.
+      - text: "Error return value of `fmt\\.Fprint(f|ln)?` is not checked"
         linters:
           - errcheck
       - text: "Error return value of `\\(\\*encoding/json\\.Encoder\\)\\.Encode` is not checked"
@@ -66,3 +103,43 @@ issues:
       - text: "Error return value of `golang.org/x/crypto/bcrypt\\.CompareHashAndPassword` is not checked"
         linters:
           - errcheck
+
+      # The console's form-validation helpers return their message as the
+      # error value, and the handler renders err.Error() straight to the
+      # operator — "Speed must be in MikroTik rate-limit form, for example
+      # 100M/100M." is display copy, not a wrapped internal error.
+      # Lowercasing it to satisfy the rule would mangle the only place it is
+      # read. The rule stays on everywhere else, where it is right.
+      # Both linters report this: revive as error-strings, staticcheck as
+      # ST1005. Excluding only one leaves the other reporting all twenty.
+      - path: "internal/staffui/"
+        text: "error-strings"
+        linters:
+          - revive
+      - path: "internal/staffui/"
+        text: "ST1005"
+        linters:
+          - staticcheck
+
+      # Traffic and NAS simulators: synthetic packets, so the decoder and the
+      # console are exercised against real wire formats. math/rand is correct
+      # for fake flows and the field-width conversions are the protocol's own.
+      # Neither touches production data.
+      - path: "cmd/(netflowsim|nassim)/"
+        linters:
+          - gosec
+      # The NetFlow *encoder* is used only by that simulator and the tests
+      # (see its package comment). The decoder in v9.go is the production path
+      # and is deliberately not excluded.
+      - path: "internal/netflow/encode\\.go"
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

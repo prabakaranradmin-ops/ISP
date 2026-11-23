@@ -50,7 +50,7 @@ func (h *ThrottledHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) er
 	var p ThrottledPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		// A malformed payload will never become valid on retry.
-		return fmt.Errorf("fup throttled: unmarshal payload: %w: %w", err, jobqueue.SkipRetry)
+		return fmt.Errorf("fup throttled: unmarshal payload: %w: %w", err, jobqueue.ErrSkipRetry)
 	}
 	if h.notifier == nil {
 		return fmt.Errorf("fup throttled: notifier not configured")

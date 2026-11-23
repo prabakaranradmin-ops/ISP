@@ -346,7 +346,11 @@ func sessionIDFrom(r *http.Request) string {
 	return c.Value
 }
 
-func (a *ACS) saveSession(_ context.Context, id string, sess *Session) error {
+// The error return is always nil today because the session store is in
+// memory. It stays because both callers check it and a store that persisted
+// sessions — which is what a multi-node ACS would need — would fail, and the
+// call sites would already be shaped for it.
+func (a *ACS) saveSession(_ context.Context, id string, sess *Session) error { //nolint:unparam // see above
 	a.sessions.Set(sessionKey(id), sess, a.ttl)
 	return nil
 }
@@ -371,7 +375,14 @@ func (a *ACS) clearSession(_ context.Context, r *http.Request) {
 
 func (a *ACS) writeSOAP(w http.ResponseWriter, body string) {
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+	// The consumer is a CPE speaking CWMP, not a browser, but this endpoint
+	// is reachable by anything that can open a socket to it and the body is
+	// assembled rather than constant. nosniff removes the one avenue that
+	// would make that matter: a browser deciding the XML was really HTML.
+	// The other four paths that write a non-HTML body all set it.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
+	//nolint:gosec // G705: XML to a CPE, with an explicit content type and nosniff above
 	if _, err := io.WriteString(w, body); err != nil {
 		log.Error().Err(err).Msg("tr069: could not write the CWMP response")
 	}

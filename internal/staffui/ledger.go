@@ -87,7 +87,10 @@ func (h *Handler) renderLedger(w http.ResponseWriter, r *http.Request, s Session
 		}
 		ld.TrialBalance = rows
 	case "income-statement":
-		from, to := monthWindow(r)
+		from, to, ok := monthWindow(r)
+		if !ok {
+			d.Error = "Those dates are not dates; showing this month instead."
+		}
 		rows, err := h.generalLedger.IncomeStatement(r.Context(), from, to)
 		if err != nil {
 			log.Error().Err(err).Msg("staffui: income statement failed")
@@ -114,13 +117,39 @@ func (h *Handler) renderLedger(w http.ResponseWriter, r *http.Request, s Session
 	h.render(w, "ledger", d)
 }
 
-// monthWindow returns the current calendar month unless overridden, the
-// same default internal/api/ledger.go's ledgerDateWindow uses.
-func monthWindow(r *http.Request) (from, to time.Time) {
+// monthWindow returns the current calendar month unless ?from=/?to= override
+// it, matching internal/api/ledger.go's ledgerDateWindow.
+//
+// It took the request and ignored it until 2026-11-23, so the comment's
+// "unless overridden" was not true of the console: the income statement was
+// hard-wired to the current month however the URL was written, while the same
+// window on the API honoured both parameters. Found by unparam noticing the
+// parameter was unused.
+//
+// An unparseable date returns ok=false and keeps the month, so the caller can
+// say so rather than silently showing a period nobody asked for.
+func monthWindow(r *http.Request) (from, to time.Time, ok bool) {
 	now := time.Now()
 	from = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	to = from.AddDate(0, 1, 0)
-	return from, to
+
+	q := r.URL.Query()
+	if v := q.Get("from"); v != "" {
+		parsed, err := time.ParseInLocation("2006-01-02", v, now.Location())
+		if err != nil {
+			return from, to, false
+		}
+		from = parsed
+	}
+	if v := q.Get("to"); v != "" {
+		parsed, err := time.ParseInLocation("2006-01-02", v, now.Location())
+		if err != nil {
+			return from, to, false
+		}
+		// Inclusive of the named day, as the API does it.
+		to = parsed.AddDate(0, 0, 1)
+	}
+	return from, to, true
 }
 
 // CreateLedgerAccountForm adds a chart-of-accounts entry.

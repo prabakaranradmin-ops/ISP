@@ -83,6 +83,12 @@ func (h *Handler) RecordPaymentForm(w http.ResponseWriter, r *http.Request) {
 		h.renderSubscriberDetail(w, r, s, id, "Payment not recorded. Nothing was credited; try again.")
 		return
 	}
+	// G710 flags a redirect built from non-constant parts. The path is a
+	// literal prefix and the two pieces are strconv.Itoa of an int and a
+	// decimal fixed to two places — digits, a dot and possibly a minus sign.
+	// None of those can introduce "//" or a scheme, so the target cannot
+	// leave this origin.
+	//nolint:gosec // G710: see above
 	http.Redirect(w, r, "/staff/subscribers/"+strconv.Itoa(id)+"?paid="+tx.Amount.StringFixed(2), http.StatusSeeOther)
 }
 

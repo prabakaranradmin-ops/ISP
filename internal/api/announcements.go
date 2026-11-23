@@ -68,7 +68,13 @@ func (h *Handler) CreateAnnouncement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", err.Error())
 		return
 	}
-	created, err := h.ComposeAnnouncement(r.Context(), AnnouncementInput{
+	// Mapped field by field rather than converted. The two types are
+	// structurally identical today, so AnnouncementInput(req) compiles — but
+	// they are separate on purpose, one carrying JSON tags for the wire and
+	// one being the domain input, and a wire type usually gains a field the
+	// domain does not want. Written out, that divergence is a small edit
+	// here; as a conversion it is a refactor.
+	created, err := h.ComposeAnnouncement(r.Context(), AnnouncementInput{ //nolint:staticcheck // S1016: see above
 		Title: req.Title, Body: req.Body, Channels: req.Channels, Class: req.Class,
 		SegmentFranchiseID: req.SegmentFranchiseID, SegmentPlanID: req.SegmentPlanID,
 		SegmentStatus: req.SegmentStatus, SegmentGroupID: req.SegmentGroupID,

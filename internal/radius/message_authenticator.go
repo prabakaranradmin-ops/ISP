@@ -23,7 +23,10 @@ import (
 // the Request Authenticator the HMAC is defined over. The attribute goes first,
 // as the BlastRADIUS mitigation guidance asks.
 func signResponse(resp *radius.Packet) error {
-	resp.Attributes.Del(rfc2869.MessageAuthenticator_Type)
+	// resp.Attributes.Del rather than the promoted resp.Del: in code whose
+	// whole job is getting an HMAC right, naming the part of the packet being
+	// mutated is worth more than the characters saved.
+	resp.Attributes.Del(rfc2869.MessageAuthenticator_Type) //nolint:staticcheck // QF1008: explicit on purpose
 	placeholder := &radius.AVP{
 		Type:      rfc2869.MessageAuthenticator_Type,
 		Attribute: make(radius.Attribute, md5.Size),

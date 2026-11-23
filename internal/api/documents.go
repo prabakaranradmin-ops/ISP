@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 
 	"github.com/maaransoft/isp-bss-oss/internal/archive"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
@@ -164,7 +163,3 @@ func (h *Handler) ArchiveInvoicePDF(ctx context.Context, invoiceID int, body []b
 type InvoiceArchiver interface {
 	ArchiveInvoice(ctx context.Context, invoiceID int, body []byte) (*archive.Record, error)
 }
-
-// documentAuditTarget is the audit target for a whole subscriber's documents,
-// used when the list itself is the thing being read.
-func documentAuditTarget(subscriberID int) string { return strconv.Itoa(subscriberID) }

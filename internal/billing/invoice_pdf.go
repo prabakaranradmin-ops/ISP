@@ -209,6 +209,12 @@ func launchBrowser(ctx context.Context, execPath string) (wsURL string, stop fun
 	// DevToolsActivePort, which avoids racing another process for a fixed
 	// port. The rest mirror chromedp's own defaults for a headless render:
 	// no first-run UI, no background chatter, no GPU.
+	// G204 flags execPath as possibly tainted. It is not request data: it
+	// comes from CHROMIUM_PATH or from detectChromium's fixed list of install
+	// locations, both operator-controlled, and every argument below is a
+	// literal. An operator who can set CHROMIUM_PATH can already run anything
+	// as this service.
+	//nolint:gosec // G204: see above
 	cmd := exec.CommandContext(ctx, execPath,
 		"--headless",
 		"--no-first-run",

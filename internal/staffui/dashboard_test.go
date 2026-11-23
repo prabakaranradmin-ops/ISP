@@ -140,7 +140,7 @@ func TestNavGroupsCoverEverySection(t *testing.T) {
 
 func TestBuildNav(t *testing.T) {
 	labels := func(es []NavEntry) []string {
-		var out []string
+		out := make([]string, 0, len(es))
 		for _, e := range es {
 			out = append(out, e.Label)
 		}

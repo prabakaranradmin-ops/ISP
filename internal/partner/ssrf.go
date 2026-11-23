@@ -150,7 +150,7 @@ func embeddedIPv4Compatible(ip net.IP) net.IP {
 // This is the friendly check — it gives an operator an immediate, readable
 // error instead of a webhook that registers cleanly and then fails silently on
 // every delivery. It is not the security boundary; the dialler is.
-func ValidateWebhookURL(rawURL string) error {
+func ValidateWebhookURL(ctx context.Context, rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("partner: webhook url is not a valid URL: %w", err)
@@ -173,16 +173,20 @@ func ValidateWebhookURL(rawURL string) error {
 		return nil
 	}
 
-	addrs, err := net.LookupIP(host)
+	// Resolved through the caller's context so the lookup inherits the
+	// request's deadline. net.LookupIP has none, and a hostname whose
+	// nameserver blackholes packets would hang a console request for as long
+	// as the resolver cares to wait.
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
 		// Deliberately not an error: a partner may register an endpoint whose
 		// DNS is not live yet, and refusing would be a worse failure than
 		// letting the dialler reject it later.
 		return nil
 	}
-	for _, ip := range addrs {
-		if IsBlockedIP(ip) {
-			return &ErrBlockedAddress{Addr: ip.String()}
+	for _, a := range addrs {
+		if IsBlockedIP(a.IP) {
+			return &ErrBlockedAddress{Addr: a.IP.String()}
 		}
 	}
 	return nil

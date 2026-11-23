@@ -75,15 +75,17 @@ type collectionData struct {
 
 type methodOption struct{ Key, Label string }
 
-// canCollect: who may work a round at all.
+// Who may work a round at all is the "collections" entry in
+// staffui.sections (isp_owner, billing_admin, technician), enforced by
+// requireSection. Technicians are included because they are the field staff
+// who actually knock on doors; CSRs are not, being desk-based. Owner and
+// billing are included because they both assign rounds and reconcile the
+// cash, and because they can already record a payment from the subscriber's
+// page.
 //
-// Technicians are included because they are the field staff who actually
-// knock on doors; CSRs are not, being desk-based. Owner and billing are
-// included because they both assign rounds and reconcile the cash, and
-// because they can already record a payment from the subscriber's page.
-func canCollect(role string) bool {
-	return role == "isp_owner" || role == "billing_admin" || role == "technician"
-}
+// A canCollect(role) helper used to repeat that list here and was never
+// called, so it was a second copy of the policy that could drift from the
+// one being enforced.
 
 // canAssignCollector: putting a subscriber on somebody's round decides whose
 // pocket the cash passes through, which is a management act, not a field one.

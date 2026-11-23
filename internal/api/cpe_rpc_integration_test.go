@@ -22,10 +22,9 @@ import (
 )
 
 type stubCPE struct {
-	device   *tr069.Device
-	queued   []tr069.Task
-	state    string
-	failNext bool
+	device *tr069.Device
+	queued []tr069.Task
+	state  string
 }
 
 func (s *stubCPE) GetDeviceBySerialACS(_ context.Context, serial string) (*tr069.Device, error) {

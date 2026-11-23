@@ -52,7 +52,7 @@ func NewAnnouncementHandler(d *Dispatcher) *AnnouncementHandler {
 func (h *AnnouncementHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p AnnouncementPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("announcement: unmarshal payload: %w: %w", err, jobqueue.SkipRetry)
+		return fmt.Errorf("announcement: unmarshal payload: %w: %w", err, jobqueue.ErrSkipRetry)
 	}
 	if h.dispatcher == nil {
 		return fmt.Errorf("announcement: dispatcher not configured")

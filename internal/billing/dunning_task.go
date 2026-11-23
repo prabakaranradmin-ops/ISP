@@ -54,7 +54,7 @@ func (h *DunningNoticeHandler) ProcessTask(ctx context.Context, t *jobqueue.Task
 	var p DunningNoticePayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		// A malformed payload will never become valid on retry.
-		return fmt.Errorf("dunning notice: unmarshal payload: %w: %w", err, jobqueue.SkipRetry)
+		return fmt.Errorf("dunning notice: unmarshal payload: %w: %w", err, jobqueue.ErrSkipRetry)
 	}
 	if h.notifier == nil {
 		return fmt.Errorf("dunning notice: notifier not configured")
@@ -115,7 +115,7 @@ type PaymentReceiptPayload struct {
 func (h *PaymentReceiptHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p PaymentReceiptPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("payment receipt: unmarshal payload: %w: %w", err, jobqueue.SkipRetry)
+		return fmt.Errorf("payment receipt: unmarshal payload: %w: %w", err, jobqueue.ErrSkipRetry)
 	}
 	if h.notifier == nil {
 		return fmt.Errorf("payment receipt: notifier not configured")
@@ -166,7 +166,7 @@ func (h *ServiceRestoredHandler) SetChannels(c ...string) { h.channels = c }
 func (h *ServiceRestoredHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p ServiceRestoredPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("service restored notice: unmarshal payload: %w: %w", err, jobqueue.SkipRetry)
+		return fmt.Errorf("service restored notice: unmarshal payload: %w: %w", err, jobqueue.ErrSkipRetry)
 	}
 	if h.notifier == nil {
 		return fmt.Errorf("service restored notice: notifier not configured")

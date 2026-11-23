@@ -166,24 +166,24 @@ func NewSender(store DeliveryStore, decryptor Decryptor) *Sender {
 // ProcessTask implements jobqueue.Handler for TaskTypeWebhook.
 //
 // Returning an error hands the task back to the queue for exponential backoff;
-// returning nil retires it. jobqueue.SkipRetry is used for anything no retry can
+// returning nil retires it. jobqueue.ErrSkipRetry is used for anything no retry can
 // fix — a malformed payload, an undecryptable secret, a blocked address — so a
 // permanent misconfiguration does not occupy the queue for a day.
 func (s *Sender) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p TaskPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("partner: unmarshal webhook task: %w: %w", err, jobqueue.SkipRetry)
+		return fmt.Errorf("partner: unmarshal webhook task: %w: %w", err, jobqueue.ErrSkipRetry)
 	}
 
 	secret, err := s.decryptor.Decrypt(p.SecretEncrypted)
 	if err != nil {
 		s.record(ctx, p, StatusAbandoned, nil, "", "signing secret could not be decrypted")
-		return fmt.Errorf("partner: decrypt webhook secret: %w: %w", err, jobqueue.SkipRetry)
+		return fmt.Errorf("partner: decrypt webhook secret: %w: %w", err, jobqueue.ErrSkipRetry)
 	}
 
 	body, err := json.Marshal(p.Event)
 	if err != nil {
-		return fmt.Errorf("partner: marshal webhook body: %w: %w", err, jobqueue.SkipRetry)
+		return fmt.Errorf("partner: marshal webhook body: %w: %w", err, jobqueue.ErrSkipRetry)
 	}
 
 	attempt, _ := jobqueue.RetryCount(ctx)
@@ -202,7 +202,7 @@ func (s *Sender) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 		webhookBlocked.Inc()
 		webhooksSent.WithLabelValues(p.Event.EventType, "blocked").Inc()
 		s.record(ctx, p, StatusAbandoned, status, excerpt, sendErr.Error())
-		return fmt.Errorf("partner: %w: %w", sendErr, jobqueue.SkipRetry)
+		return fmt.Errorf("partner: %w: %w", sendErr, jobqueue.ErrSkipRetry)
 
 	case attempt+1 >= MaxAttempts:
 		webhooksAbandoned.WithLabelValues(p.Event.EventType).Inc()

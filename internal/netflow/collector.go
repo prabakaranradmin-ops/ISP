@@ -77,7 +77,10 @@ func (c *Collector) Handle(ctx context.Context, remote string, data []byte) (int
 // decode or sink error on one packet is logged and dropped — one malformed
 // datagram must not take down flow collection for the whole exporter estate.
 func (c *Collector) ListenAndServe(ctx context.Context, addr string) error {
-	pc, err := net.ListenPacket("udp", addr)
+	// Through a ListenConfig so the bind inherits ctx: on a cancelled start
+	// this returns instead of holding the socket.
+	var lc net.ListenConfig
+	pc, err := lc.ListenPacket(ctx, "udp", addr)
 	if err != nil {
 		return fmt.Errorf("netflow: listen %s: %w", addr, err)
 	}

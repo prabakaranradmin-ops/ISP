@@ -26,7 +26,6 @@ import (
 type stubCollection struct {
 	staffIDs  map[string]int
 	assigned  map[int]*int
-	recorded  []int
 	staffErr  error
 	assignErr error
 }

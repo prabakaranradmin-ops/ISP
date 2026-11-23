@@ -57,15 +57,17 @@ type documentsData struct {
 	Configured   bool
 }
 
-// canReadDocuments: the archive holds invoice PDFs and KYC scans, so this is
-// the reach of the two screens that already show those — billing for
-// invoices, and the owner, who can see KYC anyway. Deliberately not CSR or
-// technician: a KYC scan is a customer's identity documents, and the DPDP
-// Act's purpose-limitation principle is not satisfied by "the front desk
-// might want to look".
-func canReadDocuments(role string) bool {
-	return role == "isp_owner" || role == "billing_admin"
-}
+// Who may read documents is the "documents" entry in staffui.sections
+// (isp_owner and billing_admin), enforced by requireSection below. The
+// archive holds invoice PDFs and KYC scans, so that is the reach of the two
+// screens which already show those — billing for invoices, and the owner,
+// who can see KYC anyway. Deliberately not CSR or technician: a KYC scan is a
+// customer's identity documents, and the DPDP Act's purpose-limitation
+// principle is not satisfied by "the front desk might want to look".
+//
+// A canReadDocuments(role) helper used to sit here repeating that list. It
+// was never called — the section gate is the enforcement — so it was two
+// copies of one policy, free to drift apart silently.
 
 func (h *Handler) documentGate(w http.ResponseWriter, r *http.Request) (Session, bool) {
 	s, ok := h.requireSection(w, r, "documents")
@@ -188,6 +190,12 @@ func (h *Handler) DownloadDocument(w http.ResponseWriter, r *http.Request) {
 	// attachment rather than inline: a KYC scan opening in a browser tab is
 	// one stray screenshot away from being somewhere it should not be.
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	// G705 reads the archived bytes as untrusted output, which they are: a
+	// customer supplied them. What makes it safe is above — Content-Disposition
+	// attachment so no browser renders it inline, nosniff so none second-guesses
+	// the type, and a filename from Record.Describe(), which only ever formats
+	// constants and integers, so nothing can break out of the header.
+	//nolint:gosec // G705: see above
 	if _, err := w.Write(body); err != nil {
 		log.Warn().Err(err).Int64("archive_id", archiveID).
 			Msg("staffui: archived document write to client failed after verification")

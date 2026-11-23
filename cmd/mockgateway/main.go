@@ -3,7 +3,7 @@
 // the payment, notification and dunning paths can be developed and tested
 // before any of those accounts exist.
 //
-// WHY THIS RATHER THAN STUBBING THE CLIENTS
+// # WHY THIS RATHER THAN STUBBING THE CLIENTS
 //
 // It speaks the providers' own HTTP shapes and the real clients are pointed
 // at it (MOCK_GATEWAY_URL), so their request construction, authentication
@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"os"
@@ -126,7 +127,12 @@ func main() {
 	// verification that is the security-relevant part. The page explains how
 	// to fire the webhook instead.
 	mux.HandleFunc("GET /pay/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
+		// Escaped before it goes anywhere near the page. The order id comes
+		// straight off the path, and this is the one handler here that
+		// renders HTML, so reflecting it raw was a scripting hole — a small
+		// one in a tool that config.Load refuses to enable in production,
+		// but a real one, and cheaper to close than to justify.
+		id := html.EscapeString(r.PathValue("id"))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, `<!doctype html><meta charset="utf-8">
 <title>Mock checkout</title>

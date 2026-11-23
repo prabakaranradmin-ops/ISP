@@ -102,10 +102,10 @@ func (h *ExportHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		// Undecodable payloads can never succeed, so retrying only fills the
 		// dead-letter queue more slowly.
-		return fmt.Errorf("reporting: unmarshal export payload: %w, %w", err, jobqueue.SkipRetry)
+		return fmt.Errorf("reporting: unmarshal export payload: %w, %w", err, jobqueue.ErrSkipRetry)
 	}
 	if !ValidReport(p.Report) {
-		return fmt.Errorf("reporting: unknown report %q: %w", p.Report, jobqueue.SkipRetry)
+		return fmt.Errorf("reporting: unknown report %q: %w", p.Report, jobqueue.ErrSkipRetry)
 	}
 
 	timer := prometheus.NewTimer(exportDuration.WithLabelValues(p.Report))
@@ -116,11 +116,11 @@ func (h *ExportHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error
 		Days: p.Days, Limit: p.Limit, GroupID: p.GroupID,
 	}
 	// Refused rather than silently unfiltered, exactly as the synchronous
-	// path refuses it. SkipRetry because retrying cannot make the
+	// path refuses it. ErrSkipRetry because retrying cannot make the
 	// combination valid.
 	if filter.GroupID != nil && !GroupFilterable(p.Report) {
 		return fmt.Errorf("reporting: %s cannot be filtered by group: %w",
-			p.Report, jobqueue.SkipRetry)
+			p.Report, jobqueue.ErrSkipRetry)
 	}
 	var buf bytes.Buffer
 	if err := WriteCSV(ctx, h.db, p.Report, filter, &buf); err != nil {
@@ -130,7 +130,7 @@ func (h *ExportHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error
 
 	if h.archiver == nil {
 		exportsTotal.WithLabelValues(p.Report, "no_archiver").Inc()
-		return fmt.Errorf("reporting: no archival backend configured: %w", jobqueue.SkipRetry)
+		return fmt.Errorf("reporting: no archival backend configured: %w", jobqueue.ErrSkipRetry)
 	}
 
 	url, err := h.archiver.ArchiveReport(ctx, p.EntityID,

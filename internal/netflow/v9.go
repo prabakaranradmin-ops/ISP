@@ -244,9 +244,9 @@ func applyField(f *Flow, typ uint16, val []byte) {
 			f.Protocol = val[0]
 		}
 	case fieldL4SrcPort:
-		f.SrcPort = uint16(uintN(val))
+		f.SrcPort = u16(uintN(val))
 	case fieldL4DstPort:
-		f.DstPort = uint16(uintN(val))
+		f.DstPort = u16(uintN(val))
 	case fieldIPv4SrcAddr:
 		f.SrcAddr = ipv4(val)
 	case fieldIPv4DstAddr:
@@ -254,11 +254,11 @@ func applyField(f *Flow, typ uint16, val []byte) {
 	case fieldPostNATSrcIP:
 		f.PostNATSrcAddr = ipv4(val)
 	case fieldPostNATSrcPort:
-		f.PostNATSrcPort = uint16(uintN(val))
+		f.PostNATSrcPort = u16(uintN(val))
 	case fieldFirstSwitched:
-		f.FirstSwitched = uint32(uintN(val))
+		f.FirstSwitched = u32(uintN(val))
 	case fieldLastSwitched:
-		f.LastSwitched = uint32(uintN(val))
+		f.LastSwitched = u32(uintN(val))
 	}
 }
 
@@ -272,6 +272,24 @@ func uintN(b []byte) uint64 {
 	}
 	return v
 }
+
+// u16 and u32 narrow a decoded field to the width the protocol defines for
+// it, keeping the low bits.
+//
+// A port is sixteen bits and a sysUpTime timestamp is thirty-two by
+// definition, but the field width on the wire comes from the exporter's
+// template and nothing stops a misconfigured one declaring eight bytes. The
+// masks say that the narrowing is the protocol's and not an accident: these
+// used to be bare uint16()/uint32() conversions, which read as somebody
+// having forgotten the value could be wider.
+//
+// Keeping the low bits rather than rejecting the record is deliberate. One
+// malformed field should not discard a flow whose other fields are fine —
+// the collector's whole design is that a bad datagram must not take down
+// collection for the estate.
+func u16(v uint64) uint16 { return uint16(v & 0xFFFF) }
+
+func u32(v uint64) uint32 { return uint32(v & 0xFFFFFFFF) }
 
 // ipv4 copies a 4-byte address, returning nil for any other length.
 func ipv4(b []byte) net.IP {

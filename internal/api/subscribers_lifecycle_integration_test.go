@@ -366,6 +366,40 @@ func (s *stubLifecycleAlwaysNotFound) TerminateSubscriber(context.Context, int) 
 	return nil, nil
 }
 
+// A plan change for a subscriber who does not exist is a 404, not a 500.
+//
+// The store signals "no such subscriber" by returning (nil, nil) rather than
+// an error, and changeSubscriberPlan turns that into ErrSubscriberNotFound at
+// two separate points — the lookup and the write, the second covering a
+// subscriber deleted between them. stubLifecycleAlwaysNotFound was written
+// for exactly this and then never used by any test, so both branches were
+// unreachable by the suite until 2026-11-23; `unused` flagging the dead stub
+// is what surfaced it.
+func TestChangeSubscriberPlan_AMissingSubscriberIs404(t *testing.T) {
+	h := api.NewHandler(api.HandlerDeps{
+		DB: &stubDB{}, KYC: &stubKYC{}, Wallet: billing.NewWalletService(&stubWallet{}),
+		Lifecycle: &stubLifecycleAlwaysNotFound{}, SubCache: &stubSubCache{},
+		Tasks: &stubTaskEnqueuer{},
+	})
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, itJWTSecret)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/subscribers/404404/plan-change",
+		strings.NewReader(`{"new_plan_id":2}`))
+	req.Header.Set("Authorization", "Bearer "+itRoleTokenWithSubject(t, "billing_admin", "requester"))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("want 404 for a subscriber that does not exist, got %d — %s", rec.Code, rec.Body.String())
+	}
+	// The code matters as much as the status: a mobile client distinguishes
+	// "no such subscriber" from the 404 a bad route gives.
+	if !strings.Contains(rec.Body.String(), "ERR_SUBSCRIBER_NOT_FOUND") {
+		t.Errorf("the refusal should name the reason, got %s", rec.Body.String())
+	}
+}
+
 // ── Adjustments (FR-BIL-010) ────────────────────────────────────────────────
 
 // TestCreateAdjustment_CreditFilesApprovalRequest: a credit moves money into

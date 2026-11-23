@@ -37,7 +37,10 @@ var planChangeMessages = map[string]string{
 	"failed": "That did not go through. Nothing was changed; try again.",
 }
 
-var planChangeSuccess = map[string]bool{"scheduled": true, "cancelled": true}
+// Which outcomes are successes is not a lookup: a success redirects with the
+// message in the URL and a failure re-renders the page with it, so the two
+// are already distinguished by which branch runs. A planChangeSuccess map
+// used to sit here and was never read.
 
 // SchedulePlanChangeForm handles
 // POST /staff/subscribers/{id}/scheduled-plan-change.

@@ -135,8 +135,9 @@ func TestFR_SUP_004_EachFailureIsReportedDistinctly(t *testing.T) {
 // An unknown ticket and somebody else's ticket must be indistinguishable, or
 // a subscriber can enumerate which ticket ids exist by rating them.
 func TestFR_SUP_004_AForeignTicketLooksExactlyLikeAMissingOne(t *testing.T) {
-	var bodies []string
-	for _, err := range []error{tickets.ErrTicketNotFound, tickets.ErrNotYourTicket} {
+	errs := []error{tickets.ErrTicketNotFound, tickets.ErrNotYourTicket}
+	bodies := make([]string, 0, len(errs))
+	for _, err := range errs {
 		store := &stubTickets{rateErr: err}
 		mux := ratingMux(store)
 		rec := rateCall(t, mux, loginToken(t, mux), "/portal/tickets/7/rating", `{"rating":5}`)

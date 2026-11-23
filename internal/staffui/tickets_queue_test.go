@@ -212,8 +212,6 @@ func TestRenderTicketQueue(t *testing.T) {
 
 // ── Ratings in the queue and the summary strip — FR-SUP-004 ─────────────────
 
-func ptrInt(v int) *int { return &v }
-
 // Rendered with real data: the rating cell and the satisfaction tiles both
 // read fields a wrong name would hide until somebody loaded the page.
 func TestFR_SUP_004_TheQueueShowsTheSubscribersRating(t *testing.T) {

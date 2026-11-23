@@ -184,7 +184,7 @@ func (h *Handler) CreateWebhookEndpoint(w http.ResponseWriter, r *http.Request) 
 	// instead of an endpoint that registers cleanly and fails on every
 	// delivery. The dialler re-checks after DNS resolution, which is the half
 	// that actually holds against rebinding.
-	if err := partner.ValidateWebhookURL(req.URL); err != nil {
+	if err := partner.ValidateWebhookURL(r.Context(), req.URL); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", err.Error())
 		return
 	}

@@ -339,7 +339,7 @@ func (s *Server) run(ctx context.Context, mux *ServeMux, ct *claimedTask) {
 	if err != nil && s.cfg.ErrorHandler != nil {
 		s.cfg.ErrorHandler(runCtx, &Task{typ: ct.taskType, payload: ct.payload}, err)
 	}
-	s.finish(ctx, ct, err, errors.Is(err, SkipRetry))
+	s.finish(ctx, ct, err, errors.Is(err, ErrSkipRetry))
 }
 
 // finish records a task's outcome: completed, scheduled for retry, or dead.

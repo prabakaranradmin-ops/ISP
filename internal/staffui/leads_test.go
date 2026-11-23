@@ -17,17 +17,16 @@ import (
 
 // fakeLeads records what the console asked of the lead pipeline.
 type fakeLeads struct {
-	leads      []crm.Lead
-	err        error
-	created    *crm.Lead
-	moved      int
-	gotStatus  *string
-	gotLost    *string
-	converted  int
-	gotInput   api.ConvertLeadInput
-	gotActor   string
-	gotScope   *int
-	scopeCalls int
+	leads     []crm.Lead
+	err       error
+	created   *crm.Lead
+	moved     int
+	gotStatus *string
+	gotLost   *string
+	converted int
+	gotInput  api.ConvertLeadInput
+	gotActor  string
+	gotScope  *int
 }
 
 func (f *fakeLeads) NewLead(ctx context.Context, l crm.Lead, scope *int) (*crm.Lead, error) {

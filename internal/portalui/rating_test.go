@@ -113,8 +113,9 @@ func TestFR_SUP_004_EachRefusalIsWordedForTheSubscriber(t *testing.T) {
 
 	// The two "cannot see it" cases must read identically, or a subscriber
 	// can discover which ticket ids exist.
-	var bodies []string
-	for _, err := range []error{tickets.ErrTicketNotFound, tickets.ErrNotYourTicket} {
+	errs := []error{tickets.ErrTicketNotFound, tickets.ErrNotYourTicket}
+	bodies := make([]string, 0, len(errs))
+	for _, err := range errs {
 		mux := ratingMux(t, &stubTickets{rateErr: err})
 		bodies = append(bodies, postRating(t, mux, 42, url.Values{"rating": {"5"}}).Body.String())
 	}

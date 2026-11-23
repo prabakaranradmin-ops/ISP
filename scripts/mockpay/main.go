@@ -2,7 +2,7 @@
 // webhook to a locally running API, so the whole money path can be exercised
 // without a Razorpay account.
 //
-// WHY THIS WORKS WITHOUT ANY CREDENTIALS
+// # WHY THIS WORKS WITHOUT ANY CREDENTIALS
 //
 // Razorpay authenticates its webhooks by signing the body with the shared
 // secret in RAZORPAY_WEBHOOK_SECRET — a value this deployment chooses, not
@@ -27,6 +27,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
@@ -107,7 +108,7 @@ func main() {
 		signature = "0000000000000000000000000000000000000000000000000000000000000000"
 	}
 
-	req, err := http.NewRequest(http.MethodPost, *apiURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, *apiURL, bytes.NewReader(body))
 	if err != nil {
 		fatal(err.Error())
 	}
@@ -133,7 +134,7 @@ func main() {
 	if err != nil {
 		fatal(fmt.Sprintf("request failed: %v", err))
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close()              //nolint:errcheck
 	respBody, _ := io.ReadAll(resp.Body) //nolint:errcheck
 
 	fmt.Printf("\n%s\n", resp.Status)

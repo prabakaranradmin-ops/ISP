@@ -406,7 +406,7 @@ func TestQueue_SkipRetryDeadLettersImmediately(t *testing.T) {
 		mu.Lock()
 		attempts++
 		mu.Unlock()
-		return fmt.Errorf("permanently wrong: %w", SkipRetry)
+		return fmt.Errorf("permanently wrong: %w", ErrSkipRetry)
 	})
 	startServer(t, pool, Config{
 		Concurrency: 1,
@@ -429,7 +429,7 @@ func TestQueue_SkipRetryDeadLettersImmediately(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if attempts != 1 {
-		t.Errorf("SkipRetry must not be retried: want 1 attempt, got %d", attempts)
+		t.Errorf("ErrSkipRetry must not be retried: want 1 attempt, got %d", attempts)
 	}
 }
 

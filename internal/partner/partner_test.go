@@ -1,6 +1,7 @@
 package partner_test
 
 import (
+	"context"
 	"net"
 	"strings"
 	"testing"
@@ -251,12 +252,12 @@ func TestFR_API_002_WebhookURLValidation(t *testing.T) {
 		{"https://", "no host"},
 	}
 	for _, tc := range refused {
-		if err := partner.ValidateWebhookURL(tc.url); err == nil {
+		if err := partner.ValidateWebhookURL(context.Background(), tc.url); err == nil {
 			t.Errorf("%s must be refused (%s)", tc.url, tc.why)
 		}
 	}
 
-	if err := partner.ValidateWebhookURL("https://hooks.example.com/isp"); err != nil {
+	if err := partner.ValidateWebhookURL(context.Background(), "https://hooks.example.com/isp"); err != nil {
 		t.Errorf("a normal https endpoint must be accepted: %v", err)
 	}
 }
@@ -272,8 +273,11 @@ func TestFR_API_002_DialerBlocksAfterResolution(t *testing.T) {
 
 	// A literal private address reaches the dialler's Control hook, which is
 	// the only checkpoint a rebinding attack cannot slip past.
-	_, err := client.Get("https://169.254.169.254/latest/meta-data/")
+	resp, err := client.Get("https://169.254.169.254/latest/meta-data/")
 	if err == nil {
+		// Only reachable if the guard failed, but leaving the body open
+		// would leak a connection on the way to reporting it.
+		_ = resp.Body.Close()
 		t.Fatal("a request to cloud metadata must fail at the dialler")
 	}
 	if !strings.Contains(err.Error(), "private or reserved range") {

@@ -47,7 +47,7 @@ func (h *WarningHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) erro
 	var p WarningPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		// A malformed payload will never become valid on retry.
-		return fmt.Errorf("fup warning: unmarshal payload: %w: %w", err, jobqueue.SkipRetry)
+		return fmt.Errorf("fup warning: unmarshal payload: %w: %w", err, jobqueue.ErrSkipRetry)
 	}
 	if h.notifier == nil {
 		return fmt.Errorf("fup warning: notifier not configured")

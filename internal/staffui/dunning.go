@@ -187,7 +187,7 @@ func (h *Handler) DunningSettings(w http.ResponseWriter, r *http.Request) {
 	h.renderDunning(w, r, s, p, "", msg)
 }
 
-func (h *Handler) renderDunning(w http.ResponseWriter, r *http.Request, s Session, p billing.DunningPolicy, errMsg, msg string) {
+func (h *Handler) renderDunning(w http.ResponseWriter, _ *http.Request, s Session, p billing.DunningPolicy, errMsg, msg string) {
 	d := h.page(s, "Dunning Settings", "dunning")
 	d.Error, d.Message = errMsg, msg
 	d.Data = dunningData{Policy: p, Ladder: ladderFor(p), CanEdit: canEditDunning(s.Role)}

@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -33,7 +34,8 @@ func main() {
 	)
 	flag.Parse()
 
-	conn, err := net.Dial("udp", *target)
+	var d net.Dialer
+	conn, err := d.DialContext(context.Background(), "udp", *target)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "netflowsim: dial %s: %v\n", *target, err)
 		os.Exit(1)

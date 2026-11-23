@@ -78,7 +78,7 @@ func (h *PoDHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 		if err != nil {
 			// No live session means there is nothing left to disconnect.
 			// Retrying cannot change that, so the task should not be retried.
-			return fmt.Errorf("pod: get NAS session for sub %d: %w: %w", p.SubscriberID, err, jobqueue.SkipRetry)
+			return fmt.Errorf("pod: get NAS session for sub %d: %w: %w", p.SubscriberID, err, jobqueue.ErrSkipRetry)
 		}
 	}
 

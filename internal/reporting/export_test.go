@@ -380,8 +380,8 @@ func TestFR_RPT_002_UnprocessableExportsSkipRetry(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected an error")
 			}
-			if !errors.Is(err, jobqueue.SkipRetry) {
-				t.Errorf("want SkipRetry, got %v", err)
+			if !errors.Is(err, jobqueue.ErrSkipRetry) {
+				t.Errorf("want ErrSkipRetry, got %v", err)
 			}
 		})
 	}
@@ -398,7 +398,7 @@ func TestFR_RPT_002_QueryFailureIsRetried(t *testing.T) {
 	if err == nil {
 		t.Fatal("a query failure must fail the task")
 	}
-	if errors.Is(err, jobqueue.SkipRetry) {
+	if errors.Is(err, jobqueue.ErrSkipRetry) {
 		t.Error("a transient database failure must stay retryable")
 	}
 }

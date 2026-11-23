@@ -109,9 +109,9 @@ var (
 	// queued. Callers treat this as success-by-idempotency, not failure.
 	ErrTaskIDConflict = errors.New("jobqueue: task id already exists")
 
-	// SkipRetry, when returned (or wrapped) by a handler, sends the task
+	// ErrSkipRetry, when returned (or wrapped) by a handler, sends the task
 	// straight to the dead-letter state instead of retrying it. Used where
 	// a retry provably cannot help — a webhook aimed at a private address
 	// stays aimed at a private address.
-	SkipRetry = errors.New("jobqueue: skip retry")
+	ErrSkipRetry = errors.New("jobqueue: skip retry")
 )

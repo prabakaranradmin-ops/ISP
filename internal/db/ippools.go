@@ -327,7 +327,7 @@ func (s *NASStore) AllocateStaticIP(ctx context.Context, req nas.AllocateRequest
 			return err
 		}
 
-		taken, err := takenAddressesTx(ctx, tx, req.PoolID)
+		taken, err := takenAddressesTx(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -418,7 +418,7 @@ func exclusionsTx(ctx context.Context, tx pgx.Tx, poolID int) ([]nas.PoolExclusi
 // Across all pools, not just this one: two pools can overlap by operator
 // error, and handing out an address that another pool has already given to
 // someone else is the exact collision this feature exists to prevent.
-func takenAddressesTx(ctx context.Context, tx pgx.Tx, poolID int) (map[netip.Addr]bool, error) {
+func takenAddressesTx(ctx context.Context, tx pgx.Tx) (map[netip.Addr]bool, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT host(address) FROM static_ip_assignments WHERE status = 'active'`)
 	if err != nil {

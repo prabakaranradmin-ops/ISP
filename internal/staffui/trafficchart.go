@@ -117,6 +117,9 @@ func buildChart(pts []nastraffic.Point, r nastraffic.Range, from time.Time, loc 
 	for i, p := range pts {
 		mid := p.At.Add(r.Bucket / 2)
 		cmd := "L"
+		// pts[i-1] is only reached when i != 0, by the short-circuit on the
+		// left. G602 does not follow that.
+		//nolint:gosec // G602: guarded by i == 0 above
 		if i == 0 || p.At.Sub(pts[i-1].At) > r.Bucket {
 			cmd = "M"
 		}

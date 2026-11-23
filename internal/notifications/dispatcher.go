@@ -135,7 +135,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, task NotificationTask) error 
 // Deliberately not an error: most subscribers will never install the app or
 // supply an address, so returning one would push an ordinary state into
 // the queue's retry-and-dead-letter path for a condition no retry can fix. This
-// is the same judgment PoDHandler makes with SkipRetry when a subscriber has
+// is the same judgment PoDHandler makes with ErrSkipRetry when a subscriber has
 // no live session.
 func (d *Dispatcher) recordUnreachable(ctx context.Context, task NotificationTask, reason string) error {
 	log.Info().

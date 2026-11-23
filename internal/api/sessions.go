@@ -279,7 +279,7 @@ func (h *Handler) ClearSpeedOverride(w http.ResponseWriter, r *http.Request) {
 // payload only needs the subscriber id. If the subscriber has no active
 // session right now, the task fails harmlessly — the override is already
 // stored and takes effect on their next Access-Accept regardless.
-func (h *Handler) enqueueSpeedOverrideCoA(ctx context.Context, subscriberID int) {
+func (h *Handler) enqueueSpeedOverrideCoA(_ context.Context, subscriberID int) {
 	payload, _ := json.Marshal(fup.CoAPayload{SubscriberID: subscriberID}) //nolint:errcheck
 	task := jobqueue.NewTask(fup.TaskTypeCoA, payload,
 		jobqueue.Queue(fup.QueueNetCommands), jobqueue.MaxRetry(5), jobqueue.Retention(sessionTaskRetention))

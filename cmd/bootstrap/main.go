@@ -284,10 +284,9 @@ func applyMigrations(db *sql.DB) error {
 		return fmt.Errorf("read resulting schema version: %w", err)
 	}
 
-	switch {
-	case before == after:
+	if before == after {
 		fmt.Printf("bootstrap: schema already at version %d\n", after)
-	default:
+	} else {
 		fmt.Printf("bootstrap: schema migrated from version %d to %d\n", before, after)
 	}
 	return nil

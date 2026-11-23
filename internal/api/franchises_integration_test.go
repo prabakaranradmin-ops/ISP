@@ -56,7 +56,6 @@ type stubFranchises struct {
 
 	records []revenue.FranchiseRecord
 	pnl     *revenue.FranchisePnL
-	created *revenue.FranchiseRecord
 	err     error
 	// commissions records any settlement the handler triggered — see the
 	// CalculateAndStoreLCOCommission stub below.
