@@ -561,7 +561,18 @@ func run(ctx context.Context) error {
 
 	// Meta delivery callbacks: GET is the subscription handshake, POST carries
 	// delivery statuses. Both are HMAC- or token-verified, never JWT.
+	//
+	// Both verbs are on one URL because that is how Meta works and what the
+	// API contract publishes: the operator configures a single callback URL
+	// and Meta sends the handshake and the events to it. This served POST
+	// only at /webhooks/whatsapp/status, so configuring the documented URL
+	// passed the handshake and then dropped every delivery status with a 404
+	// — silently, since Meta retries and then gives up, and
+	// notification_log.delivery_status simply never advanced past "sent"
+	// (FR-NOTIF-011). /status stays registered because it is what the
+	// previous instructions said to configure.
 	mux.HandleFunc("GET /webhooks/whatsapp", notificationWebhook.Verify)
+	mux.HandleFunc("POST /webhooks/whatsapp", notificationWebhook.HandleDeliveryStatus)
 	mux.HandleFunc("POST /webhooks/whatsapp/status", notificationWebhook.HandleDeliveryStatus)
 
 	// TR-069 ACS (FR-CPE-001..003 | MDS §4.19). No JWT: CWMP devices
