@@ -50,6 +50,12 @@ function describe(violations: Awaited<ReturnType<AxeBuilder['analyze']>>['violat
 
 test.describe('WCAG 2.1 AA', () => {
   test('every console section', async ({ page }) => {
+    // Forty screens, each loaded and then scanned by axe in-page. It runs in
+    // about 25s alone and over the 30s default when the whole suite is
+    // competing for the machine, which showed up as a timeout rather than as
+    // a violation — a failure that reads like an accessibility regression and
+    // is not one.
+    test.setTimeout(180_000);
     await page.goto('/staff/login');
     await page.fill('input[name="username"]', 'owner');
     await page.fill('input[name="password"]', 'staffpassword');

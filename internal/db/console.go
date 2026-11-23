@@ -81,7 +81,11 @@ func (s *ConsoleStore) DashboardCounts(ctx context.Context) (*staffui.DashboardC
 	return c, nil
 }
 
-const defaultDirectoryLimit = 500
+// defaultDirectoryPageSize is a page, not a cap. It was 500 when the only way
+// past the limit was to narrow the search; now that the pager can walk the
+// whole base, a page is sized to be read and to send a reasonable amount of
+// HTML.
+const defaultDirectoryPageSize = 50
 
 // ListDirectory returns the subscribers matching f.
 func (s *ConsoleStore) ListDirectory(ctx context.Context, f staffui.DirectoryFilter) (*staffui.DirectoryPage, error) {
@@ -93,7 +97,13 @@ func (s *ConsoleStore) ListDirectory(ctx context.Context, f staffui.DirectoryFil
 	}
 	limit := f.Limit
 	if limit <= 0 {
-		limit = defaultDirectoryLimit
+		limit = defaultDirectoryPageSize
+	}
+	// A negative offset would make PostgreSQL reject the query; a
+	// hand-edited URL is the obvious way one arrives.
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
 	}
 
 	query := strings.TrimSpace(f.Query)
@@ -156,7 +166,7 @@ func (s *ConsoleStore) ListDirectory(ctx context.Context, f staffui.DirectoryFil
 		       (SELECT count(*) FROM subscribers)
 		  FROM matched
 		 ORDER BY id
-		 LIMIT $7`
+		 LIMIT $7 OFFSET $9`
 
 	// 0 means "no group filter", passed as NULL so the predicate above is a
 	// no-op rather than matching a group id of zero.
@@ -167,13 +177,17 @@ func (s *ConsoleStore) ListDirectory(ctx context.Context, f staffui.DirectoryFil
 	}
 
 	rows, err := s.pool.Query(ctx, q, liveSessionTTLSeconds, f.Status, f.View,
-		query, "%"+escapeLike(query)+"%", idQuery, limit, groupQuery)
+		query, "%"+escapeLike(query)+"%", idQuery, limit, groupQuery, offset)
 	if err != nil {
 		return nil, fmt.Errorf("db: list directory: %w", err)
 	}
 	defer rows.Close()
 
-	page := &staffui.DirectoryPage{Rows: make([]staffui.DirectoryRow, 0, 32)}
+	page := &staffui.DirectoryPage{
+		Rows:   make([]staffui.DirectoryRow, 0, 32),
+		Offset: offset,
+		Limit:  limit,
+	}
 	for rows.Next() {
 		var r staffui.DirectoryRow
 		if err := rows.Scan(&r.ID, &r.Username, &r.Status, &r.MobileNumber, &r.PlanName,
@@ -192,6 +206,8 @@ func (s *ConsoleStore) ListDirectory(ctx context.Context, f staffui.DirectoryFil
 			return nil, fmt.Errorf("db: count subscribers: %w", err)
 		}
 	}
+	// Truncated means "more matched than this page holds", which is now what
+	// draws the pager rather than an apology for a cap.
 	page.Truncated = page.Matched > len(page.Rows)
 	return page, nil
 }

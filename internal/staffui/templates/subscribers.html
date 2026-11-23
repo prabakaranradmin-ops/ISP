@@ -47,7 +47,7 @@
 
 {{if not $d.LoadFailed}}
 {{if $d.Directory}}
-<p class="muted">{{len $d.Directory.Rows}} shown of {{$d.Directory.Matched}} matching, {{$d.Directory.Total}} in total{{if $d.Directory.Truncated}} &middot; narrow the search to see the rest{{end}}</p>
+<p class="muted">{{if $d.Directory.Rows}}Showing {{$d.Directory.FirstShown}}&ndash;{{$d.Directory.LastShown}} of {{$d.Directory.Matched}} matching{{else}}No subscribers match{{end}}, {{$d.Directory.Total}} in total</p>
 {{else}}
 <p class="muted">{{len $d.Results}} shown of {{$d.Total}} total</p>
 {{end}}
@@ -93,6 +93,14 @@
     </tbody>
   </table>
 </div>
+
+{{if or $d.PrevURL $d.NextURL}}
+<nav class="pager" aria-label="Subscriber pages">
+  {{if $d.PrevURL}}<a class="btn" href="{{$d.PrevURL}}" rel="prev">&larr; Previous</a>{{else}}<span class="btn disabled" aria-disabled="true">&larr; Previous</span>{{end}}
+  <span class="muted">{{$d.Directory.FirstShown}}&ndash;{{$d.Directory.LastShown}} of {{$d.Directory.Matched}}</span>
+  {{if $d.NextURL}}<a class="btn" href="{{$d.NextURL}}" rel="next">Next &rarr;</a>{{else}}<span class="btn disabled" aria-disabled="true">Next &rarr;</span>{{end}}
+</nav>
+{{end}}
 
 {{if $d.ShowBulkActions}}
 <div class="card">

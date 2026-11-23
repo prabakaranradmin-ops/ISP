@@ -177,6 +177,13 @@ func (h *Handler) DownloadDocument(w http.ResponseWriter, r *http.Request) {
 
 	filename := strings.ReplaceAll(rec.Describe(), " ", "-") + extensionFor(rec.DocKind)
 	w.Header().Set("Content-Type", contentTypeFor(rec.DocKind))
+	// The other four download paths (invoices, proformas, receipts, the
+	// hotspot logo) all set this and this one did not. An archived document
+	// is bytes a customer supplied, so a browser that sniffs its way to
+	// text/html would be running their content on our origin; the attachment
+	// disposition below already prevents that, and this closes the gap the
+	// rest of the codebase had already decided to close.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	// attachment rather than inline: a KYC scan opening in a browser tab is
 	// one stray screenshot away from being somewhere it should not be.

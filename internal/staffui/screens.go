@@ -54,7 +54,12 @@ type subscribersData struct {
 	// itself failed, leaving only the error banner and the search form.
 	LoadFailed bool
 	Filter     DirectoryFilter
-	ViewLabel  string
+	// PrevURL and NextURL carry every active filter plus the new offset, so
+	// paging does not quietly drop the search the operator is paging
+	// through. Empty when there is no such page.
+	PrevURL   string
+	NextURL   string
+	ViewLabel string
 	Statuses   []string
 	Views      []string
 	// ShowBulkActions gates the checkbox column and bulk-action card, same
@@ -90,6 +95,9 @@ func (h *Handler) Subscribers(w http.ResponseWriter, r *http.Request) {
 		// group filter" — the same as absent. A bad id showing everyone is
 		// wrong in the safe direction here, and renderDirectory says so.
 		GroupID: atoiOrZero(q.Get("group_id")),
+		// Like group_id, an unparseable offset becomes 0 — the first page,
+		// which is the safe direction for a hand-edited or stale URL.
+		Offset: atoiOrZero(q.Get("offset")),
 	}, "", "")
 }
 
@@ -210,9 +218,45 @@ func (h *Handler) renderDirectory(w http.ResponseWriter, r *http.Request, d page
 		return
 	}
 	sd.Directory = page
+	if page.HasPrev() {
+		sd.PrevURL = directoryURL(f, page.PrevOffset())
+	}
+	if page.HasNext() {
+		sd.NextURL = directoryURL(f, page.NextOffset())
+	}
 	h.attachBulkPlans(r, &sd)
 	d.Data = sd
 	h.render(w, "subscribers", d)
+}
+
+// directoryURL rebuilds the directory link with every active filter and a new
+// offset.
+//
+// Built from the filter rather than from the incoming URL on purpose: the
+// bulk-action path re-renders the list from a POST, where the query string
+// holds nothing, and reusing r.URL there would have produced a pager that
+// silently dropped the search.
+func directoryURL(f DirectoryFilter, offset int) string {
+	v := url.Values{}
+	if f.Query != "" {
+		v.Set("q", f.Query)
+	}
+	if f.Status != "" {
+		v.Set("status", f.Status)
+	}
+	if f.View != "" {
+		v.Set("view", f.View)
+	}
+	if f.GroupID > 0 {
+		v.Set("group_id", strconv.Itoa(f.GroupID))
+	}
+	if offset > 0 {
+		v.Set("offset", strconv.Itoa(offset))
+	}
+	if len(v) == 0 {
+		return "/staff/subscribers"
+	}
+	return "/staff/subscribers?" + v.Encode()
 }
 
 func (h *Handler) attachBulkPlans(r *http.Request, sd *subscribersData) {

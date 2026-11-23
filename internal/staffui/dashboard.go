@@ -88,6 +88,12 @@ type DirectoryFilter struct {
 	GroupID int
 	// Limit caps the rows returned; <= 0 means the store's default.
 	Limit int
+	// Offset skips that many matching rows before the page begins. The
+	// directory used to cap at 500 and tell the operator to narrow the
+	// search, which is fine until the row they want is one they cannot
+	// name — a new signup they are looking for by eye, or the 900th of a
+	// status. Paging is how they reach it.
+	Offset int
 }
 
 // DirectoryRow is one subscriber in the directory.
@@ -105,10 +111,55 @@ type DirectoryRow struct {
 // DirectoryPage is the rows matching a filter, how many matched in all, and
 // the unfiltered total, so the screen can say "12 of 340".
 type DirectoryPage struct {
-	Rows      []DirectoryRow
-	Matched   int
-	Total     int
+	Rows    []DirectoryRow
+	Matched int
+	Total   int
+	// Truncated reports that more rows matched than this page holds. It
+	// stays for the screens that do not page, and is now what tells the
+	// directory to draw its pager at all.
 	Truncated bool
+
+	// Offset is where this page starts within the matching rows, and Limit
+	// is how many it holds, so the template can work out the page number
+	// and the next and previous offsets without re-deriving the filter.
+	Offset int
+	Limit  int
+}
+
+// HasPrev reports whether a page precedes this one.
+func (p DirectoryPage) HasPrev() bool { return p.Offset > 0 }
+
+// HasNext reports whether another page follows.
+func (p DirectoryPage) HasNext() bool { return p.Offset+len(p.Rows) < p.Matched }
+
+// PrevOffset is where the previous page starts, floored at zero so a
+// hand-edited offset cannot produce a negative one.
+func (p DirectoryPage) PrevOffset() int {
+	if p.Offset-p.Limit < 0 {
+		return 0
+	}
+	return p.Offset - p.Limit
+}
+
+// NextOffset is where the following page starts.
+func (p DirectoryPage) NextOffset() int { return p.Offset + p.Limit }
+
+// FirstShown and LastShown are 1-based positions for "showing 501-1000 of
+// 20,000" — 0 and 0 when the page is empty, so the screen can say "none"
+// rather than "showing 1-0".
+func (p DirectoryPage) FirstShown() int {
+	if len(p.Rows) == 0 {
+		return 0
+	}
+	return p.Offset + 1
+}
+
+// LastShown is the 1-based position of the last row on this page.
+func (p DirectoryPage) LastShown() int {
+	if len(p.Rows) == 0 {
+		return 0
+	}
+	return p.Offset + len(p.Rows)
 }
 
 // statusSegment is one coloured run of the dashboard's status bar.
