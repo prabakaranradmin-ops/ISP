@@ -2,7 +2,7 @@
 # Referenced by docker-compose.yml service api_service.
 
 # ── Build ────────────────────────────────────────────────────────────────────
-FROM golang:1.22-alpine AS build
+FROM golang:1.26-alpine AS build
 
 WORKDIR /src
 

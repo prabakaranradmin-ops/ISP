@@ -591,6 +591,22 @@ is cheaper to decide before the console grows past 53 templates than after.
   **a unique index over a table the harness does not truncate will fail the
   next test rather than the one at fault.**
 
+- **The project now needs Go 1.26, and that arrived as a side effect.**
+  `go.mod` said 1.23 until minio-go was added for FR-NET-008; `go get` raises
+  the `go` directive when a dependency requires a newer toolchain, so the
+  floor moved to 1.26.0 without anybody writing that change. It is a real
+  constraint on anyone building this — flagging it because a dependency that
+  quietly raises the minimum toolchain is easy to add and awkward to discover.
+
+  Everything that names a Go version now derives it: the CI workflow reads
+  `go-version-file: go.mod`, and `internal/spec` fails if a Dockerfile or
+  `demo_up.sh` falls behind it. That pin has drifted three times — 1.20
+  against 1.22 in CI, 1.22 against 1.23 in the images (which is what made the
+  demo stack unbuildable from 2026-11-16, serving months-old code rather than
+  failing), and now 1.23 against 1.26, which would have failed every CI job
+  on the next push. The Docker images are back in step at `golang:1.26`,
+  though Docker was down here so they have not been rebuilt.
+
 - **Off-machine archival (FR-NET-008) is implemented but has never written to
   a real bucket.** `archive.S3Store` speaks S3 through minio-go and is chosen
   by `ARCHIVE_S3_BUCKET`, which takes precedence over `ARCHIVE_DIR` — a copy

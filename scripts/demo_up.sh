@@ -64,7 +64,7 @@ ensure_env_secret() {
         # worst case, then truncate to a fixed, deterministic length rather
         # than trust however many survived stripping.
         local value
-        value=$(docker run --rm golang:1.22 sh -c "head -c 48 /dev/urandom | base64 -w0" | tr -d '=+/\n' | head -c 40)
+        value=$(docker run --rm golang:1.26 sh -c "head -c 48 /dev/urandom | base64 -w0" | tr -d '=+/\n' | head -c 40)
         printf '\n%s=%s\n' "$key" "$value" >> .env
     fi
 }
@@ -82,7 +82,7 @@ set -a; source .env; set +a
 mkdir -p config/keys
 if [ ! -f config/keys/aes_keys.json ]; then
     info "generating a local AES key store"
-    KEY_B64=$(docker run --rm golang:1.22 sh -c "head -c 32 /dev/urandom | base64 -w0")
+    KEY_B64=$(docker run --rm golang:1.26 sh -c "head -c 32 /dev/urandom | base64 -w0")
     printf '{"active_version":"v1","keys":{"v1":"%s"}}\n' "$KEY_B64" > config/keys/aes_keys.json
     pass "config/keys/aes_keys.json created"
 else
@@ -113,7 +113,7 @@ DSN="postgres://postgres:${DB_SECURE_PASSWORD}@postgres_primary:5432/isp_bss_oss
 if ! docker run --rm --network "$COMPOSE_NETWORK" \
         -v "$REPO_ROOT:/src" -w /src \
         -v isp_gomodcache:/go/pkg/mod -v isp_gobuildcache:/root/.cache/go-build \
-        -e GOFLAGS=-mod=mod golang:1.22 \
+        -e GOFLAGS=-mod=mod golang:1.26 \
         go run github.com/pressly/goose/v3/cmd/goose@v3.19.2 -dir ./migrations postgres "$DSN" up; then
     fail "migrations failed"
     exit 1
@@ -241,7 +241,7 @@ fi
 TOKEN=$(docker run --rm --network "$COMPOSE_NETWORK" \
     -v "$REPO_ROOT:/src" -w /src \
     -v isp_gomodcache:/go/pkg/mod -v isp_gobuildcache:/root/.cache/go-build \
-    -e GOFLAGS=-mod=mod golang:1.22 \
+    -e GOFLAGS=-mod=mod golang:1.26 \
     go run ./scripts/gen_jwt -secret "${JWT_SECRET}" -role billing_admin -ttl 12h 2>/dev/null | tr -d '\r\n')
 
 head1 "Demo is up"
@@ -284,7 +284,7 @@ cat <<EOF
 
   ── RADIUS (needs a client, e.g. radload from this repo) ────────────────────
   docker run --rm --network "$COMPOSE_NETWORK" \\
-      -v "$REPO_ROOT:/src" -w /src -e GOFLAGS=-mod=mod golang:1.22 \\
+      -v "$REPO_ROOT:/src" -w /src -e GOFLAGS=-mod=mod golang:1.26 \\
       go run ./cmd/radload -addr bss_aaa_core_daemon:1812 -secret "${RADIUS_SECRET}" \\
       -username test_user -password testpassword
 
