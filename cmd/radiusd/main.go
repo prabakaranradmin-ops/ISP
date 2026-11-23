@@ -729,6 +729,9 @@ func run(ctx context.Context) error {
 	// ── Metrics ─────────────────────────────────────────────────────────────
 
 	metricsMux := http.NewServeMux()
+	// FR-OBS-001: Prometheus /metrics — RADIUS auth latency histograms, CoA
+	// ACK rates, active sessions and FUP breaches are registered against the
+	// default registry this serves.
 	metricsMux.Handle("GET /metrics", promhttp.Handler())
 	metricsServer := &http.Server{
 		Addr:              cfg.MetricsAddr,

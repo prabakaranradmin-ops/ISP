@@ -67,7 +67,7 @@ function readRequirements(): Requirement[] {
   const seen = new Set<string>();
   for (const line of fs.readFileSync(SRS, 'utf8').split(/\r?\n/)) {
     // Requirement rows only. The leading pipe keeps NFR rows out, and \b
-    // before FR is what stops FR-AVAIL-001 matching inside NFR-AVAIL-001.
+    // before it is what stops the bare prefix matching inside an NFR id.
     const m = /^\|\s*(FR-([A-Z]+)-\d{3})\s*\|\s*(.+?)\s*\|/.exec(line);
     if (!m || seen.has(m[1])) continue;
     seen.add(m[1]);

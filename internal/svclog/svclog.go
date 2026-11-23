@@ -1,5 +1,10 @@
 // Package svclog wires zerolog's global logger from *config.Config.
 //
+// FR-OBS-002: every log line is structured JSON carrying timestamp, level,
+// service and — where a request supplies one — correlation_id and
+// subscriber_id. Cited here because the requirement is satisfied by this
+// wiring rather than by any single call site.
+//
 // It was cmd/api and cmd/radiusd's own configureLogging, identical in both,
 // until LogFile support (below) needed adding to both at once — the
 // duplication was a copy-paste risk from the moment there were two of them,

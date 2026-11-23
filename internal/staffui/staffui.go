@@ -447,6 +447,16 @@ type Section struct {
 // The role lists mirror internal/api/routes.go exactly. Any divergence would
 // mean a screen offering something the API refuses (a dead end for the
 // operator) or, worse, appearing to withhold something the API allows.
+// sections is the console's navigation, grouped into menus with a dashboard
+// landing screen — FR-CON-001. The individual screens it lists carry their
+// own requirements: FR-CON-002 (dashboard), FR-CON-003 (subscriber
+// directory), FR-CON-004 (Sessions) and FR-CON-007 (lead pipeline).
+//
+// Cited here because until 2026-11-23 none of those five ids appeared
+// anywhere in the code, so a traceability sweep counted them unimplemented
+// while they were on screen the whole time. They are listed on this
+// declaration rather than scattered because this slice is what makes a
+// screen reachable at all.
 var sections = []Section{
 	// First on purpose: Home redirects to the first allowed section, so
 	// every ISP-wide role lands here. Same reach as Subscribers, since every
