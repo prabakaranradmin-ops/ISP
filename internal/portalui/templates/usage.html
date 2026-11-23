@@ -2,6 +2,7 @@
 <div class="card">
   <h2>Usage History</h2>
   {{if .Sessions}}
+  <div class="table-scroll">
   <table>
     <thead>
       <tr><th>Start</th><th>Stop</th><th>Data Used</th><th>Status</th></tr>
@@ -23,6 +24,7 @@
       {{end}}
     </tbody>
   </table>
+  </div>
   {{else}}
   <div class="empty-state">No session history yet.</div>
   {{end}}

@@ -6,7 +6,7 @@
   --bg: #eef1f4;
   --surface: #fff;
   --ink: #17212b;
-  --muted: #63727f;
+  --muted: #616f7c; /* AA 4.55:1 on --bg; #63727f was 4.36 */
   --rule: #d6dde4;
   --accent: #17608f;
   --ok-bg: #e2f3e8; --ok-fg: #17663a;
@@ -361,3 +361,23 @@ fieldset.plain { border: 0; padding: 0; margin: 0; min-width: 0; }
    "SFP-SFPPLUS1"), so the chart's heading opts out of the upper-cased card
    heading style — the name is shown exactly as the router reports it. */
 .traffic h3 { text-transform: none; letter-spacing: normal; font-size: 16px; color: var(--ink); }
+
+/* ── Skip link (WCAG 2.4.1) ───────────────────────────────────────────────
+   Off-screen until focused, so a keyboard user's first Tab offers a way
+   past the navigation instead of walking through every link on every page.
+   Not display:none — that would take it out of the tab order entirely,
+   which is the usual way this control ends up decorative.               */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  padding: 0.6rem 1rem;
+  background: var(--surface);
+  color: var(--ink);
+  border: 2px solid var(--accent);
+  border-radius: 0 0 var(--radius, 6px) 0;
+  z-index: 100;
+}
+.skip-link:focus {
+  left: 0;
+}

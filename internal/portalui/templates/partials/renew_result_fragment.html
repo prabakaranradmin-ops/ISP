@@ -1,8 +1,8 @@
 {{define "renew-result"}}
 {{if .Error}}
-<div class="alert alert-error">{{.Error}}</div>
+<div class="alert alert-error" role="alert">{{.Error}}</div>
 {{else if .PaymentLink}}
-<div class="alert alert-success">
+<div class="alert alert-success" role="status">
   Payment link created for ₹{{.Amount}}.
   <a href="{{.PaymentLink}}" target="_blank" rel="noopener">Pay now</a>
 </div>

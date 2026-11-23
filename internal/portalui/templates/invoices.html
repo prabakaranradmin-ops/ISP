@@ -2,6 +2,7 @@
 <div class="card">
   <h2>Invoices &amp; Payments</h2>
   {{if .Invoices}}
+  <div class="table-scroll">
   <table>
     <thead>
       <tr><th>Invoice</th><th>Date</th><th>Amount</th><th></th></tr>
@@ -17,12 +18,14 @@
       {{end}}
     </tbody>
   </table>
+  </div>
   {{else}}
   <div class="empty-state">No invoices yet.</div>
   {{end}}
 
   <h3>Payments</h3>
   {{if .Payments}}
+  <div class="table-scroll">
   <table>
     <thead>
       <tr><th>Receipt</th><th>Date</th><th>Amount</th><th>Paid by</th><th></th></tr>
@@ -39,6 +42,7 @@
       {{end}}
     </tbody>
   </table>
+  </div>
   {{else}}
   <div class="empty-state">No payments yet.</div>
   {{end}}

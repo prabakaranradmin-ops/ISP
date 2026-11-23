@@ -37,7 +37,7 @@
     </label>
     <button type="submit" class="primary">Save</button>
   </form>
-  {{if .LinkWarning}}<p class="alert warn" data-link-warning>{{.LinkWarning}}</p>{{end}}
+  {{if .LinkWarning}}<p class="alert warn" data-link-warning role="alert">{{.LinkWarning}}</p>{{end}}
   <p class="muted small">Colours are hex codes such as #1a6dcc or #16c, as a brand guide gives them. The
     button's label is chosen automatically — white or black, whichever reads on the accent — so a pale
     brand colour never produces a button nobody can read. The page background is used in light mode

@@ -1,9 +1,10 @@
 {{define "tickets-list"}}
 <div id="tickets-list">
-  {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
-  {{if .Message}}<div class="alert alert-success">{{.Message}}</div>{{end}}
+  {{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
+  {{if .Message}}<div class="alert alert-success" role="status">{{.Message}}</div>{{end}}
   {{if .Tickets}}
   {{$csrf := .CSRFToken}}
+  <div class="table-scroll">
   <table>
     <thead>
       <tr><th>Category</th><th>Description</th><th>Status</th><th>Filed</th><th>Your rating</th></tr>
@@ -72,6 +73,7 @@
       {{end}}
     </tbody>
   </table>
+  </div>
   {{else}}
   <div class="empty-state">No tickets filed yet.</div>
   {{end}}

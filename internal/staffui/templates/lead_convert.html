@@ -9,7 +9,7 @@
   <p><strong>{{.Result.Subscriber.Username}}</strong> (subscriber #{{.Result.Subscriber.ID}}) was created from lead #{{.Result.Lead.ID}}.
      The account starts <span class="pill neutral">pending payment</span> and goes live once the first cycle is paid.</p>
   {{if .Result.CPEIssued}}<p>Router <span class="num">{{.Result.CPEIssued}}</span> was issued to them.</p>{{end}}
-  {{if .Result.CPEWarning}}<div class="alert warn">{{.Result.CPEWarning}}</div>{{end}}
+  {{if .Result.CPEWarning}}<div class="alert warn" role="alert">{{.Result.CPEWarning}}</div>{{end}}
   <p><a class="btn" href="/staff/subscribers/{{.Result.Subscriber.ID}}">Open the subscriber</a></p>
 </div>
 {{else}}

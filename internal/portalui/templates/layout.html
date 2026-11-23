@@ -9,6 +9,7 @@
 <script src="/ui/static/htmx.min.js"></script>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to main content</a>
 {{if .Authenticated}}
 <nav class="nav">
   <div class="nav-brand">ISP Portal</div>
@@ -25,9 +26,9 @@
   </div>
 </nav>
 {{end}}
-<div class="container">
+<main class="container" id="main">
 {{template "content" .}}
-</div>
+</main>
 </body>
 </html>
 {{end}}

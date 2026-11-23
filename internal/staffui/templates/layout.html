@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/staff/static/staffui.css">
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to main content</a>
 {{if .Session.Username}}
 <header class="topbar">
   <div class="brand">Operations Console</div>
@@ -50,9 +51,9 @@
 </div>
 {{end}}
 
-<main class="wrap">
-  {{if .Error}}<div class="alert bad">{{.Error}}</div>{{end}}
-  {{if .Message}}<div class="alert ok">{{.Message}}</div>{{end}}
+<main class="wrap" id="main">
+  {{if .Error}}<div class="alert bad" role="alert">{{.Error}}</div>{{end}}
+  {{if .Message}}<div class="alert ok" role="status">{{.Message}}</div>{{end}}
   {{template "content" .}}
 </main>
 {{if .Session.Username}}<script src="/staff/static/console.js" defer></script>{{end}}

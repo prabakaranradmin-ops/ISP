@@ -2,7 +2,7 @@
 <div class="login-page">
   <div class="card login-card">
     <h2>Sign in</h2>
-    {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+    {{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
     <form method="post" action="/ui/login">
       <div class="form-group">
         <label for="username">Username</label>

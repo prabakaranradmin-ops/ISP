@@ -5,14 +5,14 @@
   --surface: #ffffff;
   --border: #e0e3e8;
   --text: #1a1d23;
-  --text-muted: #6b7280;
+  --text-muted: #6a717f; /* AA 4.54:1 on --bg; #6b7280 was 4.47 */
   --primary: #2563eb;
   --primary-dark: #1d4ed8;
-  --danger: #dc2626;
+  --danger: #da2323; /* AA 4.52:1 on --danger-bg; #dc2626 was 4.41 */
   --danger-bg: #fef2f2;
-  --success: #16a34a;
+  --success: #12853d; /* AA 4.51:1 on --success-bg; #16a34a was 3.15 */
   --success-bg: #f0fdf4;
-  --warn: #d97706;
+  --warn: #a75c05; /* AA 4.52:1 on the #fef3c7 badge; #d97706 was 2.86 */
   --radius: 8px;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.08);
 }
@@ -44,6 +44,9 @@ a:hover {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   padding: 0.75rem 1.5rem;
+  /* Wrap rather than force the page wider than the phone holding it. */
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 .nav-brand {
   font-weight: 600;
@@ -53,6 +56,10 @@ a:hover {
   display: flex;
   gap: 1.25rem;
   align-items: center;
+  /* Six links and a logout button measured 541px against a 390px phone
+     viewport, which pushed every page into a horizontal scroll — the nav,
+     not the tables, was what made the portal unusable on a handset. */
+  flex-wrap: wrap;
 }
 .nav-links a {
   color: var(--text-muted);
@@ -242,4 +249,60 @@ th {
 }
 .progress-bar-fill.warn {
   background: var(--warn);
+}
+
+/* ── Phones ───────────────────────────────────────────────────────────────
+   The portal is the surface customers actually use, and most of them are on
+   a phone. Everything above is fluid except the data tables, which have a
+   natural minimum width — those scroll inside their own box rather than
+   dragging the whole page sideways with them.                            */
+@media (max-width: 640px) {
+  .nav {
+    padding: 0.75rem 1rem;
+  }
+  .nav-links {
+    gap: 0.75rem 1rem;
+    font-size: 0.95rem;
+  }
+  .container {
+    padding: 1rem;
+  }
+  /* A table is the one thing that cannot reflow: a row means nothing split
+     across lines. Give it its own scroll box, and say so, rather than
+     letting it set the width of the page. */
+  .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .table-scroll table {
+    min-width: 32rem;
+  }
+  /* Targets a thumb can hit: WCAG 2.5.5 asks for 44px, and a 0.9rem link in
+     a wrapped row is well under that. */
+  .nav-links a,
+  .nav-links button {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+}
+
+/* ── Skip link (WCAG 2.4.1) ───────────────────────────────────────────────
+   Off-screen until focused, so a keyboard user's first Tab offers a way
+   past the navigation instead of walking through every link on every page.
+   Not display:none — that would take it out of the tab order entirely,
+   which is the usual way this control ends up decorative.               */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  padding: 0.6rem 1rem;
+  background: var(--surface);
+  color: var(--text);
+  border: 2px solid var(--primary);
+  border-radius: 0 0 var(--radius, 6px) 0;
+  z-index: 100;
+}
+.skip-link:focus {
+  left: 0;
 }

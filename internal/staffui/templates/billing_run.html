@@ -11,7 +11,7 @@
   <div class="tile{{if .Failures}} tile-alert{{end}}"><span class="tile-label">Problems</span><span class="tile-num">{{len .Failures}}</span></div>
 </div>
 <p class="muted small">{{.Candidates}} due &middot; {{.InsufficientBalance}} no longer had the funds when charged (left to the reminder and suspension schedule) &middot; {{.InvoicesRaised}} invoices raised</p>
-{{if .Error}}<div class="alert bad">The pass could not run: {{.Error}}</div>{{end}}
+{{if .Error}}<div class="alert bad" role="alert">The pass could not run: {{.Error}}</div>{{end}}
 
 <div class="card table-card">
   <h3>Subscribers this run could not finish</h3>
