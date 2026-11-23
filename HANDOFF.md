@@ -81,7 +81,7 @@ by one.
 | Go packages | 35 total; **24 have tests** |
 | Wiring check | **33/33** components have a production caller (2026-11-21) |
 | Migrations | **74** applied (`001`–`074`) |
-| Browser tests | **145**, all passing (2026-11-21) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts` and `e2e/console-logs-catalogue.spec.ts` |
+| Browser tests | **182**, all passing with **0 skipped** (2026-11-23) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts`, `e2e/console-logs-catalogue.spec.ts`, `e2e/accessibility.spec.ts`, `e2e/mobile-accessibility.spec.ts`. Needs `ARCHIVE_DIR` set, or the FR-DOC-003 archival test skips itself |
 | Lint | **6** findings on default tags, **116** with `--build-tags=integration`; none introduced by recent work, all untriaged |
 | DB integration suite | ~700s in Docker, **1000-1500s on the bundled native cluster**; carry `-timeout 45m` |
 | NFR-PERF-001 (RADIUS auth p99 ≤15ms) | **PASS at 13.224ms**, 5,000 req/s, 30s, 0 errors — `run_nfr_tests.sh`, 2026-08-16 |
@@ -127,6 +127,87 @@ per role from a matrix loop rather than declaring each. `npx playwright test
 exactly that reason, which is a small example of the rule at the bottom of
 this document: the grep looked authoritative and was wrong, and running it
 settled the question in seconds.
+
+---
+
+## UI readiness, assessed and closed 2026-11-23
+
+Asked whether the UI was ready for launch. The console was; the subscriber
+portal was not, and nothing in 171 passing browser tests said so because
+every one of them ran at the default desktop viewport.
+
+Decisions taken by the product owner, recorded here because the code now
+depends on them:
+
+| Question | Answer |
+|---|---|
+| Readiness bar | **Public launch** |
+| Several ISPs on one deployment | **Separate deployment per ISP** — no tenant model, no code |
+| Subscriber portal on phones | **Full mobile pass** |
+| WCAG 2.1 AA | **Required** — full audit and remediation |
+| Languages | **English only for now** |
+| Directory paging | **Real paging**, not a 500-row cap |
+| Ledger Phase 2 auto-posting | **In scope**; chart of accounts to be drafted for review |
+
+**The tenancy answer is the one to remember.** "Multi-tenant" was first
+answered as several ISP organisations sharing one database, which this schema
+does not support in any form: no tenant table, no tenant column anywhere
+across 93 tables, only `franchise_id` on 15 of them — and franchises are
+sub-units inside one ISP. Four global `UNIQUE` constraints would collide
+outright between two ISPs (`subscribers.username`, `subscribers.caf_number`,
+`staff_users.username`, `nas_devices.ip`), so two of them could not both have
+a customer called `ramesh` or a router at `10.0.0.1`. Estimated at 2-3 weeks
+with PostgreSQL row-level security, because enforcing isolation in the
+database is the only version of this worth shipping — a missed predicate in
+one of several hundred queries is a cross-customer data breach, not a bug.
+Separate deployment per ISP needs no code and is what the schema was designed
+around. **If this is ever revisited, it is an architecture project and not a
+UI one.**
+
+What was done:
+
+- **The portal was unusable on a phone.** Every page was 610px wide in a
+  390px viewport. The cause was the navigation — six links and a logout
+  button in a flex row with no wrap, 541px — and not the data tables anyone
+  would suspect. `portalui.css` had no media queries at all where the console
+  had two. All five tables (one inside an htmx partial) now scroll in their
+  own box, since a table row split across lines means nothing.
+- **WCAG 2.1 AA: zero axe-core violations** across 39 console sections, the
+  360 view, the portal signed in and out, and the portal again at 390px.
+  Seven colour tokens were below 4.5:1, four controls had no accessible name,
+  two `role="tablist"` elements held plain links, and the captive portal's
+  own muted text was at 3.11:1 — that last one is read by customers on their
+  own phones, not only in the console's preview.
+- **Paging** replaced the 500-row cap, at 50 a page.
+- **Both skipped browser tests now run**: `ARCHIVE_DIR` must be set for
+  FR-DOC-003, and `seed_local.sql` now puts `lapsed_user` on the ground
+  tech's collection round for FR-COL-001. **182 passing, 0 skipped.**
+
+Three things worth keeping:
+
+1. **A desktop-only suite cannot see a mobile defect.** 171 tests passed
+   while every portal page overflowed. The new specs run at 390x844 on
+   purpose; without the viewport they could not fail.
+2. **Check a colour against the background it is actually painted on.**
+   `--warn` reads 3.19:1 on white and looks like a near miss; on the
+   `#fef3c7` badge it is really on, it is 2.86:1. The dashboard's active tile
+   does the same thing with `--muted` on its own lighter `#e6f0f7`.
+3. **A sample of a dozen screens found nothing.** Widening the axe sweep to
+   all 39 immediately found five real violations. The fix for the tables also
+   introduced one — a scroll box with no keyboard access — which only the
+   390px sweep could catch.
+
+**Not claimed: full AA conformance.** axe-core covers the mechanical third to
+half of WCAG — contrast, names, ARIA, landmarks. It cannot judge focus order,
+whether link text means anything out of context, or whether an error message
+tells somebody how to recover. A clean run is a floor. What remains for a
+conformance claim is manual: keyboard-only walkthroughs of the main journeys,
+screen-reader passes, and an accessibility statement or VPAT if a tender asks
+for one.
+
+Still open from the same assessment: **79 lint findings in the UI packages**
+(28 `noctx` in tests, 20 `revive`, 6 `gosec`), untriaged; and **i18n**, which
+is cheaper to decide before the console grows past 53 templates than after.
 
 ---
 

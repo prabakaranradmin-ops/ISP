@@ -193,6 +193,23 @@ INSERT INTO staff_users (username, password_hash, full_name, role, lea_access) V
     ('tech',    '$2a$12$Lbf0AtykY18fe1C5QMX7B.RtijYgxeBX.iqh5UKTWdPbIRTIUpyP2', 'Suresh Babu (Ground Tech)',    'technician',    FALSE)
 ON CONFLICT (username) DO NOTHING;
 
+-- ── One subscriber on the ground tech's collection round (FR-COL-001) ────────
+--
+-- The Collections screen lists the subscribers assigned to the signed-in
+-- collector, so with nobody assigned the screen is empty and the browser test
+-- that takes a cash payment at the door skipped itself — the one requirement
+-- whose whole point is that the form, the scoping check and the wallet credit
+-- line up, and the only layer below it that is not tested against a fake.
+--
+-- lapsed_user is the right candidate rather than a new row: the plan expired
+-- twenty days ago and the dunning ladder has run, which is exactly who a
+-- collector is sent to. Assigned by username and role rather than by id,
+-- because a cluster whose sequences have been reset puts these rows at
+-- different ids and the seed must not depend on which.
+UPDATE subscribers
+   SET collector_id = (SELECT id FROM staff_users WHERE username = 'tech')
+ WHERE username = 'lapsed_user';
+
 -- ── Verify seed counts ────────────────────────────────────────────────────────
 SELECT 'plans'                  AS table_name, COUNT(*) AS row_count FROM plans
 UNION ALL
