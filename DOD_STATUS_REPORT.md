@@ -19,7 +19,7 @@ Of the tracker's rows plus L0-012 added here, **66 carry an actual check**; row 
 | ⬜ PENDING (manual tracker administration) | 4 | 6% | 4 |
 | ⬜ N/A (accepted, unachievable retroactively) | 2 | 3% | 0 |
 
-**All four of the original audit's critical findings are now closed**, and every L6 row except the 1-hour soak has been measured rather than assumed. Only two failures remain: the coverage shortfall (L2-002) and Sentinel failover timing (L6-004, Finding #6). The two TDD-ordering rows moved to N/A by decision rather than staying as failures no work could ever clear.
+**All four of the original audit's critical findings are now closed**, and every L6 row except the 1-hour soak has been measured rather than assumed. Only one failure remains: the coverage shortfall (L2-002). Sentinel failover timing (L6-004, Finding #6) was closed on 2026-08-18 and the component it measured has since been deleted — see the row and the finding below. The two TDD-ordering rows moved to N/A by decision rather than staying as failures no work could ever clear.
 
 **One caveat on reading this scorecard.** Finding #7 — an unauthenticated endpoint disclosing subscriber IPs — was live while every row below already read PASS, and was found by a stakeholder question rather than by any check on this list. The L4 authorisation rows were not wrong; the leaking route simply never reached the middleware they test. Treat 52/65 as a floor, not a clean bill of health.
 
@@ -38,7 +38,7 @@ Of the tracker's rows plus L0-012 added here, **66 carry an actual check**; row 
 | L0-009 | Pre-commit PII hook fires | ❌ FAIL | ✅ PASS | Installed and verified blocking a real commit (2026-08-10) |
 | L2-001 | FR-traceable test names | ❌ FAIL | ✅ PASS | 102 tests renamed, all 30 FR IDs covered (commit `ac3ef26`) |
 | L5-008 | Dispatch latency ≤5s | ❌ FAIL | ✅ PASS | **Measured: 1.011s idle, 92ms worst case under backlog** |
-| L6-004 | Sentinel failover ≤3s | ⬜ NOT VERIFIED | ❌ **FAIL** | **Measured: 5055ms on the committed config, 3086ms tuned** — see Finding #6 |
+| L6-004 | Sentinel failover ≤3s | ⬜ NOT VERIFIED | ⬜ **N/A (component removed)** | Closed 2026-08-18 at the retargeted 8s budget (2913ms election, live-verified). Redis was then removed from the system entirely by `1ae0232`, so there is no Sentinel left to measure — see Finding #6 |
 | L6-005 | No goroutine leak after 1h | ⬜ NOT VERIFIED | ⬜ NOT VERIFIED | Harness built and validated on 90s; the 1-hour hold has not been run |
 | L8-001..004 | Tracker Status / Notes populated | ⬜ PENDING | ⬜ PENDING (data now committed) | 96 tasks marked Done are now in git (commit `297d3bb`); NFR-PERF-001 corrected FAIL → PASS |
 | L0-001 / L0-002 | TDD commit ordering | ❌ FAIL | ⬜ N/A (accepted) | Unachievable retroactively; forward-looking expectation recorded |
@@ -317,9 +317,27 @@ That reads as "RADIUS authentication is catastrophically slow." The daemon was n
 
 ✅ **Resolved** (commit `cb1d2bf`). All three fixes are in the committed harness, and the numbers in L6 below come from runs with them applied.
 
-### 6. Sentinel failover misses its budget, and hostname monitoring has a hard failure mode *(found 2026-08-10, OPEN)*
+### 6. Sentinel failover misses its budget, and hostname monitoring has a hard failure mode *(found 2026-08-10, CLOSED — twice)*
 
-The only finding here that is **not** resolved. Recorded because L6-004 moved from "never measured" to "measured and failing", which is a different and more actionable state.
+**Closed on 2026-08-18**, by adopting exactly the recommendation below:
+`down-after-milliseconds` lowered to 500 and the budget retargeted from 3s to
+8s, then live-verified at 2913ms election and 5784ms auth resume with 17,998
+requests and no errors in flight. The detail is under "Post-v1.0.0 Update"
+above.
+
+**Then closed again, more thoroughly: the component no longer exists.**
+`1ae0232` replaced Asynq with a PostgreSQL-backed job queue and removed Redis
+from the system entirely — `a1477d6` took the tier out of Docker, and
+`config/redis/sentinel.conf` and `scripts/run_sentinel_failover_test.sh` went
+with it. There is no Sentinel to tune, no DNS failure mode to accept, and
+nothing left for a reader to decide. Verified 2026-11-23: no Redis client in
+`go.mod`, no Redis service in either compose file, and the only `redis` left
+in Go code was a vestigial `RedisQuerier` interface name, now
+`health.SessionQuerier`, which a PostgreSQL store satisfies.
+
+Everything below is kept as the 2026-08-10 record, because the two
+measurement defects under "How the first measurement lied" are the
+transferable part and outlast the component.
 
 > ⚠️ **Correction (same day).** The first published version of this finding said the budget was "not reachable by tuning `down-after-milliseconds`". **That conclusion was wrong**, and it was wrong because of two defects in the measuring instrument, not because of anything Sentinel did. Both are fixed and the numbers below are the corrected ones. The two defects are written up under "How the first measurement lied" because they are the more transferable lesson.
 
@@ -554,7 +572,7 @@ All L6 rows below were run at the levels the DoD itself specifies, against 20,00
 
 Items 1, 2, 3, 4, 6 and 7 from the original 2026-08-08 list are closed; see the resolution notes in Critical Findings. What remains, in priority order:
 
-1. **Sentinel failover misses its budget** (L6-004) — the only *newly discovered* open defect. 5055ms on the committed config, 3086-3192ms with detection lowered to 500ms, against a 3000ms budget. The recommendation is to adopt detection=500 and move the target to 8s; the DNS/tilt behaviour is a separate item. See Finding #6.
+1. ~~**Sentinel failover misses its budget** (L6-004)~~ — **closed.** The recommendation (detection=500, target 8s) was adopted and live-verified on 2026-08-18, and Redis was afterwards removed from the system entirely, taking Sentinel with it. See Finding #6.
 2. **Test coverage below the ≥80% general bar** (L2-002) — 60.4% overall, up from 53.1%. The stricter ≥90% crypto/middleware requirement now passes (93.5% / 98.2%). The remaining shortfall is concentrated in `cmd/api` (5.3%, mostly wiring — extracting a testable `newServer()` from `main()` is the standard fix but is refactoring, not test-writing), `internal/portal` (63.0%) and `internal/notifications` (71.7%).
 3. **Goroutine-leak soak test** (L6-005) — purely a time cost now. The harness exists, is committed and is validated end to end; it needs one uninterrupted hour on a machine that will not sleep.
 4. **TDD commit ordering** (L0-001, L0-002) — permanently unachievable for existing code, since red-phase commits cannot be reconstructed after the fact. Worth deciding whether to enforce going forward or mark N/A in the tracker, rather than leaving two standing failures that can never clear.

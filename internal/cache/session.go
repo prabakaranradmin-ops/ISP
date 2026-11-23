@@ -78,14 +78,14 @@ func NewSessionStore(pool *pgxpool.Pool) *SessionStore {
 }
 
 var (
-	_ health.RedisQuerier      = (*SessionStore)(nil)
+	_ health.SessionQuerier    = (*SessionStore)(nil)
 	_ api.SessionReader        = (*SessionStore)(nil)
 	_ radius.LiveSessionWriter = (*SessionStore)(nil)
 )
 
 // PortalView adapts SessionStore to the portal's session interface.
 //
-// health.RedisQuerier and portal.PortalSessionQuerier both declare
+// health.SessionQuerier and portal.PortalSessionQuerier both declare
 // GetActiveSession but return different types, which no single Go type can
 // satisfy — hence the adapter rather than a second method name.
 type PortalView struct{ store *SessionStore }
@@ -189,7 +189,7 @@ func (s *SessionStore) Get(ctx context.Context, subscriberID int) (*Session, err
 	return s.get(ctx, subscriberID)
 }
 
-// GetActiveSession implements health.RedisQuerier.
+// GetActiveSession implements health.SessionQuerier.
 func (s *SessionStore) GetActiveSession(ctx context.Context, subscriberID int) (*health.SessionSummary, error) {
 	sess, err := s.get(ctx, subscriberID)
 	if err != nil || sess == nil {

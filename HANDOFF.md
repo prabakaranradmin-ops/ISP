@@ -82,7 +82,7 @@ by one.
 | Wiring check | **33/33** components have a production caller (2026-11-21) |
 | Migrations | **74** applied (`001`–`074`) |
 | Browser tests | **182**, all passing with **0 skipped** (2026-11-23) — `e2e/staff.spec.ts`, `e2e/portal.spec.ts`, `e2e/console-logs-catalogue.spec.ts`, `e2e/accessibility.spec.ts`, `e2e/mobile-accessibility.spec.ts`. Needs `ARCHIVE_DIR` set, or the FR-DOC-003 archival test skips itself |
-| Lint | **6** findings on default tags, **116** with `--build-tags=integration`; none introduced by recent work, all untriaged |
+| Lint | **0** on default tags and **0** with `--build-tags=integration` (2026-11-23), from 155 and 116. `golangci-lint config verify` is the check that matters: `run` ignores an invalid config section silently, which is how the project's exclusions were dead for months |
 | DB integration suite | ~700s in Docker, **1000-1500s on the bundled native cluster**; carry `-timeout 45m` |
 | NFR-PERF-001 (RADIUS auth p99 ≤15ms) | **PASS at 13.224ms**, 5,000 req/s, 30s, 0 errors — `run_nfr_tests.sh`, 2026-08-16 |
 | NFR-PERF-002 (API p99 ≤200ms) | **PASS**, 49.01ms at 500 VUs |
@@ -213,15 +213,43 @@ is cheaper to decide before the console grows past 53 templates than after.
 
 ## Open decisions that need a person, not a sprint
 
-1. **L6-004 Sentinel failover target.** Measured 5055ms against a 3000ms
-   budget; ~3.1s with `down-after-milliseconds` at 500. Recommendation:
-   adopt 500 and move the target to 8s. **Separately**, decide whether the
-   DNS/tilt failure mode is acceptable — when a master container leaves
-   Docker DNS, Sentinel never promotes at all. Reproduce with
-   `CHAOS_MODE=kill ./scripts/run_sentinel_failover_test.sh`. See
-   `DOD_STATUS_REPORT.md` Finding #6.
+1. ~~**L6-004 Sentinel failover target.**~~ **Nothing to decide — removed
+   2026-11-23.** This asked for a decision that had already been taken and
+   then stopped applying, and it sat here for months reading as live.
 
-2. **The lint backlog needs triage.** 6 findings on default tags, 116 with
+   The recommendation it proposed — `down-after-milliseconds` 500 and the
+   budget moved from 3s to 8s — was adopted and live-verified on
+   **2026-08-18**: 2913ms election against the 8s budget, 5784ms auth resume,
+   17,998 requests with no errors in flight. `DOD_STATUS_REPORT.md` recorded
+   that under "Post-v1.0.0 Update" while its own summary table and findings
+   list went on calling L6-004 a FAIL, so the document contradicted itself;
+   both are corrected now.
+
+   And it is moot twice over, because **Redis is gone from the system
+   entirely**. `1ae0232` replaced Asynq with the PostgreSQL-backed job queue,
+   `a1477d6` took the tier out of Docker, and `config/redis/sentinel.conf`
+   and `scripts/run_sentinel_failover_test.sh` went with them — which is why
+   neither the config nor the reproduction command in the old text exists any
+   more. Verified: no Redis client in `go.mod`, no Redis service in either
+   compose file. The one thing still claiming otherwise was a vestigial
+   `health.RedisQuerier` interface, satisfied by a PostgreSQL store and now
+   named `health.SessionQuerier`.
+
+   The PostgreSQL HA story is Patroni and etcd (`docker-compose.pg-ha.yml`,
+   `scripts/pg_failover_drill`), and it is a separate question from this one.
+
+2. ~~**The lint backlog needs triage.**~~ **Closed 2026-11-23: 0 findings on
+   both tag sets**, down from 155 and 116. Most of the count was a config
+   that had been silently inert since the golangci-lint v2 migration — the
+   exclusions sat under `issues:` where v1 wanted them, and `run` ignores the
+   unknown key without complaining while `config verify` rejects it. The
+   triage also turned up three real defects, which is the argument against
+   having suppressed the lot: the console's ledger ignored its own date
+   filter, the FUP auto-revert sweep had no test at all, and a
+   missing-subscriber plan change was never exercised. Each suppression that
+   remains says why at the site. See commit `4813b5a`.
+
+   The original note, for the record: 6 findings on default tags, 116 with
    the integration tag. Confirmed not introduced by recent work — the method
    is a `git worktree` at the previous HEAD, lint both, and diff the finding
    sets with line numbers stripped; that is more reliable than `git stash`,
@@ -852,6 +880,12 @@ execution, across several sessions:
   tokens with whichever key the route checked: a harness that uses one secret
   for two audiences cannot tell a route that checks the right key from one
   that checks the wrong one
+- an open decision asking a person to choose a Redis Sentinel timeout, which
+  had already been chosen and verified three months earlier and then stopped
+  applying altogether when Redis was deleted from the system. The status
+  report said both things at once — closed in one section, FAIL in its own
+  summary table. A stale question costs more than a stale answer: somebody
+  was going to spend a day reproducing it with a script that no longer exists
 - a whole family of fan-out tests that pinned the announcement id to `0` so
   the segment query alone was under test, and in doing so could not fail when
   the list-or-segment decision broke and every segment announcement reached

@@ -58,20 +58,25 @@ type DBQuerier interface {
 	GetSubscriberWithMeta(ctx context.Context, subscriberID int) (*SubscriberRecord, error)
 }
 
-// RedisQuerier retrieves active session state from Redis.
-type RedisQuerier interface {
+// SessionQuerier retrieves active session state.
+//
+// Named for Redis until 2026-11-23, and satisfied by a PostgreSQL-backed
+// store since 1ae0232 removed Redis from the system entirely. The old name
+// outlived the dependency by several months and told every reader of this
+// file that the health endpoint needed a Redis, which it does not.
+type SessionQuerier interface {
 	GetActiveSession(ctx context.Context, subscriberID int) (*SessionSummary, error)
 }
 
 // Handler serves the subscriber health endpoint.
 type Handler struct {
-	db    DBQuerier
-	redis RedisQuerier
+	db       DBQuerier
+	sessions SessionQuerier
 }
 
 // NewHandler constructs a health Handler.
-func NewHandler(db DBQuerier, redis RedisQuerier) *Handler {
-	return &Handler{db: db, redis: redis}
+func NewHandler(db DBQuerier, sessions SessionQuerier) *Handler {
+	return &Handler{db: db, sessions: sessions}
 }
 
 // GetSubscriberHealth handles GET /subscribers/{id}/health.
@@ -101,7 +106,7 @@ func (h *Handler) GetSubscriberHealth(w http.ResponseWriter, r *http.Request) {
 	}()
 	go func() {
 		defer wg.Done()
-		session, _ = h.redis.GetActiveSession(ctx, subscriberID)
+		session, _ = h.sessions.GetActiveSession(ctx, subscriberID)
 	}()
 	wg.Wait()
 

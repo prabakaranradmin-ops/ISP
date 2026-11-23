@@ -785,7 +785,7 @@ func TestFR_NOTIF_004_Recharge_SucceedsWhenReceiptCannotBeQueued(t *testing.T) {
 		rows:   []api.SubscriberRecord{{ID: 1, Username: "sub1", Status: "active"}},
 		nextID: 1,
 	}
-	tasks := &itTaskRecorder{err: errors.New("redis down")}
+	tasks := &itTaskRecorder{err: errors.New("task queue unavailable")}
 	h := api.NewHandler(api.HandlerDeps{
 		DB: store, KYC: &itKYCStore{}, Wallet: billing.NewWalletService(&stubWallet{}),
 		KeyStore: itKeyStore(t, "v1", "v1"), Tasks: tasks,
