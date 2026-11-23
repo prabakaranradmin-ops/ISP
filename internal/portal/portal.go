@@ -10,10 +10,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 
@@ -628,13 +626,13 @@ func errBody(code, msg string) map[string]string {
 	return map[string]string{"code": code, "message": msg}
 }
 
-// portalJWTSecret returns the JWT secret for portal tokens.
-// In production this comes from secret manager; here env var is the fallback.
+// The portal's JWT secret is passed in by cmd/api (config.PortalJWTSecret),
+// not read from the environment here.
 //
-//nolint:unused // called during server startup outside of this file.
-func portalJWTSecret() string {
-	if s := os.Getenv("PORTAL_JWT_SECRET"); s != "" {
-		return s
-	}
-	return fmt.Sprintf("%s_portal", os.Getenv("JWT_SECRET"))
-}
+// A portalJWTSecret() helper used to sit at this spot, reading PORTAL_JWT_SECRET
+// and falling back to JWT_SECRET+"_portal", carrying a //nolint:unused that
+// said it was "called during server startup outside of this file". It was
+// unexported, so nothing outside the file could call it, and nothing inside
+// did. The suppression silenced a correct finding with a false reason, which
+// is worse than the dead code it hid: it told the next reader not to look.
+// config.Load owns that fallback now, in one place.
