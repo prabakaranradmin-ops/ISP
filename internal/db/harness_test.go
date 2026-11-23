@@ -12,6 +12,7 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -240,10 +241,28 @@ func newTestDB(t *testing.T) (*db.DB, *pgxpool.Pool) {
 func truncateAll(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	for _, table := range truncateOrder {
-		if _, err := pool.Exec(ctx, "TRUNCATE TABLE "+table+" RESTART IDENTITY CASCADE"); err != nil {
-			t.Fatalf("truncate %s: %v", table, err)
-		}
+	// One statement for all 64 tables, not 64 statements.
+	//
+	// This runs before every test in the package, and as 64 separate
+	// statements it was the suite's dominant cost: each one is its own
+	// transaction, takes ACCESS EXCLUSIVE on its table, and flushes WAL
+	// separately. Collapsed into a single TRUNCATE, PostgreSQL takes the
+	// locks once and commits once.
+	//
+	// That is not a micro-optimisation, it is the difference between a suite
+	// that gets run and one that does not. Seventeen tests sat broken for
+	// days because this suite costs twenty minutes, so nobody runs it, so
+	// nobody saw them — the cost of the check was what let the breakage
+	// survive.
+	//
+	// Order inside the statement is irrelevant, which makes this safer rather
+	// than riskier: TRUNCATE takes every named table together, so the
+	// dependency ordering truncateOrder documents cannot be got wrong here.
+	// The ordering comments stay because they explain why each table is
+	// listed at all, which is still the thing a reader needs.
+	if _, err := pool.Exec(ctx,
+		"TRUNCATE TABLE "+strings.Join(truncateOrder, ", ")+" RESTART IDENTITY CASCADE"); err != nil {
+		t.Fatalf("truncate: %v", err)
 	}
 	restoreSeededReferenceData(t, pool)
 }

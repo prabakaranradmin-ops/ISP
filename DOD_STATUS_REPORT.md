@@ -19,7 +19,7 @@ Of the tracker's rows plus L0-012 added here, **66 carry an actual check**; row 
 | ⬜ PENDING (manual tracker administration) | 4 | 6% | 4 |
 | ⬜ N/A (accepted, unachievable retroactively) | 2 | 3% | 0 |
 
-**All four of the original audit's critical findings are now closed**, and every L6 row except the 1-hour soak has been measured rather than assumed. Only one failure remains: the coverage shortfall (L2-002). Sentinel failover timing (L6-004, Finding #6) was closed on 2026-08-18 and the component it measured has since been deleted — see the row and the finding below. The two TDD-ordering rows moved to N/A by decision rather than staying as failures no work could ever clear.
+**All four of the original audit's critical findings are now closed**, and every L6 row except the 1-hour soak has been measured rather than assumed. Only one failure remains: the coverage shortfall (L2-002). L6-005's 1-hour soak did run, on 2026-08-18, and its row said otherwise until 2026-11-23. Sentinel failover timing (L6-004, Finding #6) was closed on 2026-08-18 and the component it measured has since been deleted — see the row and the finding below. The two TDD-ordering rows moved to N/A by decision rather than staying as failures no work could ever clear.
 
 **One caveat on reading this scorecard.** Finding #7 — an unauthenticated endpoint disclosing subscriber IPs — was live while every row below already read PASS, and was found by a stakeholder question rather than by any check on this list. The L4 authorisation rows were not wrong; the leaking route simply never reached the middleware they test. Treat 52/65 as a floor, not a clean bill of health.
 
@@ -39,7 +39,7 @@ Of the tracker's rows plus L0-012 added here, **66 carry an actual check**; row 
 | L2-001 | FR-traceable test names | ❌ FAIL | ✅ PASS | 102 tests renamed, all 30 FR IDs covered (commit `ac3ef26`) |
 | L5-008 | Dispatch latency ≤5s | ❌ FAIL | ✅ PASS | **Measured: 1.011s idle, 92ms worst case under backlog** |
 | L6-004 | Sentinel failover ≤3s | ⬜ NOT VERIFIED | ⬜ **N/A (component removed)** | Closed 2026-08-18 at the retargeted 8s budget (2913ms election, live-verified). Redis was then removed from the system entirely by `1ae0232`, so there is no Sentinel left to measure — see Finding #6 |
-| L6-005 | No goroutine leak after 1h | ⬜ NOT VERIFIED | ⬜ NOT VERIFIED | Harness built and validated on 90s; the 1-hour hold has not been run |
+| L6-005 | No goroutine leak after 1h | ⬜ NOT VERIFIED | ✅ **PASS (with a caveat)** | The full 3600s hold ran to completion 2026-08-18: goroutines stable at 1.4% growth. The script also flagged FD growth of 15.7%, which the raw series does not support as a leak — it stepped once and then sat flat for 26 minutes. Treated as closed; see "1-hour soak test" above for the reasoning and its limits. **This row read NOT VERIFIED until 2026-11-23**, three months after the run, the same drift L6-004 had |
 | L8-001..004 | Tracker Status / Notes populated | ⬜ PENDING | ⬜ PENDING (data now committed) | 96 tasks marked Done are now in git (commit `297d3bb`); NFR-PERF-001 corrected FAIL → PASS |
 | L0-001 / L0-002 | TDD commit ordering | ❌ FAIL | ⬜ N/A (accepted) | Unachievable retroactively; forward-looking expectation recorded |
 | L0-012 | Component has a caller outside tests | *(new rule)* | ✅ PASS | `./scripts/check_wiring.sh` — 11/11 wired (Finding #8) |
@@ -222,6 +222,9 @@ container was 179/186 sockets, consistent with pooled DB/Redis connections
 rather than leaked handles. The size of the one-time step (+28) is in the
 right range for the pgx pool growing from `DBMinConns=5` toward
 `DBMaxConns=25` under sustained load, plus the Sentinel-managed Redis pool.
+*(Read with one correction: Redis has since been removed from the system
+entirely, so on today's build the pgx pool is the whole explanation. That
+does not change the conclusion, but a re-run would have fewer sockets.)*
 Read together, this is pool growth to a new steady state, not a leak — and
 it is also a real limitation of the soak script's pass/fail logic: a flat
 two-point comparison (settle-point vs end-point) against a fixed tolerance
