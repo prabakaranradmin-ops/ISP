@@ -48,6 +48,26 @@ param(
     [int]    $KeepLast   = 14
 )
 $ErrorActionPreference = 'Stop'
+# WHY THIS SCRIPT USED TO DIE ON ITS FIRST STATEMENT
+#
+# Windows PowerShell 5.1 turns a native program's stderr output into an
+# ErrorRecord. With $ErrorActionPreference = 'Stop' that error is
+# *terminating* - so one benign NOTICE from psql aborts the script, even
+# though psql exited 0.
+#
+# DROP DATABASE IF EXISTS emits exactly such a NOTICE ("database ... does not
+# exist, skipping") on any run where the scratch database is not already
+# there, which is every first run. This script therefore failed before it
+# restored anything, every time, with a NativeCommandError that reads like a
+# psql problem and is not one. Two mitigations, because either alone is thin:
+#
+#   1. PGOPTIONS silences NOTICE at the source, so there is nothing on stderr
+#      to promote.
+#   2. Native-command stderr is not treated as terminating below. Exit codes
+#      are checked explicitly instead, which is the only thing that was ever
+#      a reliable signal from a native program.
+$env:PGOPTIONS = '--client-min-messages=warning'
+
 
 $envPath = Join-Path $ConfigDir 'app.env'
 if (-not (Test-Path $envPath)) { throw "cannot read $envPath" }
@@ -99,6 +119,9 @@ Write-Host "Backing up to $outDir" -ForegroundColor Cyan
 # ---- 1. Database ----------------------------------------------------------
 # Custom format: compressed, and restorable selectively with pg_restore.
 $dumpPath = Join-Path $outDir 'database.dump'
+# pg_dump's own warnings are not failures; its exit code is, and it is
+# checked below.
+$ErrorActionPreference = 'Continue'
 $env:PGPASSWORD = $suPw
 try {
     & (Join-Path $InstallDir 'pgsql\bin\pg_dump.exe') `

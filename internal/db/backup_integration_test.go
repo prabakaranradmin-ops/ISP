@@ -138,3 +138,43 @@ func repoRoot(t *testing.T) string {
 	}
 	return abs
 }
+
+// The manifest query and the verification query must be the same text.
+//
+// verify_restore.ps1's first check is a string comparison of the counts it
+// computes from the restored database against the counts backup.ps1 wrote
+// into manifest.json. They are two copies of one SQL statement in two files,
+// which is a drift waiting to happen — and it happened immediately: adding
+// lea_audit and schema_version to the manifest, and not to the verifier, made
+// every restore report "row counts differ".
+//
+// That failure mode is the bad direction. A verifier that cannot pass gets
+// read as "the backup is broken", then as "the verifier is broken", then not
+// run at all.
+func TestTheManifestAndVerificationQueriesAgree(t *testing.T) {
+	root := repoRoot(t)
+	extract := func(name string) string {
+		t.Helper()
+		body, err := os.ReadFile(filepath.Join(root, "scripts", "windows", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		// The counts statement is the here-string that starts with
+		// SELECT 'subscribers='.
+		m := regexp.MustCompile(`(?s)(SELECT 'subscribers='.*?)\n"@`).FindStringSubmatch(string(body))
+		if m == nil {
+			t.Fatalf("%s no longer contains a counts query this test can find; it is "+
+				"asserting nothing", name)
+		}
+		// Compare on content, not on indentation.
+		return strings.Join(strings.Fields(m[1]), " ")
+	}
+
+	backup := extract("backup.ps1")
+	verify := extract("verify_restore.ps1")
+	if backup != verify {
+		t.Errorf("the counts query differs between the two scripts, so every restore "+
+			"verification will report a mismatch that is not one.\n  backup.ps1:         %s\n"+
+			"  verify_restore.ps1: %s", backup, verify)
+	}
+}

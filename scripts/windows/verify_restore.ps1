@@ -35,6 +35,26 @@ param(
     [switch] $KeepDatabase
 )
 $ErrorActionPreference = 'Stop'
+# WHY THIS SCRIPT USED TO DIE ON ITS FIRST STATEMENT
+#
+# Windows PowerShell 5.1 turns a native program's stderr output into an
+# ErrorRecord. With $ErrorActionPreference = 'Stop' that error is
+# *terminating* - so one benign NOTICE from psql aborts the script, even
+# though psql exited 0.
+#
+# DROP DATABASE IF EXISTS emits exactly such a NOTICE ("database ... does not
+# exist, skipping") on any run where the scratch database is not already
+# there, which is every first run. This script therefore failed before it
+# restored anything, every time, with a NativeCommandError that reads like a
+# psql problem and is not one. Two mitigations, because either alone is thin:
+#
+#   1. PGOPTIONS silences NOTICE at the source, so there is nothing on stderr
+#      to promote.
+#   2. Native-command stderr is not treated as terminating below. Exit codes
+#      are checked explicitly instead, which is the only thing that was ever
+#      a reliable signal from a native program.
+$env:PGOPTIONS = '--client-min-messages=warning'
+
 
 function Fail($msg) { Write-Host "  [FAIL] $msg" -ForegroundColor Red; $script:failures++ }
 function Pass($msg) { Write-Host "  [ OK ] $msg" -ForegroundColor Green }
@@ -67,6 +87,10 @@ $psql       = Join-Path $InstallDir 'pgsql\bin\psql.exe'
 $pgRestore  = Join-Path $InstallDir 'pgsql\bin\pg_restore.exe'
 $env:PGPASSWORD = $suPw
 
+# Cmdlet errors above were worth stopping for. Everything below is psql
+# and pg_restore, whose stderr is routine and whose exit codes are checked.
+$ErrorActionPreference = 'Continue'
+
 try {
     Write-Host "`nRestoring into scratch database '$ScratchDbName' ..." -ForegroundColor Cyan
     & $psql -h $dbHost -p $dbPort -U postgres -d postgres -v ON_ERROR_STOP=1 `
@@ -84,11 +108,20 @@ try {
     Write-Host "`nChecks" -ForegroundColor Cyan
 
     # 1 + 2. The data came back, in the quantity the manifest recorded.
+    #
+    # This query must stay character-for-character the same as the one
+    # backup.ps1 writes into the manifest, because the check is a string
+    # comparison against it. Adding two fields to the manifest and not here
+    # made every restore report "row counts differ" - a verifier that cannot
+    # pass is the same as no verifier. internal/db/backup_integration_test.go
+    # compares the two queries now so the next edit cannot do it again.
     $counts = & $psql -h $dbHost -p $dbPort -U postgres -d $ScratchDbName -tAc @"
 SELECT 'subscribers=' || (SELECT count(*) FROM subscribers)
     || ',kyc=' || (SELECT count(*) FROM kyc_verifications WHERE aadhaar_encrypted IS NOT NULL OR pan_encrypted IS NOT NULL)
     || ',invoices=' || (SELECT count(*) FROM invoices)
     || ',gl_lines=' || (SELECT count(*) FROM gl_journal_lines)
+    || ',lea_audit=' || (SELECT count(*) FROM lea_audit_log)
+    || ',schema_version=' || (SELECT max(version_id) FROM goose_db_version)
 "@
     $counts = ($counts | Where-Object { $_ }) -join ''
     if ($counts -eq $manifest.row_counts) {
@@ -149,8 +182,11 @@ SELECT 'subscribers=' || (SELECT count(*) FROM subscribers)
     exit $script:failures
 } finally {
     if (-not $KeepDatabase) {
+        # Not `2>&1`: redirecting a native command's stderr is what creates the
+        # ErrorRecord in the first place, and a throw from inside finally
+        # replaces whatever real failure brought us here.
         & $psql -h $dbHost -p $dbPort -U postgres -d postgres `
-            -c "DROP DATABASE IF EXISTS $ScratchDbName" 2>&1 | Out-Null
+            -c "DROP DATABASE IF EXISTS $ScratchDbName" | Out-Null
     }
     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
 }
