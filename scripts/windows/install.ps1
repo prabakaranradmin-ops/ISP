@@ -144,6 +144,18 @@ Write-Host "install: step 3/3 - register_services.ps1"
 
 Write-Host "install: complete"
 
+# Backups are NOT scheduled here. The nightly job writes encryption keys and
+# live credentials to a folder, and where that folder lives is an operator's
+# decision rather than an installer's default. But an installation with no
+# backup is the normal outcome of leaving this to a later conversation - on
+# the machine this was written on, the backup root was still empty months in -
+# so say it here, where somebody is already reading.
+Write-Host ""
+Write-Host "install: NO BACKUPS ARE SCHEDULED YET. Set them up now:"
+Write-Host "install:   .\scripts\windows\schedule_backup.ps1 -OutRoot <a path on another disk>"
+Write-Host "install: then prove the backup restores, which is the half that matters:"
+Write-Host "install:   .\scripts\windows\verify_restore.ps1 -BackupDir <the folder it wrote>"
+
 } catch {
     # Both branches re-throw: the transcript is this script's whole
     # purpose here, but MSI still needs to see a non-zero exit to know

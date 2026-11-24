@@ -15,6 +15,42 @@ authority**; this is a map, not a replacement.
 
 ---
 
+## ADR-016 — Backups are nightly dumps the operator schedules, and the superuser takes them
+**2026-11-24 · Accepted**
+
+`scripts/windows/backup.ps1` captures the database, the key store and `app.env` together,
+nightly, via a scheduled task the operator registers with
+`scripts/windows/schedule_backup.ps1`. It connects as `postgres`. There is no WAL archiving,
+so the recovery point is the last nightly backup.
+
+*Why the superuser:* `DB_DSN` names `bss_app`, which cannot read
+`lea_audit_log` or `goose_db_version` (migration 019). `pg_dump` reads every
+table it dumps and stops with "permission denied for table" on the first one
+it cannot — so dumping as the application role produces no backup at all.
+This script dumped as `$dbUser` and had therefore never worked, while
+`scripts/windows/verify_restore.ps1` had always connected as `postgres`. The two halves
+disagreed and only the restoring half was right.
+
+*Why the installer does not schedule it:* the backup folder holds live
+encryption keys and credentials, and where it lives is an operator's decision.
+The installer names the command instead — which is a compromise, and the
+reason it is loud about it: on the machine this was developed on, the backup
+root was still empty months after installation. No database backup had ever
+been taken.
+
+*Cost:* worst-case data loss is 24 hours. Continuous archiving would reduce
+that to seconds and is a separate piece of work; the previous runbook section
+was headed "Point-in-Time Restore" over a command that restores a nightly
+dump, which is the claim this replaces.
+
+*Detail:* `scripts/windows/backup.ps1`, `scripts/windows/schedule_backup.ps1`,
+runbook §12.4. Checked by `internal/db/backup_integration_test.go`, which
+derives the rule from the catalogue rather than asserting a string: if
+`bss_app` is ever granted SELECT on everything, dumping as it becomes
+legitimate and the test stops demanding the superuser.
+
+---
+
 ## ADR-015 — The services keep their own partitions, and never drop one
 **2026-11-24 · Accepted**
 

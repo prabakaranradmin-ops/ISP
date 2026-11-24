@@ -467,23 +467,79 @@ decided, dropping the partitions below it is the cheap part.
 
 ## 12.4 Backup & Restore Procedures
 
-### PostgreSQL Point-in-Time Restore
+### Taking a backup
 
-```bash
-# Stop the application services
-docker-compose stop aaa_core_daemon api_service
+```powershell
+# Nightly, unattended. Registers a scheduled task running as SYSTEM;
+# keeps the newest 14 complete backups and prunes the rest.
+.\scripts\windows\schedule_backup.ps1 -OutRoot E:\isp-backups
 
-# Restore from WAL archive to a specific point in time
-# (Example using pg_basebackup + WAL replay — adjust to your archiving setup)
-pg_restore --jobs=4 -h localhost -U postgres -d isp_bss_oss /backup/pgdump/20250101.dump
-
-# Restart services
-docker-compose start aaa_core_daemon api_service
-
-# Validate: row counts, wallet balance sum
-psql -h localhost -U postgres -d isp_bss_oss \
-  -c "SELECT COUNT(*) FROM subscribers WHERE status = 'active';"
+# Or once, by hand.
+.\scripts\windows\backup.ps1 -OutRoot E:\isp-backups
 ```
+
+**A database dump on its own is not a backup of this system.** KYC (Aadhaar,
+PAN) is encrypted in `kyc_verifications`, and the keys that open it are a JSON
+file on disk under `<config>\keys`, written by `bootstrap.exe`. `pg_dump`
+cannot see it. A database-only backup restores cleanly, reports success, and
+leaves every KYC value permanently unreadable — with no error at restore time
+and none afterwards, until somebody opens a subscriber record, possibly during
+the audit or the lawful-interception request that is the reason KYC is
+retained at all. `backup.ps1` captures the database, the key store and
+`app.env` together for that reason, and refuses to write a backup if the key
+store is missing or empty.
+
+The backup folder therefore holds live encryption keys and credentials. It is
+exactly as sensitive as the database.
+
+`backup.ps1` connects as `postgres`, not as the role in `DB_DSN`. `bss_app`
+cannot read `lea_audit_log` or `goose_db_version` (migration 019), and
+`pg_dump` stops with "permission denied for table" on the first table it
+cannot read. A backup taken as the application role is not a partial backup;
+it is no backup.
+
+### Restoring, and proving a backup is one
+
+```powershell
+# Restores into a scratch database and checks it, without touching the
+# live installation. Run this after the FIRST backup, and after any
+# change to the schema, the key store or the backup job.
+.\scripts\windows\verify_restore.ps1 -BackupDir E:\isp-backups\isp-bss-20261124-023000
+```
+
+It checks four things, and the fourth is the one that fails on a
+database-only backup: the dump restores; row counts match the manifest; the
+schema is at the migration version the application expects; and KYC decrypts
+using the backed-up key store.
+
+A real restore onto the live database:
+
+```powershell
+# 1. Stop both services. They are Windows services, not containers.
+Stop-Service aaa_core_daemon, api_service
+
+# 2. Restore. --clean --if-exists so a half-populated database does not
+#    merge with the dump.
+& 'C:\Program Files\ISP BSS\pgsql\bin\pg_restore.exe' `
+    -h 127.0.0.1 -p 5432 -U postgres -d isp_bss_oss `
+    --clean --if-exists --jobs=4 E:\isp-backups\isp-bss-20261124-023000\database.dump
+
+# 3. Put the key store back, or KYC stays unreadable.
+Copy-Item E:\isp-backups\isp-bss-20261124-023000\keys 'C:\ProgramData\ISP BSS\config\keys' -Recurse -Force
+
+# 4. Start the services and check what the manifest said should be there.
+Start-Service aaa_core_daemon, api_service
+```
+
+### Point-in-time recovery is not configured
+
+This installation takes nightly dumps. It does not archive WAL, so the
+recovery point is the last nightly backup and the worst-case data loss is
+24 hours. Continuous archiving (`archive_mode`, `archive_command`, and a
+`pg_basebackup` chain) is a separate piece of work and is not set up by the
+installer — said plainly here because an earlier version of this section was
+headed "Point-in-Time Restore" over a command that restores a nightly dump,
+which is the kind of claim nobody tests until the day it matters.
 
 ### Live Session State — Nothing to Restore
 

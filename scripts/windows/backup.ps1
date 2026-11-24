@@ -25,11 +25,27 @@
 # Usage:
 #   .\scripts\windows\backup.ps1
 #   .\scripts\windows\backup.ps1 -OutRoot D:\isp-backups
+#   .\scripts\windows\backup.ps1 -KeepLast 30     # keep 30 instead of 14
+#   .\scripts\windows\backup.ps1 -KeepLast 0      # keep everything
+#
+# RETENTION
+#
+# Each run writes a new timestamped folder and the old ones are not touched by
+# anything else, so a daily schedule fills the disk and takes the database down
+# with it - a backup job that causes the outage. -KeepLast deletes all but the
+# newest N *complete* backups (a folder with no manifest.json is a run that
+# died partway and is never counted as one of the N, nor deleted, so a failed
+# run cannot push a good backup out).
+#
+# Fourteen is a default, not a policy. It is the shortest window that survives
+# a problem introduced on a Friday and noticed the following Friday. If the
+# retention that matters here is a regulatory one, set it deliberately.
 [CmdletBinding()]
 param(
     [string] $OutRoot    = 'D:\isp-backups',
     [string] $ConfigDir  = 'C:\ProgramData\ISP BSS\config',
-    [string] $InstallDir = 'C:\Program Files\ISP BSS'
+    [string] $InstallDir = 'C:\Program Files\ISP BSS',
+    [int]    $KeepLast   = 14
 )
 $ErrorActionPreference = 'Stop'
 
@@ -40,6 +56,31 @@ $m = [regex]::Match($dsn, 'postgres://([^:]+):([^@]+)@([^:]+):(\d+)/([^?]+)')
 if (-not $m.Success) { throw 'could not parse DB_DSN out of app.env' }
 $dbUser = $m.Groups[1].Value; $dbPw = $m.Groups[2].Value
 $dbHost = $m.Groups[3].Value; $dbPort = $m.Groups[4].Value; $dbName = $m.Groups[5].Value
+
+# WHY THIS DOES NOT DUMP AS THE APPLICATION'S OWN ROLE
+#
+# DB_DSN names bss_app, the least-privilege role the services run as. Migration
+# 019 revokes SELECT on lea_audit_log from it (the LEA trail is append-only and
+# the application never reads it back) and revokes ALL on goose_db_version.
+#
+# pg_dump reads every table it dumps. Missing SELECT on one is not a warning
+# and not a partial dump - pg_dump stops with "permission denied for table
+# lea_audit_log" and exits non-zero. This script dumped as $dbUser, so on any
+# standard installation it could not produce a backup at all. The failure was
+# loud, which is the only good thing about it: nobody got a backup that was
+# silently missing the audit trail.
+#
+# verify_restore.ps1 already connected as postgres. The two halves disagreed
+# about who takes a backup, and only the half that restores was ever right.
+$pwFile = Join-Path $ConfigDir 'postgres_superuser.txt'
+$suPw = $null
+if (Test-Path $pwFile) {
+    try { $suPw = (Get-Content $pwFile -Raw -ErrorAction Stop).Trim() } catch { $suPw = $null }
+}
+if (-not $suPw) {
+    $sec  = Read-Host -AsSecureString 'PostgreSQL superuser (postgres) password'
+    $suPw = [Net.NetworkCredential]::new('', $sec).Password
+}
 
 $stamp  = Get-Date -Format 'yyyyMMdd-HHmmss'
 $outDir = Join-Path $OutRoot "isp-bss-$stamp"
@@ -58,10 +99,10 @@ Write-Host "Backing up to $outDir" -ForegroundColor Cyan
 # ---- 1. Database ----------------------------------------------------------
 # Custom format: compressed, and restorable selectively with pg_restore.
 $dumpPath = Join-Path $outDir 'database.dump'
-$env:PGPASSWORD = $dbPw
+$env:PGPASSWORD = $suPw
 try {
     & (Join-Path $InstallDir 'pgsql\bin\pg_dump.exe') `
-        -h $dbHost -p $dbPort -U $dbUser -d $dbName -Fc -f $dumpPath
+        -h $dbHost -p $dbPort -U postgres -d $dbName -Fc -f $dumpPath
     if ($LASTEXITCODE -ne 0) { throw "pg_dump failed (exit $LASTEXITCODE)" }
 } finally {
     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
@@ -88,14 +129,16 @@ Write-Host '  app.env'
 # ---- 4. Manifest ----------------------------------------------------------
 # Records what this backup is and what it should restore to, so a restore can
 # be checked rather than hoped about.
-$env:PGPASSWORD = $dbPw
+$env:PGPASSWORD = $suPw
 try {
     $psql = Join-Path $InstallDir 'pgsql\bin\psql.exe'
-    $counts = & $psql -h $dbHost -p $dbPort -U $dbUser -d $dbName -tAc @"
+    $counts = & $psql -h $dbHost -p $dbPort -U postgres -d $dbName -tAc @"
 SELECT 'subscribers=' || (SELECT count(*) FROM subscribers)
     || ',kyc=' || (SELECT count(*) FROM kyc_verifications WHERE aadhaar_encrypted IS NOT NULL OR pan_encrypted IS NOT NULL)
     || ',invoices=' || (SELECT count(*) FROM invoices)
     || ',gl_lines=' || (SELECT count(*) FROM gl_journal_lines)
+    || ',lea_audit=' || (SELECT count(*) FROM lea_audit_log)
+    || ',schema_version=' || (SELECT max(version_id) FROM goose_db_version)
 "@
 } finally {
     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
@@ -110,6 +153,26 @@ SELECT 'subscribers=' || (SELECT count(*) FROM subscribers)
     git_commit    = (& git -C (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) rev-parse --short HEAD 2>$null)
 } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $outDir 'manifest.json') -Encoding utf8
 Write-Host '  manifest.json'
+
+# ---- 5. Retention --------------------------------------------------------
+# Only now, after this backup is written and verified complete. Pruning first
+# would mean a failed run leaves one fewer backup than before it started.
+if ($KeepLast -gt 0) {
+    $complete = @(Get-ChildItem -Path $OutRoot -Directory -Filter 'isp-bss-*' -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path (Join-Path $_.FullName 'manifest.json') } |
+        Sort-Object Name -Descending)
+    if ($complete.Count -gt $KeepLast) {
+        foreach ($old in $complete[$KeepLast..($complete.Count - 1)]) {
+            Remove-Item -Path $old.FullName -Recurse -Force
+            Write-Host ("  pruned {0}" -f $old.Name) -ForegroundColor DarkGray
+        }
+    }
+    $partial = @(Get-ChildItem -Path $OutRoot -Directory -Filter 'isp-bss-*' -ErrorAction SilentlyContinue |
+        Where-Object { -not (Test-Path (Join-Path $_.FullName 'manifest.json')) })
+    if ($partial.Count -gt 0) {
+        Write-Host ("  {0} incomplete backup folder(s) left in place; a run died partway. Check and remove by hand." -f $partial.Count) -ForegroundColor Yellow
+    }
+}
 
 Write-Host "`nBackup complete: $outDir" -ForegroundColor Green
 Write-Host 'This folder contains encryption keys and live credentials. Treat it as' -ForegroundColor Yellow
