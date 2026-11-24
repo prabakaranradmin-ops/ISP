@@ -430,13 +430,32 @@ in it. Those rows cannot be reconstructed afterwards.
     WHERE p.relkind = 'p'
     GROUP BY p.relname;
    ```
-2. Provision immediately. Idempotent, and safe to run at any time:
+2. Provision immediately, **connected as `postgres`**. Idempotent and safe to
+   run at any time. Derived from the catalogue rather than naming the three
+   tables, because an older instance may not have all of them — the
+   hand-written version errors on the first one that does not exist and then
+   provisions nothing:
    ```sql
-   SELECT create_monthly_partitions('subscriber_session_history', 3);
-   SELECT create_monthly_partitions('cgnat_allocations', 3);
-   SELECT create_monthly_partitions('flow_records', 3);
+   DO $$
+   DECLARE r RECORD;
+   BEGIN
+     FOR r IN SELECT p.relname FROM pg_class p
+                JOIN pg_partitioned_table pt ON pt.partrelid = p.oid
+                JOIN pg_namespace n ON n.oid = p.relnamespace AND n.nspname = 'public'
+               WHERE pt.partstrat = 'r' ORDER BY p.relname
+     LOOP
+       PERFORM create_monthly_partitions(r.relname, 3);
+       RAISE NOTICE 'provisioned %', r.relname;
+     END LOOP;
+   END $$;
    ```
    Writes resume as soon as this commits. Nothing needs restarting.
+
+   As `postgres`, not as the application role: `bss_app` does not own the
+   partitioned parents and has no CREATE on `public`, so on any instance
+   predating migration 076 this fails with "permission denied for schema
+   public". Confirmed against a real installation, where
+   `has_schema_privilege('bss_app','public','CREATE')` is false.
 3. Then find out why the automatic roll-forward did not do it. radiusd runs a
    pass at start and every 24 hours (`internal/db.PartitionScanner`), so
    coverage only falls if that is failing:
