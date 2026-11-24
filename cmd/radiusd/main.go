@@ -268,6 +268,20 @@ func run(ctx context.Context) error {
 		authLogPurge.Run(ctx)
 		log.Info().Msg("radiusd: authentication log purge stopped")
 	}()
+	// Monthly partition roll-forward (migration 076). subscriber_session_history,
+	// cgnat_allocations and flow_records are partitioned by month and an insert
+	// with no matching partition fails outright — so this has to run ahead of
+	// the accounting writes above, which is why it lives in this binary and
+	// starts with a pass rather than on its first tick.
+	partitions := db.NewPartitionScanner(database.Maintenance())
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		log.Info().Msg("radiusd: partition roll-forward started")
+		partitions.Run(ctx)
+		log.Info().Msg("radiusd: partition roll-forward stopped")
+	}()
+
 	// Voucher-backed hotspot sessions have no subscriber row, so they cannot go
 	// in session history; they are metered on their grant instead (FR-HSP-001).
 	daemon.SetGrantUsageDB(database.Hotspot())

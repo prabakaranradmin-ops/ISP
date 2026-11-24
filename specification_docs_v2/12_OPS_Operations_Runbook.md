@@ -396,6 +396,73 @@ unchanged from before this section existed.
 cold-vs-warm comparison, and is the right way to establish a baseline for
 this host *before* an incident rather than during one.
 
+### 12.3.5 Monthly Partitions Exhausted
+
+**Symptoms:** `DatabasePartitionCoverageLow` or `DatabasePartitionMissing` in
+Alertmanager; or, with no Prometheus, `db: partition coverage is nearly
+exhausted` in the radiusd log. Once coverage reaches zero, writes fail with
+`no partition of relation "subscriber_session_history" found for row`
+(SQLSTATE 23514).
+
+**What is actually broken:** `subscriber_session_history`,
+`cgnat_allocations` and `flow_records` are RANGE partitioned by month with no
+default partition, deliberately — a default partition would absorb every row
+and quietly defeat the partitioning. A row whose timestamp falls outside every
+partition is refused outright.
+
+**Why this is worse than it looks:** authentication is unaffected.
+Subscribers get online, the console works, nothing in the customer-facing
+system degrades. What stops is the *recording*: session history, CGNAT
+port-block allocations and NetFlow flow records. The first person to notice is
+whoever has to answer a lawful-interception request for a period with no data
+in it. Those rows cannot be reconstructed afterwards.
+
+**Response:**
+
+1. Confirm the coverage, as the database owner:
+   ```sql
+   SELECT p.relname AS parent,
+          max((regexp_match(pg_get_expr(c.relpartbound, c.oid),
+                            'TO \(''([^'']+)''\)'))[1]::timestamptz) AS covered_until
+     FROM pg_class p
+     JOIN pg_inherits i ON i.inhparent = p.oid
+     JOIN pg_class c ON c.oid = i.inhrelid
+    WHERE p.relkind = 'p'
+    GROUP BY p.relname;
+   ```
+2. Provision immediately. Idempotent, and safe to run at any time:
+   ```sql
+   SELECT create_monthly_partitions('subscriber_session_history', 3);
+   SELECT create_monthly_partitions('cgnat_allocations', 3);
+   SELECT create_monthly_partitions('flow_records', 3);
+   ```
+   Writes resume as soon as this commits. Nothing needs restarting.
+3. Then find out why the automatic roll-forward did not do it. radiusd runs a
+   pass at start and every 24 hours (`internal/db.PartitionScanner`), so
+   coverage only falls if that is failing:
+   - `radiusd: partition roll-forward started` missing from the log — the
+     service is not running, or is an older build that predates migration 076.
+   - `could not provision monthly partitions ... permission denied for
+     function` — migration 076 has not been applied to this database.
+     Re-run migrations as the owner.
+   - `permission denied for schema public` — the function exists but is
+     `SECURITY INVOKER`. The application connects as `bss_app`, which does not
+     own the partitioned parents and cannot create a partition on its own.
+     Migration 076 is what makes it `SECURITY DEFINER`; check it was not
+     reverted by a later hand-edit.
+
+**Do not** add a default partition as a workaround. It would stop the errors
+and start silently mixing every future month into one unpartitioned heap,
+which is unrecoverable without a full rewrite of the table.
+
+**Retention is a separate question and is not automated.** Nothing drops old
+partitions, so these tables grow without bound. That is deliberate — dropping
+a partition destroys CGNAT and session evidence, and the retention period is a
+licence and DPDP question rather than an engineering one. When that period is
+decided, dropping the partitions below it is the cheap part.
+
+---
+
 ---
 
 ## 12.4 Backup & Restore Procedures
@@ -448,6 +515,11 @@ next accounting round without operator action.
 □ Rotate JWT signing secret (coordinate with all API consumers)
 □ Confirm completed task rows are being reaped (jobqueue_tasks retention_until);
   investigate rather than hand-delete if the table is growing without bound
+□ Confirm monthly partition coverage is still three months ahead
+  (db_partition_months_ahead, or the query in §12.3.5). radiusd rolls this
+  forward daily, so this is a check that the automation is alive, not a task
+  to perform — but it is the one item on this list whose failure is invisible
+  until a regulator asks for data that was never recorded
 ```
 
 ---

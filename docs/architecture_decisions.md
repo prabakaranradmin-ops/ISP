@@ -15,6 +15,43 @@ authority**; this is a map, not a replacement.
 
 ---
 
+## ADR-015 — The services keep their own partitions, and never drop one
+**2026-11-24 · Accepted**
+
+The monthly partition roll-forward runs inside radiusd, daily, and provisions
+three months ahead. `create_monthly_partitions` is `SECURITY DEFINER` so the
+application role can call it. Nothing drops an old partition.
+
+*Why:* three tables are RANGE partitioned by month with no default partition,
+and an insert outside every partition is refused rather than absorbed. The
+function had carried a comment since migration 010 saying it "must be called
+from the monthly maintenance job (OPS §12)". There was no such job: the
+monthly checklist in §12.5 had nine items and partitions were not among them.
+Every deployment therefore had about four months before it stopped recording
+session history, CGNAT port-block allocations and NetFlow flows — silently,
+because authentication is unaffected and the first symptom is a
+lawful-interception request that cannot be answered.
+
+An operational requirement that depends on someone remembering it every month
+is a defect with a delay on it. The list of which tables to roll forward is
+read from the catalogue, not written down, for the same reason.
+
+*Cost:* `SECURITY DEFINER` widens what the application role can cause. The
+services connect as `bss_app`, which does not own the partitioned parents, so
+without it the scanner fails every pass with "permission denied for schema
+public" — confirmed by running it that way, not assumed. The function is
+pinned to a fixed `search_path`, is revoked from PUBLIC, and refuses any
+argument that is not a partitioned table in `public`.
+
+*Not decided:* retention. Nothing drops old partitions, so these tables grow
+without bound. Dropping one destroys evidence, and how long CGNAT and session
+records must be kept is a licence and DPDP question, not an engineering one.
+Deliberately left for someone who can answer it (FR-NET-001).
+
+*Detail:* `internal/db/partitions.go`, `migrations/076_partition_rollforward_runs_as_the_app.sql`, runbook §12.3.5.
+
+---
+
 ## ADR-014 — One deployment per ISP, not shared tenancy
 **2026-11-23 · Accepted**
 

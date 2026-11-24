@@ -227,3 +227,55 @@ groups:
             anything is healthy. Check that the container is running and has
             not been restarting.
           runbook: "specification_docs_v2/12_OPS_Operations_Runbook.md"
+
+  - name: database-partitions
+    interval: 5m
+    rules:
+      # Three tables are RANGE partitioned by month and an insert with no
+      # matching partition fails outright — it does not fall back to a
+      # default partition, because there deliberately is none. The
+      # roll-forward in radiusd keeps three months provisioned, so coverage
+      # at or below one month means provisioning has been failing for two
+      # months and nobody read the log.
+      #
+      # This is the one alert in this file whose subject is silent by nature:
+      # nothing a subscriber does reveals it. Authentication keeps working.
+      # What stops is the recording — session history, CGNAT port-block
+      # allocations and NetFlow flow records — and the first person to notice
+      # is whoever has to answer a lawful-interception request with "we have
+      # no data for that period".
+      - alert: DatabasePartitionCoverageLow
+        expr: min by (table) (db_partition_months_ahead) <= 1
+        for: 15m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "{{ $labels.table }} has {{ $value }} month(s) of partition coverage left"
+          description: >-
+            The monthly partition roll-forward provisions three months ahead
+            on every pass, so this value only falls if the pass is failing.
+            Check the radiusd log for "could not provision monthly
+            partitions"; the usual cause is the application role lacking
+            EXECUTE on create_monthly_partitions, which migration 076 grants.
+            Provision by hand with
+            SELECT create_monthly_partitions('subscriber_session_history', 3);
+            as the database owner.
+          runbook: "specification_docs_v2/12_OPS_Operations_Runbook.md"
+
+      # Zero or negative means the current month is not covered: the writes
+      # have already stopped.
+      - alert: DatabasePartitionMissing
+        expr: min by (table) (db_partition_months_ahead) < 0
+        for: 5m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "{{ $labels.table }} has no partition for the current month"
+          description: >-
+            Every insert into this table is being refused with "no partition
+            of relation found for row". Session history, CGNAT allocations
+            and flow records are being lost for as long as this lasts, and
+            they cannot be reconstructed afterwards.
+          runbook: "specification_docs_v2/12_OPS_Operations_Runbook.md"
