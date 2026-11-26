@@ -14,7 +14,13 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Bulk actions on the subscriber directory — FR-SUB-010, FR-NOTIF-010.
+// Bulk actions on the subscriber directory — FR-WFL-001 for the credit path,
+// FR-ANN-001 for the broadcast.
+//
+// Acting on many subscribers at once has no requirement of its own. What it
+// must not become does: a wallet credit still needs a second approver
+// (FR-WFL-001), and a message to a selection is the same broadcast machinery
+// as an announcement (FR-ANN-001).
 //
 // bulk.go was at 0%: 92 statements that act on every selected subscriber at
 // once, which is what makes a mistake here expensive. The behaviour worth
@@ -122,7 +128,7 @@ func withAction(action string, extra url.Values, idList ...string) url.Values {
 // A bulk credit files approvals. It does not credit anybody, and the page says
 // so — an operator who reads "credited" and moves on is the failure this
 // wording exists to prevent.
-func TestFR_SUB_010_ABulkCreditFilesApprovalsRatherThanCrediting(t *testing.T) {
+func TestFR_WFL_001_ABulkCreditFilesApprovalsRatherThanCrediting(t *testing.T) {
 	f := &fakeBulk{creditResults: []api.BulkCreditResult{
 		{SubscriberID: 1, OK: true, ApprovalID: 11},
 		{SubscriberID: 2, OK: true, ApprovalID: 12},
@@ -164,7 +170,7 @@ func TestFR_SUB_010_ABulkCreditFilesApprovalsRatherThanCrediting(t *testing.T) {
 
 // A bulk credit needs a reason and a positive amount, and neither reaches the
 // executor when wrong.
-func TestFR_SUB_010_ABulkCreditNeedsAReasonAndAPositiveAmount(t *testing.T) {
+func TestFR_WFL_001_ABulkCreditNeedsAReasonAndAPositiveAmount(t *testing.T) {
 	for name, tc := range map[string]struct {
 		extra url.Values
 		want  string
@@ -195,7 +201,7 @@ func TestFR_SUB_010_ABulkCreditNeedsAReasonAndAPositiveAmount(t *testing.T) {
 // Only the owner and billing admin may act in bulk. Checked in the handler
 // and not only by the template hiding the form, because a POST does not have
 // to come from the page.
-func TestFR_SUB_010_OnlyOwnerAndBillingAdminActInBulk(t *testing.T) {
+func TestFR_SEC_005_OnlyOwnerAndBillingAdminActInBulk(t *testing.T) {
 	for _, role := range []string{"csr", "technician", "noc_engineer", "lco",
 		"franchise_admin", "franchise_staff"} {
 		f := &fakeBulk{}
@@ -224,7 +230,7 @@ func TestFR_SUB_010_OnlyOwnerAndBillingAdminActInBulk(t *testing.T) {
 // Only the three statuses the API allows in bulk are accepted. "terminated"
 // in particular is not one of them: ending service for a selection in one
 // click is not an undo-able mistake.
-func TestFR_SUB_010_OnlyTheAllowedStatusesCanBeSetInBulk(t *testing.T) {
+func TestFR_LC_002_OnlyTheAllowedStatusesCanBeSetInBulk(t *testing.T) {
 	for _, status := range []string{"terminated", "grace_period", "pending_payment", ""} {
 		f := &fakeBulk{}
 		rec := serveBulk(bulkHandler(f), sess("isp_owner"),
@@ -249,7 +255,7 @@ func TestFR_SUB_010_OnlyTheAllowedStatusesCanBeSetInBulk(t *testing.T) {
 
 // Nothing selected does nothing, and says so. An empty selection reaching the
 // executor would be an action over zero subscribers reported as a success.
-func TestFR_SUB_010_AnEmptySelectionIsRefused(t *testing.T) {
+func TestAnEmptyBulkSelectionIsRefused(t *testing.T) {
 	for name, form := range map[string]url.Values{
 		"no ids at all":   {"action": {"status"}, "status": {"active"}},
 		"unparseable ids": {"action": {"status"}, "status": {"active"}, "ids": {"all", "x"}},
@@ -271,7 +277,7 @@ func TestFR_SUB_010_AnEmptySelectionIsRefused(t *testing.T) {
 // Unparseable ids are skipped rather than failing the whole action, but the
 // ones that parse still go through — a selection of 50 must not be lost
 // because one checkbox sent something odd.
-func TestFR_SUB_010_UnparseableIdsAreSkippedNotFatal(t *testing.T) {
+func TestUnparseableBulkIdsAreSkippedNotFatal(t *testing.T) {
 	f := &fakeBulk{statusResults: []api.BulkResult{{SubscriberID: 1, OK: true}}}
 	serveBulk(bulkHandler(f), sess("isp_owner"), url.Values{
 		"action": {"status"}, "status": {"active"},
@@ -283,7 +289,7 @@ func TestFR_SUB_010_UnparseableIdsAreSkippedNotFatal(t *testing.T) {
 }
 
 // A plan change needs a plan.
-func TestFR_SUB_010_ABulkPlanChangeNeedsAPlan(t *testing.T) {
+func TestFR_LC_001_ABulkPlanChangeNeedsAPlan(t *testing.T) {
 	for _, planID := range []string{"", "0", "-1", "none"} {
 		f := &fakeBulk{}
 		rec := serveBulk(bulkHandler(f), sess("isp_owner"),
@@ -307,7 +313,7 @@ func TestFR_SUB_010_ABulkPlanChangeNeedsAPlan(t *testing.T) {
 // Partial failures are reported per subscriber rather than as one number. A
 // bulk action over 50 subscribers where 3 failed must name the 3, or nobody
 // can go back and fix them.
-func TestFR_SUB_010_PartialFailuresNameTheSubscribersThatFailed(t *testing.T) {
+func TestBulkPartialFailuresNameTheSubscribersThatFailed(t *testing.T) {
 	f := &fakeBulk{planResults: []api.BulkResult{
 		{SubscriberID: 1, OK: true},
 		{SubscriberID: 2, OK: false, Error: "no such plan for this subscriber's franchise"},
@@ -329,7 +335,7 @@ func TestFR_SUB_010_PartialFailuresNameTheSubscribersThatFailed(t *testing.T) {
 }
 
 // A notification needs a title, a message, and somewhere to send it.
-func TestFR_NOTIF_010_ABulkNotificationNeedsContentAndAChannel(t *testing.T) {
+func TestFR_ANN_001_ABulkNotificationNeedsContentAndAChannel(t *testing.T) {
 	for name, tc := range map[string]struct {
 		extra url.Values
 		want  string
@@ -357,7 +363,7 @@ func TestFR_NOTIF_010_ABulkNotificationNeedsContentAndAChannel(t *testing.T) {
 
 // The portal banner alone is enough — a notice nobody is paged about is still
 // a notice.
-func TestFR_NOTIF_010_ThePortalBannerAloneIsAValidDestination(t *testing.T) {
+func TestFR_ANN_001_ThePortalBannerAloneIsAValidDestination(t *testing.T) {
 	f := &fakeBulk{enqueued: 1}
 	rec := serveBulk(bulkHandler(f), sess("isp_owner"), withAction("notify", url.Values{
 		"title": {"Outage"}, "body": {"we are working on it"}, "show_in_portal": {"on"},
@@ -374,7 +380,7 @@ func TestFR_NOTIF_010_ThePortalBannerAloneIsAValidDestination(t *testing.T) {
 }
 
 // Every ticked channel reaches the executor, and only the ticked ones.
-func TestFR_NOTIF_010_OnlyTheTickedChannelsAreUsed(t *testing.T) {
+func TestFR_ANN_001_OnlyTheTickedChannelsAreUsed(t *testing.T) {
 	f := &fakeBulk{enqueued: 3}
 	serveBulk(bulkHandler(f), sess("isp_owner"), withAction("notify", url.Values{
 		"title": {"Outage"}, "body": {"we are working on it"},
@@ -397,7 +403,7 @@ func TestFR_NOTIF_010_OnlyTheTickedChannelsAreUsed(t *testing.T) {
 }
 
 // A failed send says so rather than reporting a delivery that did not happen.
-func TestFR_NOTIF_010_AFailedSendIsReported(t *testing.T) {
+func TestFR_ANN_001_AFailedBulkSendIsReported(t *testing.T) {
 	h := bulkHandler(&fakeBulk{notifyErr: errBulk})
 	body := pageText(serveBulk(h, sess("isp_owner"), withAction("notify", url.Values{
 		"title": {"Outage"}, "body": {"we are working on it"}, "channel_sms": {"on"},
@@ -412,7 +418,7 @@ func TestFR_NOTIF_010_AFailedSendIsReported(t *testing.T) {
 }
 
 // An unknown action does nothing at all.
-func TestFR_SUB_010_AnUnknownActionDoesNothing(t *testing.T) {
+func TestAnUnknownBulkActionDoesNothing(t *testing.T) {
 	f := &fakeBulk{}
 	rec := serveBulk(bulkHandler(f), sess("isp_owner"),
 		withAction("delete_everything", nil, "1", "2"))
@@ -425,7 +431,7 @@ func TestFR_SUB_010_AnUnknownActionDoesNothing(t *testing.T) {
 }
 
 // An unconfigured deployment refuses rather than panicking.
-func TestFR_SUB_010_AnUnconfiguredDeploymentRefuses(t *testing.T) {
+func TestAnUnconfiguredBulkDeploymentRefuses(t *testing.T) {
 	rec := serveBulk(bulkHandler(nil), sess("isp_owner"),
 		withAction("status", url.Values{"status": {"active"}}, "1"))
 	if rec.Code != http.StatusServiceUnavailable {

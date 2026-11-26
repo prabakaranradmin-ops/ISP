@@ -1,6 +1,8 @@
 //go:build integration
 
-// Procurement's HTTP surface — FR-PRC-001..004.
+// Procurement's HTTP surface — FR-INV-003 (vendor purchase records) and
+// FR-WFL-001 (second-approver sign-off, which a purchase order needs for the
+// same reason a wallet credit does).
 //
 // internal/api/procurement.go was at 0%: 95 statements. A purchase order is
 // money leaving the business, and the control on it is the same shape as the
@@ -144,7 +146,7 @@ func pendingOrder(requestedBy string) *procurement.PurchaseOrder {
 // The requester cannot decide their own purchase order. Enforced here against
 // the caller's identity so it is a 403 with a code a client can branch on,
 // rather than the schema constraint surfacing as a 500.
-func TestFR_PRC_002_TheRequesterCannotDecideTheirOwnOrder(t *testing.T) {
+func TestFR_WFL_001_ThePurchaseOrderRequesterCannotDecideTheirOwnOrder(t *testing.T) {
 	f := &fakeProcurement{one: pendingOrder("ravi")}
 	h := procHandler(f, nil)
 
@@ -162,7 +164,7 @@ func TestFR_PRC_002_TheRequesterCannotDecideTheirOwnOrder(t *testing.T) {
 }
 
 // Somebody else may, and the row records who.
-func TestFR_PRC_002_AnotherApproverMayDecideAndIsRecorded(t *testing.T) {
+func TestFR_WFL_001_AnotherApproverMayDecideAPurchaseOrderAndIsRecorded(t *testing.T) {
 	f := &fakeProcurement{one: pendingOrder("ravi")}
 	h := procHandler(f, nil)
 
@@ -181,7 +183,7 @@ func TestFR_PRC_002_AnotherApproverMayDecideAndIsRecorded(t *testing.T) {
 
 // A rejection needs a reason; an approval does not. The reason is the only
 // record of why somebody's spend was declined.
-func TestFR_PRC_002_ARejectionNeedsAReason(t *testing.T) {
+func TestFR_WFL_001_APurchaseOrderRejectionNeedsAReason(t *testing.T) {
 	f := &fakeProcurement{one: pendingOrder("ravi")}
 	h := procHandler(f, nil)
 
@@ -205,7 +207,7 @@ func TestFR_PRC_002_ARejectionNeedsAReason(t *testing.T) {
 }
 
 // An order already decided is a conflict, not a silent second decision.
-func TestFR_PRC_002_AnAlreadyDecidedOrderIsAConflict(t *testing.T) {
+func TestFR_WFL_001_AnAlreadyDecidedPurchaseOrderIsAConflict(t *testing.T) {
 	f := &fakeProcurement{one: pendingOrder("ravi"), returnNilOnDecide: true}
 	rec := procCall(procHandler(f, nil), http.MethodPost,
 		"/api/v1/procurement/orders/11/decide", `{"approve":true}`, "meena")
@@ -219,7 +221,7 @@ func TestFR_PRC_002_AnAlreadyDecidedOrderIsAConflict(t *testing.T) {
 
 // A missing order is 404, and a lookup failure is 500 — distinguishable,
 // because one means "no such spend request" and the other means "ask again".
-func TestFR_PRC_002_MissingAndBrokenAreDifferentAnswers(t *testing.T) {
+func TestFR_WFL_001_AMissingAndABrokenPurchaseOrderAreDifferentAnswers(t *testing.T) {
 	missing := procCall(procHandler(&fakeProcurement{one: nil}, nil), http.MethodPost,
 		"/api/v1/procurement/orders/11/decide", `{"approve":true}`, "meena")
 	if missing.Code != http.StatusNotFound {
@@ -290,7 +292,7 @@ func TestFR_INV_004_AnOrderWithNoVendorSaysWhereToFindOne(t *testing.T) {
 
 // The amount is normalised to two places before it is stored, so the same
 // spend cannot appear as 48000 and 48000.00 in two rows.
-func TestFR_PRC_001_TheAmountIsNormalisedToTwoPlaces(t *testing.T) {
+func TestFR_INV_003_ThePurchaseAmountIsNormalisedToTwoPlaces(t *testing.T) {
 	f := &fakeProcurement{}
 	rec := procCall(procHandler(f, nil), http.MethodPost, "/api/v1/procurement/orders",
 		`{"description":"8 ONTs","vendor_id":1,"category":"hardware","amount":"48000"}`, "ravi")
@@ -305,7 +307,7 @@ func TestFR_PRC_001_TheAmountIsNormalisedToTwoPlaces(t *testing.T) {
 	}
 }
 
-func TestFR_PRC_001_OrderValidation(t *testing.T) {
+func TestFR_INV_003_PurchaseOrderValidation(t *testing.T) {
 	for name, tc := range map[string]struct {
 		body string
 		want int
@@ -333,7 +335,7 @@ func TestFR_PRC_001_OrderValidation(t *testing.T) {
 
 // Fulfilment accepts only the three states, and an inapplicable transition is
 // a conflict rather than a success that changed nothing.
-func TestFR_PRC_004_FulfilmentTransitions(t *testing.T) {
+func TestFR_INV_003_FulfilmentTransitions(t *testing.T) {
 	for _, status := range []string{procurement.StatusOrdered, procurement.StatusReceived,
 		procurement.StatusCancelled} {
 		f := &fakeProcurement{}
@@ -370,7 +372,7 @@ func TestFR_PRC_004_FulfilmentTransitions(t *testing.T) {
 
 // The listing filters by status when asked and returns an empty array rather
 // than null, which a client that iterates would otherwise crash on.
-func TestFR_PRC_003_TheListingFiltersAndNeverAnswersNull(t *testing.T) {
+func TestFR_INV_003_ThePurchaseListingFiltersAndNeverAnswersNull(t *testing.T) {
 	f := &fakeProcurement{orders: nil}
 	h := procHandler(f, nil)
 
@@ -395,7 +397,7 @@ func TestFR_PRC_003_TheListingFiltersAndNeverAnswersNull(t *testing.T) {
 }
 
 // Every endpoint reports an unconfigured deployment.
-func TestFR_PRC_001_AnUnconfiguredDeploymentIsReported(t *testing.T) {
+func TestFR_INV_003_AnUnconfiguredProcurementDeploymentIsReported(t *testing.T) {
 	h := api.NewHandler(api.HandlerDeps{})
 	for name, tc := range map[string]struct {
 		method, target, body string
@@ -415,7 +417,7 @@ func TestFR_PRC_001_AnUnconfiguredDeploymentIsReported(t *testing.T) {
 }
 
 // A malformed id is refused before anything is read.
-func TestFR_PRC_002_AMalformedIdIsRefused(t *testing.T) {
+func TestFR_INV_003_AMalformedPurchaseOrderIdIsRefused(t *testing.T) {
 	f := &fakeProcurement{one: pendingOrder("ravi")}
 	h := procHandler(f, nil)
 
@@ -435,7 +437,7 @@ func TestFR_PRC_002_AMalformedIdIsRefused(t *testing.T) {
 
 // Requesting, deciding and fulfilling are each audited, with the decision
 // recording who made it — the trail an auditor reads for spend.
-func TestFR_PRC_002_EveryStepIsAudited(t *testing.T) {
+func TestFR_INV_003_EveryProcurementStepIsAudited(t *testing.T) {
 	sink := &recordingAuditSink{}
 	middleware.SetAuditSink(sink)
 	t.Cleanup(func() { middleware.SetAuditSink(nil) })

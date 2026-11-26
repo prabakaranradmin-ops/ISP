@@ -141,7 +141,7 @@ func (h *Handler) CreateFieldTaskForm(w http.ResponseWriter, r *http.Request) {
 
 	var dueDate *time.Time
 	if v := strings.TrimSpace(r.PostFormValue("due_date")); v != "" {
-		t, err := time.Parse("2006-01-02", v)
+		t, err := time.ParseInLocation("2006-01-02", v, time.Local)
 		if err != nil {
 			h.renderTasks(w, r, s, "", "Due date must be a date like 2026-08-31.")
 			return

@@ -309,7 +309,7 @@ func gstRateFromForm(r *http.Request) (GSTRate, error) {
 
 	effective := time.Now()
 	if raw := strings.TrimSpace(r.PostFormValue("effective_from")); raw != "" {
-		t, err := time.Parse("2006-01-02", raw)
+		t, err := time.ParseInLocation("2006-01-02", raw, time.Local)
 		if err != nil {
 			return GSTRate{}, fmt.Errorf("Effective date must be in YYYY-MM-DD form.")
 		}

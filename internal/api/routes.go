@@ -1232,7 +1232,7 @@ func (h *Handler) WalletRecharge(w http.ResponseWriter, r *http.Request) {
 			ChequeNumber: req.ChequeNumber, ChequeBank: req.ChequeBank, TDSCertificate: req.TDSCertificate,
 		}
 		if req.ChequeDate != "" {
-			d, err := time.Parse("2006-01-02", req.ChequeDate)
+			d, err := time.ParseInLocation("2006-01-02", req.ChequeDate, time.Local)
 			if err != nil {
 				writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "cheque_date must be YYYY-MM-DD")
 				return

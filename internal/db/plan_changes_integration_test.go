@@ -31,8 +31,11 @@ func planChangeFixture(ctx context.Context, t *testing.T, database *db.DB, pool 
 	return database.Billing()
 }
 
+// futureDay is n days from today in the operator's own zone, which is the
+// zone the handlers parse in and the zone Normalise compares against. Built
+// in UTC it was a different calendar date for five and a half hours a day.
 func futureDay(n int) time.Time {
-	return billing.DayOf(time.Now().UTC().AddDate(0, 0, n))
+	return billing.DayOf(time.Now().AddDate(0, 0, n))
 }
 
 func TestFR_BIL_023_ScheduleLifecycle(t *testing.T) {
@@ -235,7 +238,7 @@ func TestFR_BIL_023_ApplyMovesThePlanAndClosesTheChangeAtomically(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	newExpiry := time.Now().UTC().AddDate(0, 0, 60)
+	newExpiry := time.Now().AddDate(0, 0, 60)
 	if err := store.ApplyDuePlanChange(ctx, c.ID, 1, 2, newExpiry, false, nil); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -301,7 +304,7 @@ func TestFR_BIL_023_ApplyActivatesAFirstCycleInTheSameStatement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expiry := time.Now().UTC().AddDate(0, 0, 60)
+	expiry := time.Now().AddDate(0, 0, 60)
 	if err := store.ApplyDuePlanChange(ctx, c.ID, 1, 2, expiry, true, nil); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -326,7 +329,7 @@ func TestFR_BIL_023_ChangeIsAppliedOnceUnderConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expiry := time.Now().UTC().AddDate(0, 0, 60)
+	expiry := time.Now().AddDate(0, 0, 60)
 
 	var (
 		wg        sync.WaitGroup

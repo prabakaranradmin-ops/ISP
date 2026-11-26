@@ -17,7 +17,12 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/revenue"
 )
 
-// Per-subscriber speed override — FR-NET-009.
+// Per-subscriber speed override.
+//
+// No FR id: the SRS has nothing on an operator temporarily changing one
+// subscriber's rate. FR-NOTIF-003 mentions the *automatic* FUP throttle and
+// FR-CON-004 mentions a speed column on the Sessions screen; neither is this.
+// Named descriptively rather than given a borrowed id.
 //
 // speedoverride.go was at 0%: 54 statements that change what one customer's
 // router is told to deliver. Two things make it worth more than its size:
@@ -126,7 +131,7 @@ func coaFor(t *testing.T, q *recordingQueue) int {
 
 // Only the owner may change a subscriber's speed. Checked in the handler, not
 // by the template that hides the form.
-func TestFR_NET_009_OnlyTheOwnerChangesASubscribersSpeed(t *testing.T) {
+func TestOnlyTheOwnerChangesASubscribersSpeed(t *testing.T) {
 	for _, role := range []string{"billing_admin", "csr", "technician", "noc_engineer"} {
 		so := &fakeSpeedOverride{}
 		q := &recordingQueue{}
@@ -153,7 +158,7 @@ func TestFR_NET_009_OnlyTheOwnerChangesASubscribersSpeed(t *testing.T) {
 
 // Applying an override writes the rate and sends the CoA. Without the CoA the
 // router keeps enforcing the old rate and the screen says otherwise.
-func TestFR_NET_009_ApplyingAnOverrideAlsoSendsTheCoA(t *testing.T) {
+func TestApplyingASpeedOverrideAlsoSendsTheCoA(t *testing.T) {
 	so := &fakeSpeedOverride{}
 	q := &recordingQueue{}
 
@@ -181,7 +186,7 @@ func TestFR_NET_009_ApplyingAnOverrideAlsoSendsTheCoA(t *testing.T) {
 }
 
 // A duration in minutes becomes an expiry; blank means until cleared.
-func TestFR_NET_009_ADurationInMinutesBecomesAnExpiry(t *testing.T) {
+func TestASpeedOverrideDurationInMinutesBecomesAnExpiry(t *testing.T) {
 	so := &fakeSpeedOverride{}
 	serveSpeed(speedHandler(so, &recordingQueue{}), owner(),
 		"/staff/subscribers/5/speed-override",
@@ -198,7 +203,7 @@ func TestFR_NET_009_ADurationInMinutesBecomesAnExpiry(t *testing.T) {
 // A malformed rate or duration is refused, and nothing is written or sent —
 // a half-applied override is worse than none, because the screen would show
 // a change the router never received.
-func TestFR_NET_009_MalformedInputIsRefusedWithoutWritingOrSending(t *testing.T) {
+func TestMalformedSpeedOverrideInputIsRefusedWithoutWritingOrSending(t *testing.T) {
 	for name, tc := range map[string]struct {
 		form url.Values
 		want string
@@ -237,7 +242,7 @@ func TestFR_NET_009_MalformedInputIsRefusedWithoutWritingOrSending(t *testing.T)
 
 // Clearing an override writes the clear and sends the CoA too. Without it the
 // router keeps throttling a customer who is no longer overridden.
-func TestFR_NET_009_ClearingAnOverrideAlsoSendsTheCoA(t *testing.T) {
+func TestClearingASpeedOverrideAlsoSendsTheCoA(t *testing.T) {
 	so := &fakeSpeedOverride{}
 	q := &recordingQueue{}
 
@@ -256,7 +261,7 @@ func TestFR_NET_009_ClearingAnOverrideAlsoSendsTheCoA(t *testing.T) {
 
 // A failing write reports it and sends no CoA — telling a router to change to
 // a rate that was never stored would leave the two disagreeing.
-func TestFR_NET_009_AFailedWriteSendsNoCoA(t *testing.T) {
+func TestAFailedSpeedOverrideWriteSendsNoCoA(t *testing.T) {
 	for name, tc := range map[string]struct {
 		so     *fakeSpeedOverride
 		target string
@@ -289,7 +294,7 @@ func TestFR_NET_009_AFailedWriteSendsNoCoA(t *testing.T) {
 // A queue failure does not undo the override or fail the request: the row is
 // written and the operator is told nothing, which is the existing design.
 // Asserted so a change to it is deliberate rather than accidental.
-func TestFR_NET_009_AQueueFailureStillLeavesTheOverrideApplied(t *testing.T) {
+func TestAQueueFailureStillLeavesTheSpeedOverrideApplied(t *testing.T) {
 	so := &fakeSpeedOverride{}
 	q := &recordingQueue{err: errors.New("jobqueue: unreachable")}
 
@@ -308,7 +313,7 @@ func TestFR_NET_009_AQueueFailureStillLeavesTheOverrideApplied(t *testing.T) {
 
 // An unconfigured deployment, and a malformed subscriber id, are both refused
 // before anything is written.
-func TestFR_NET_009_UnconfiguredAndMalformedAreRefused(t *testing.T) {
+func TestUnconfiguredAndMalformedSpeedOverridesAreRefused(t *testing.T) {
 	for name, h := range map[string]*Handler{
 		"no store": speedHandler(nil, &recordingQueue{}),
 		"no queue": speedHandler(&fakeSpeedOverride{}, nil),
@@ -347,7 +352,7 @@ func TestFR_NET_009_UnconfiguredAndMalformedAreRefused(t *testing.T) {
 // The CoA carries no NAS address. The task handler resolves the live session
 // at execution time, and a snapshot taken here would be stale by then — a
 // disconnect sent to the router the subscriber used to be on.
-func TestFR_NET_009_TheCoACarriesNoStaleNASAddress(t *testing.T) {
+func TestTheSpeedOverrideCoACarriesNoStaleNASAddress(t *testing.T) {
 	q := &recordingQueue{}
 	serveSpeed(speedHandler(&fakeSpeedOverride{}, q), owner(),
 		"/staff/subscribers/5/speed-override",

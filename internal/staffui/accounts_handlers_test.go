@@ -14,7 +14,13 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// The Staff Accounts screen — FR-SEC-003, FR-SEC-005.
+// The Staff Accounts screen — FR-SEC-005 (role enforced per route).
+//
+// Creating and editing console operators has no requirement of its own; the
+// owner-only gating is FR-SEC-005. An earlier draft of this file cited
+// FR-SEC-003, which is about storing a key version inside encrypted PII and
+// has nothing to do with staff accounts — a citation that points at the wrong
+// requirement reads as traceability and is worse than none.
 //
 // accounts.go's four handlers were at 0% (117 statements); the pure helpers
 // beside them were already covered in accounts_test.go. This is the screen
@@ -165,7 +171,7 @@ func validAccountForm() url.Values {
 // The last active owner cannot deactivate themselves or change their own
 // role. This screen is owner-only, so either would lock everybody out of it
 // with no way back in that does not involve SQL.
-func TestFR_SEC_003_TheLastOwnerCannotBeRemovedOrDemoted(t *testing.T) {
+func TestTheLastOwnerCannotBeRemovedOrDemoted(t *testing.T) {
 	for name, form := range map[string]url.Values{
 		"deactivated": {"role": {"isp_owner"}},             // active unticked
 		"demoted":     {"role": {"csr"}, "active": {"on"}}, // still active, no longer owner
@@ -207,7 +213,7 @@ func TestFR_SEC_003_TheLastOwnerCannotBeRemovedOrDemoted(t *testing.T) {
 // Deactivating a non-owner is never a lockout risk, and must not be refused
 // as one — the check re-tallies the roster rather than asking "is this edit
 // moving a role away from owner".
-func TestFR_SEC_003_DeactivatingANonOwnerIsNotALockout(t *testing.T) {
+func TestDeactivatingANonOwnerIsNotALockout(t *testing.T) {
 	staff := &recordingStaff{roster: oneOwnerAndACSR()}
 	rec := serveAccounts(accountsHandler(staff, nil), owner(),
 		http.MethodPost, "/staff/accounts/3", url.Values{"role": {"csr"}})
@@ -222,7 +228,7 @@ func TestFR_SEC_003_DeactivatingANonOwnerIsNotALockout(t *testing.T) {
 
 // If the roster cannot be read, the edit is refused rather than risked. The
 // check fails closed because the cost of being wrong is total lockout.
-func TestFR_SEC_003_TheLockoutCheckFailsClosed(t *testing.T) {
+func TestTheOwnerLockoutCheckFailsClosed(t *testing.T) {
 	staff := &recordingStaff{listErr: errAccountsStore}
 	rec := serveAccounts(accountsHandler(staff, nil), owner(),
 		http.MethodPost, "/staff/accounts/1", url.Values{"role": {"csr"}, "active": {"on"}})
@@ -237,7 +243,7 @@ func TestFR_SEC_003_TheLockoutCheckFailsClosed(t *testing.T) {
 
 // A franchise-scoped role must name a franchise at creation; an ISP-wide role
 // must not be bound to one whatever the form said.
-func TestFR_SEC_003_TheFranchiseBindingMatchesTheRole(t *testing.T) {
+func TestTheStaffFranchiseBindingMatchesTheRole(t *testing.T) {
 	t.Run("franchise role with no franchise", func(t *testing.T) {
 		staff := &recordingStaff{roster: twoOwners()}
 		form := validAccountForm()
@@ -300,7 +306,7 @@ func TestFR_SEC_003_TheFranchiseBindingMatchesTheRole(t *testing.T) {
 
 // A created account is stored hashed, never with the password, and the
 // username and name are trimmed.
-func TestFR_SEC_003_ACreatedAccountIsStoredHashedAndTrimmed(t *testing.T) {
+func TestACreatedStaffAccountIsStoredHashedAndTrimmed(t *testing.T) {
 	staff := &recordingStaff{roster: twoOwners()}
 	rec := serveAccounts(accountsHandler(staff, nil), owner(),
 		http.MethodPost, "/staff/accounts", validAccountForm())
@@ -331,7 +337,7 @@ func TestFR_SEC_003_ACreatedAccountIsStoredHashedAndTrimmed(t *testing.T) {
 
 // The password floor is enforced, and it is higher than a subscriber's
 // because these accounts can credit wallets and run an LEA lookup.
-func TestFR_SEC_003_ThePasswordFloorIsEnforcedOnCreate(t *testing.T) {
+func TestTheStaffPasswordFloorIsEnforcedOnCreate(t *testing.T) {
 	for _, pw := range []string{"", "short", strings.Repeat("a", minStaffPasswordLength-1)} {
 		staff := &recordingStaff{roster: twoOwners()}
 		form := validAccountForm()
@@ -351,7 +357,7 @@ func TestFR_SEC_003_ThePasswordFloorIsEnforcedOnCreate(t *testing.T) {
 
 // Only assignable roles can be granted, so the form cannot mint a role no
 // section list knows about.
-func TestFR_SEC_003_OnlyAssignableRolesCanBeGranted(t *testing.T) {
+func TestOnlyAssignableRolesCanBeGranted(t *testing.T) {
 	for _, role := range []string{"", "superuser", "admin", "ISP_OWNER", "subscriber"} {
 		staff := &recordingStaff{roster: twoOwners()}
 		form := validAccountForm()
@@ -382,7 +388,7 @@ func TestFR_SEC_003_OnlyAssignableRolesCanBeGranted(t *testing.T) {
 }
 
 // Username and full name are both required.
-func TestFR_SEC_003_UsernameAndFullNameAreRequired(t *testing.T) {
+func TestStaffUsernameAndFullNameAreRequired(t *testing.T) {
 	for name, override := range map[string]string{
 		"username": "username", "full name": "full_name",
 	} {
@@ -404,7 +410,7 @@ func TestFR_SEC_003_UsernameAndFullNameAreRequired(t *testing.T) {
 
 // A duplicate username is reported as such rather than as a generic failure,
 // because it is the one the operator can fix themselves.
-func TestFR_SEC_003_ADuplicateUsernameSaysSo(t *testing.T) {
+func TestADuplicateStaffUsernameSaysSo(t *testing.T) {
 	staff := &recordingStaff{
 		roster: twoOwners(),
 		createErr: errors.New(
@@ -436,7 +442,7 @@ func TestFR_SEC_003_ADuplicateUsernameSaysSo(t *testing.T) {
 
 // An optional password reset on the edit form is applied only when supplied,
 // and a reset that fails says the account still saved — two outcomes, not one.
-func TestFR_SEC_003_AnOptionalPasswordResetIsAppliedOnlyWhenSupplied(t *testing.T) {
+func TestAnOptionalStaffPasswordResetIsAppliedOnlyWhenSupplied(t *testing.T) {
 	blank := &recordingStaff{roster: twoOwners()}
 	serveAccounts(accountsHandler(blank, nil), owner(), http.MethodPost, "/staff/accounts/2",
 		url.Values{"role": {"isp_owner"}, "active": {"on"}, "password": {""}})
@@ -482,7 +488,7 @@ func TestFR_SEC_003_AnOptionalPasswordResetIsAppliedOnlyWhenSupplied(t *testing.
 
 // An unknown or malformed account id is reported rather than updating
 // account 0.
-func TestFR_SEC_003_AnUnknownOrMalformedIdIsReported(t *testing.T) {
+func TestAnUnknownOrMalformedStaffIdIsReported(t *testing.T) {
 	malformed := &recordingStaff{roster: twoOwners()}
 	rec := serveAccounts(accountsHandler(malformed, nil), owner(), http.MethodPost,
 		"/staff/accounts/not-a-number", url.Values{"role": {"csr"}, "active": {"on"}})
@@ -546,7 +552,7 @@ func TestFR_SEC_005_OnlyTheOwnerReachesStaffAccounts(t *testing.T) {
 // The roster renders with the assignable roles and, when configured, the
 // franchises to bind to. A franchise store that fails does not take the page
 // with it: the ISP-wide half of the screen still works.
-func TestFR_SEC_003_TheScreenRendersRolesAndFranchisesBestEffort(t *testing.T) {
+func TestTheAccountsScreenRendersRolesAndFranchisesBestEffort(t *testing.T) {
 	staff := &recordingStaff{roster: oneOwnerAndACSR()}
 	fr := &fakeFranchises{list: []revenue.FranchiseRecord{
 		{ID: 2, Name: "Anna Nagar Networks", Status: "active"},
@@ -584,7 +590,7 @@ func TestFR_SEC_003_TheScreenRendersRolesAndFranchisesBestEffort(t *testing.T) {
 
 // A failing staff store renders a page that says so, and an unconfigured
 // deployment says that instead.
-func TestFR_SEC_003_StoreFailuresAreReadable(t *testing.T) {
+func TestStaffAccountStoreFailuresAreReadable(t *testing.T) {
 	rec := serveAccounts(accountsHandler(&recordingStaff{listErr: errAccountsStore}, nil),
 		owner(), http.MethodGet, "/staff/accounts", nil)
 	if rec.Code != http.StatusOK {
@@ -614,7 +620,7 @@ func TestFR_SEC_003_StoreFailuresAreReadable(t *testing.T) {
 // LEA access is granted only when asked for. It is the single most sensitive
 // flag on an account — it opens the lawful-interception lookup — so defaulting
 // it on would be the worst available default.
-func TestFR_SEC_003_LEAAccessIsOffUnlessAskedFor(t *testing.T) {
+func TestFR_OBS_003_LEAAccessIsOffUnlessAskedFor(t *testing.T) {
 	off := &recordingStaff{roster: twoOwners()}
 	serveAccounts(accountsHandler(off, nil), owner(), http.MethodPost,
 		"/staff/accounts", validAccountForm())

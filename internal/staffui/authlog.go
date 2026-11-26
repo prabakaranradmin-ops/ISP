@@ -121,14 +121,14 @@ func (h *Handler) AuthLog(w http.ResponseWriter, r *http.Request) {
 		Username: ad.Username, Result: ad.Result, Reason: ad.Reason, Limit: 200,
 	}
 	if ad.From != "" {
-		if t, err := time.ParseInLocation("2006-01-02", ad.From, time.UTC); err == nil {
+		if t, err := time.ParseInLocation("2006-01-02", ad.From, time.Local); err == nil {
 			f.From = &t
 		} else {
 			d.Error = "The 'from' date must be a date, for example 2026-04-01."
 		}
 	}
 	if ad.To != "" {
-		if t, err := time.ParseInLocation("2006-01-02", ad.To, time.UTC); err == nil {
+		if t, err := time.ParseInLocation("2006-01-02", ad.To, time.Local); err == nil {
 			// Inclusive of the chosen day, as every other date filter here.
 			end := t.AddDate(0, 0, 1)
 			f.To = &end

@@ -243,7 +243,7 @@ func (h *Handler) GetBalanceSheet(w http.ResponseWriter, r *http.Request) {
 	}
 	asOf := time.Now()
 	if v := r.URL.Query().Get("as_of"); v != "" {
-		t, err := time.Parse("2006-01-02", v)
+		t, err := time.ParseInLocation("2006-01-02", v, time.Local)
 		if err != nil {
 			writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "as_of must be a date like 2026-08-31")
 			return
@@ -263,13 +263,13 @@ func ledgerDateWindow(r *http.Request) (from, to time.Time, err error) {
 	from = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	to = from.AddDate(0, 1, 0)
 	if v := r.URL.Query().Get("from"); v != "" {
-		from, err = time.Parse("2006-01-02", v)
+		from, err = time.ParseInLocation("2006-01-02", v, time.Local)
 		if err != nil {
 			return from, to, err
 		}
 	}
 	if v := r.URL.Query().Get("to"); v != "" {
-		t, perr := time.Parse("2006-01-02", v)
+		t, perr := time.ParseInLocation("2006-01-02", v, time.Local)
 		if perr != nil {
 			return from, to, perr
 		}

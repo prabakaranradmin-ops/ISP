@@ -1,6 +1,10 @@
 //go:build integration
 
-// Bulk subscriber operations — FR-SUB-010.
+// Bulk subscriber operations — FR-WFL-001 for the credit path, FR-LC-002 for
+// what bulk must not do to a subscriber's status.
+//
+// Acting on up to 500 subscribers at once has no requirement of its own in the
+// SRS. The two rules it has to respect do.
 //
 // internal/api/subscribers_bulk.go was at 0%: 80 statements that act on up to
 // 500 subscribers in one request. Two of its design decisions are controls
@@ -128,7 +132,7 @@ func bulkCall(h *api.Handler, target, body string) *httptest.ResponseRecorder {
 // "terminated" is not a bulk status, and neither is anything else outside the
 // three. Termination is approval-gated on its own, and bulk must not be the
 // way round that.
-func TestFR_SUB_010_BulkCannotTerminate(t *testing.T) {
+func TestFR_LC_002_BulkCannotTerminate(t *testing.T) {
 	for _, status := range []string{
 		"terminated", "grace_period", "pending_payment", "TERMINATED", "",
 	} {
@@ -166,7 +170,7 @@ func TestFR_SUB_010_BulkCannotTerminate(t *testing.T) {
 
 // A bulk suspend or resume moves nobody's billed period. Passing a plan
 // expiry here would quietly extend or shorten everyone in the batch.
-func TestFR_SUB_010_ABulkStatusChangeNeverMovesTheBilledPeriod(t *testing.T) {
+func TestFR_LC_001_ABulkStatusChangeNeverMovesTheBilledPeriod(t *testing.T) {
 	subs := &bulkSubs{}
 	h := api.NewHandler(api.HandlerDeps{DB: subs})
 
@@ -189,7 +193,7 @@ func TestFR_SUB_010_ABulkStatusChangeNeverMovesTheBilledPeriod(t *testing.T) {
 
 // A bulk credit files approvals and says so. 202, a note, and an approval id
 // per subscriber — not a credit.
-func TestFR_SUB_010_ABulkCreditFilesApprovalsAndSaysSo(t *testing.T) {
+func TestFR_WFL_001_ABulkCreditFilesApprovalsAndSaysSo(t *testing.T) {
 	ap := &bulkApprovals{}
 	h := api.NewHandler(api.HandlerDeps{Approvals: ap})
 
@@ -254,7 +258,7 @@ func TestFR_SUB_010_ABulkCreditFilesApprovalsAndSaysSo(t *testing.T) {
 
 // The batch is capped. Without it one request could hold a transaction over
 // every subscriber on the deployment.
-func TestFR_SUB_010_TheBatchIsCapped(t *testing.T) {
+func TestTheBulkBatchIsCapped(t *testing.T) {
 	tooMany := make([]string, 501)
 	for i := range tooMany {
 		tooMany[i] = fmt.Sprint(i + 1)
@@ -290,7 +294,7 @@ func TestFR_SUB_010_TheBatchIsCapped(t *testing.T) {
 
 // An empty selection is refused on all three endpoints, so none of them can
 // report a successful action over nobody.
-func TestFR_SUB_010_AnEmptySelectionIsRefusedEverywhere(t *testing.T) {
+func TestAnEmptyBulkSelectionIsRefusedEverywhere(t *testing.T) {
 	h := api.NewHandler(api.HandlerDeps{
 		DB: &bulkSubs{}, Approvals: &bulkApprovals{},
 		Lifecycle: &bulkLifecycle{},
@@ -316,7 +320,7 @@ func TestFR_SUB_010_AnEmptySelectionIsRefusedEverywhere(t *testing.T) {
 }
 
 // A bulk credit needs a reason and a positive amount.
-func TestFR_SUB_010_BulkCreditValidation(t *testing.T) {
+func TestFR_WFL_001_BulkCreditValidation(t *testing.T) {
 	for name, body := range map[string]string{
 		"no reason":    `{"subscriber_ids":[1],"amount":"100.00"}`,
 		"no amount":    `{"subscriber_ids":[1],"reason":"goodwill"}`,
@@ -340,7 +344,7 @@ func TestFR_SUB_010_BulkCreditValidation(t *testing.T) {
 }
 
 // A plan change needs a plan.
-func TestFR_SUB_010_ABulkPlanChangeNeedsAPlan(t *testing.T) {
+func TestFR_LC_001_ABulkPlanChangeNeedsAPlanID(t *testing.T) {
 	for name, body := range map[string]string{
 		"no plan":  `{"subscriber_ids":[1]}`,
 		"zero":     `{"subscriber_ids":[1],"new_plan_id":0}`,
@@ -363,7 +367,7 @@ func TestFR_SUB_010_ABulkPlanChangeNeedsAPlan(t *testing.T) {
 
 // Per-subscriber outcomes are reported individually: one failure in a batch
 // of three must not look like three failures, or like none.
-func TestFR_SUB_010_EachSubscribersOutcomeIsReportedSeparately(t *testing.T) {
+func TestEachBulkSubscribersOutcomeIsReportedSeparately(t *testing.T) {
 	subs := &bulkSubs{notFound: true}
 	h := api.NewHandler(api.HandlerDeps{DB: subs})
 
@@ -408,7 +412,7 @@ func TestFR_SUB_010_EachSubscribersOutcomeIsReportedSeparately(t *testing.T) {
 }
 
 // A failure filing one approval does not stop the others being filed.
-func TestFR_SUB_010_OneFailedApprovalDoesNotAbandonTheBatch(t *testing.T) {
+func TestFR_WFL_001_OneFailedApprovalDoesNotAbandonTheBatch(t *testing.T) {
 	ap := &bulkApprovals{err: errors.New("approval store down")}
 	rec := bulkCall(api.NewHandler(api.HandlerDeps{Approvals: ap}),
 		"/api/v1/subscribers/bulk/credit",
@@ -435,7 +439,7 @@ func TestFR_SUB_010_OneFailedApprovalDoesNotAbandonTheBatch(t *testing.T) {
 
 // Each endpoint reports its own missing dependency, rather than one generic
 // message that sends an operator looking in the wrong place.
-func TestFR_SUB_010_EachEndpointNamesItsOwnMissingDependency(t *testing.T) {
+func TestEachBulkEndpointNamesItsOwnMissingDependency(t *testing.T) {
 	bare := api.NewHandler(api.HandlerDeps{})
 	for name, tc := range map[string]struct{ target, body string }{
 		"plan change": {"/api/v1/subscribers/bulk/plan-change",
@@ -460,7 +464,7 @@ func TestFR_SUB_010_EachEndpointNamesItsOwnMissingDependency(t *testing.T) {
 // Every status change is audited and emits the partner event, once per
 // subscriber — a bulk suspend of fifty that produced one audit row would be a
 // trail that cannot answer who was suspended.
-func TestFR_SUB_010_EveryStatusChangeIsAuditedIndividually(t *testing.T) {
+func TestFR_LC_003_EveryBulkStatusChangeIsAuditedIndividually(t *testing.T) {
 	sink := &recordingAuditSink{}
 	middleware.SetAuditSink(sink)
 	t.Cleanup(func() { middleware.SetAuditSink(nil) })

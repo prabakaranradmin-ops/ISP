@@ -83,14 +83,14 @@ func (h *Handler) Audit(w http.ResponseWriter, r *http.Request) {
 	// the end of the chosen day, not its start, because an operator
 	// filtering "to the 5th" means including the 5th.
 	if ad.From != "" {
-		if t, err := time.ParseInLocation("2006-01-02", ad.From, time.UTC); err == nil {
+		if t, err := time.ParseInLocation("2006-01-02", ad.From, time.Local); err == nil {
 			f.From = &t
 		} else {
 			d.Error = "The 'from' date must be a date, for example 2026-04-01."
 		}
 	}
 	if ad.To != "" {
-		if t, err := time.ParseInLocation("2006-01-02", ad.To, time.UTC); err == nil {
+		if t, err := time.ParseInLocation("2006-01-02", ad.To, time.Local); err == nil {
 			end := t.AddDate(0, 0, 1)
 			f.To = &end
 		} else {

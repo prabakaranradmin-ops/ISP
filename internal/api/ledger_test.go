@@ -1,6 +1,13 @@
 //go:build integration
 
-// The general ledger's HTTP surface — FR-ACC-001..005.
+// The general ledger's HTTP surface.
+//
+// No FR id: the SRS does not cover the general ledger. Chart of accounts,
+// journal entries, trial balance, income statement and balance sheet are
+// implemented across nine endpoints and a console screen, and the requirements
+// document says nothing about any of it — FR-BIL-003 covers double-entry
+// *wallet* postings and stops there. Named descriptively rather than given a
+// borrowed id, so the gap stays visible.
 //
 // internal/api/ledger.go was at 0%: 135 statements, nine handlers, and the
 // only part of this system whose output somebody signs. A trial balance, an
@@ -143,7 +150,7 @@ func ledgerHandler(l api.GeneralLedgerQuerier) *api.Handler {
 // Every endpoint reports an unconfigured ledger as 503 with a reason, rather
 // than panicking or answering 200 with an empty statement — which an
 // accountant would read as "no revenue this month".
-func TestFR_ACC_001_AnUnconfiguredLedgerIsReportedOnEveryEndpoint(t *testing.T) {
+func TestAnUnconfiguredLedgerIsReportedOnEveryEndpoint(t *testing.T) {
 	h := api.NewHandler(api.HandlerDeps{})
 
 	for name, tc := range map[string]struct {
@@ -173,7 +180,7 @@ func TestFR_ACC_001_AnUnconfiguredLedgerIsReportedOnEveryEndpoint(t *testing.T) 
 // A duplicate account code is a conflict, not a 500. Two accounts both coded
 // 4000 is a chart of accounts that no longer adds up, and the operator needs
 // to be told which it is.
-func TestFR_ACC_001_ADuplicateAccountCodeIsAConflict(t *testing.T) {
+func TestADuplicateAccountCodeIsAConflict(t *testing.T) {
 	h := ledgerHandler(&fakeLedger{
 		createErr: errors.New(`ERROR: duplicate key value violates unique constraint "gl_accounts_code_key"`),
 	})
@@ -196,7 +203,7 @@ func TestFR_ACC_001_ADuplicateAccountCodeIsAConflict(t *testing.T) {
 // The normal balance is derived from the account type when it is not given,
 // because getting it backwards silently inverts that account on every
 // statement it appears in.
-func TestFR_ACC_001_TheNormalBalanceIsDerivedFromTheAccountType(t *testing.T) {
+func TestTheNormalBalanceIsDerivedFromTheAccountType(t *testing.T) {
 	for _, tc := range []struct {
 		accountType string
 		want        string
@@ -233,7 +240,7 @@ func TestFR_ACC_001_TheNormalBalanceIsDerivedFromTheAccountType(t *testing.T) {
 	}
 }
 
-func TestFR_ACC_001_AccountValidation(t *testing.T) {
+func TestLedgerAccountValidation(t *testing.T) {
 	for name, tc := range map[string]struct {
 		body string
 		want int
@@ -261,7 +268,7 @@ func TestFR_ACC_001_AccountValidation(t *testing.T) {
 // A journal entry records who posted it, from the token rather than the body.
 // "Who typed this adjustment" is the first question asked about a manual
 // entry, and a client-supplied name would be worthless as evidence.
-func TestFR_ACC_002_AnEntryRecordsWhoPostedItFromTheToken(t *testing.T) {
+func TestAJournalEntryRecordsWhoPostedItFromTheToken(t *testing.T) {
 	f := &fakeLedger{}
 	rec := ledgerCall(ledgerHandler(f), http.MethodPost, "/api/v1/ledger/entries",
 		`{"description":"opening balance","created_by":"somebody_else",
@@ -280,7 +287,7 @@ func TestFR_ACC_002_AnEntryRecordsWhoPostedItFromTheToken(t *testing.T) {
 
 // An omitted side is zero, not empty. An empty string reaching a numeric
 // column is a 500 at the store instead of a balanced entry.
-func TestFR_ACC_002_AnOmittedSideIsZeroNotEmpty(t *testing.T) {
+func TestAnOmittedJournalSideIsZeroNotEmpty(t *testing.T) {
 	f := &fakeLedger{}
 	ledgerCall(ledgerHandler(f), http.MethodPost, "/api/v1/ledger/entries",
 		`{"description":"x","lines":[{"account_id":1,"debit":"100.00"},{"account_id":2,"credit":"100.00"}]}`)
@@ -297,7 +304,7 @@ func TestFR_ACC_002_AnOmittedSideIsZeroNotEmpty(t *testing.T) {
 
 // An unbalanced entry is the store's refusal, passed through as a validation
 // error with its reason — not a 500, and not swallowed.
-func TestFR_ACC_002_AnUnbalancedEntryIsRefusedWithTheReason(t *testing.T) {
+func TestAnUnbalancedEntryIsRefusedWithTheReason(t *testing.T) {
 	const why = "ledger: debits 100.00 do not equal credits 90.00"
 	h := ledgerHandler(&fakeLedger{postErr: errors.New(why)})
 
@@ -311,7 +318,7 @@ func TestFR_ACC_002_AnUnbalancedEntryIsRefusedWithTheReason(t *testing.T) {
 	}
 }
 
-func TestFR_ACC_002_EntryValidation(t *testing.T) {
+func TestJournalEntryValidation(t *testing.T) {
 	for name, tc := range map[string]struct {
 		body string
 		want int
@@ -340,7 +347,7 @@ func TestFR_ACC_002_EntryValidation(t *testing.T) {
 // A journal entry that does not exist is 404, not an empty entry. An empty
 // one reads as "this posting had no lines", which is a different and much
 // more alarming claim.
-func TestFR_ACC_002_AMissingEntryIsNotFound(t *testing.T) {
+func TestAMissingJournalEntryIsNotFound(t *testing.T) {
 	h := ledgerHandler(&fakeLedger{entry: nil})
 	rec := ledgerCall(h, http.MethodGet, "/api/v1/ledger/entries/404", "")
 	if rec.Code != http.StatusNotFound {
@@ -360,7 +367,7 @@ func TestFR_ACC_002_AMissingEntryIsNotFound(t *testing.T) {
 // The income statement's window is inclusive of the named end day. Off by one
 // here moves a month's revenue into the next month — the error nobody notices
 // until two filings disagree.
-func TestFR_ACC_004_TheIncomeStatementWindowIncludesTheNamedEndDay(t *testing.T) {
+func TestTheIncomeStatementWindowIncludesTheNamedEndDay(t *testing.T) {
 	f := &fakeLedger{}
 	rec := ledgerCall(ledgerHandler(f), http.MethodGet,
 		"/api/v1/ledger/income-statement?from=2026-11-01&to=2026-11-30", "")
@@ -380,7 +387,7 @@ func TestFR_ACC_004_TheIncomeStatementWindowIncludesTheNamedEndDay(t *testing.T)
 }
 
 // With no window at all it is the current calendar month, not all of history.
-func TestFR_ACC_004_TheDefaultWindowIsTheCurrentMonth(t *testing.T) {
+func TestTheDefaultStatementWindowIsTheCurrentMonth(t *testing.T) {
 	f := &fakeLedger{}
 	if rec := ledgerCall(ledgerHandler(f), http.MethodGet, "/api/v1/ledger/income-statement", ""); rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
@@ -397,7 +404,7 @@ func TestFR_ACC_004_TheDefaultWindowIsTheCurrentMonth(t *testing.T) {
 }
 
 // The balance sheet's as_of is inclusive of its named day too.
-func TestFR_ACC_005_TheBalanceSheetAsOfIncludesItsNamedDay(t *testing.T) {
+func TestTheBalanceSheetAsOfIncludesItsNamedDay(t *testing.T) {
 	f := &fakeLedger{}
 	if rec := ledgerCall(ledgerHandler(f), http.MethodGet,
 		"/api/v1/ledger/balance-sheet?as_of=2026-03-31", ""); rec.Code != http.StatusOK {
@@ -409,7 +416,7 @@ func TestFR_ACC_005_TheBalanceSheetAsOfIncludesItsNamedDay(t *testing.T) {
 	}
 }
 
-func TestFR_ACC_004_ABadDateIsAValidationError(t *testing.T) {
+func TestABadStatementDateIsAValidationError(t *testing.T) {
 	for name, target := range map[string]string{
 		"from":  "/api/v1/ledger/income-statement?from=31-11-2026",
 		"to":    "/api/v1/ledger/income-statement?to=last%20tuesday",
@@ -430,7 +437,7 @@ func TestFR_ACC_004_ABadDateIsAValidationError(t *testing.T) {
 
 // The reads return what the store returns, and a store failure is a 500 with
 // a code rather than a half-written body.
-func TestFR_ACC_003_TheReadsPassThroughAndFailuresAreReported(t *testing.T) {
+func TestTheLedgerReadsPassThroughAndFailuresAreReported(t *testing.T) {
 	f := &fakeLedger{
 		accounts: []ledger.Account{{ID: 1, Code: "4000", Name: "Service Revenue", AccountType: "income"}},
 		entries:  []ledger.JournalEntry{{ID: 7, Description: "opening balance"}},
@@ -502,7 +509,7 @@ func TestFR_ACC_003_TheReadsPassThroughAndFailuresAreReported(t *testing.T) {
 // Posting an account and an entry are both audited, because a chart of
 // accounts and a manual journal entry are exactly the changes an auditor asks
 // to see a trail for.
-func TestFR_ACC_002_AccountsAndEntriesAreAudited(t *testing.T) {
+func TestLedgerAccountsAndEntriesAreAudited(t *testing.T) {
 	sink := &recordingAuditSink{}
 	middleware.SetAuditSink(sink)
 	t.Cleanup(func() { middleware.SetAuditSink(nil) })

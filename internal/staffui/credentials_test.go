@@ -15,7 +15,12 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/revenue"
 )
 
-// Subscriber credentials on the console — FR-SUB-006, FR-SEC-004.
+// Subscriber credentials on the console — FR-SEC-005 for the role gating.
+//
+// Revealing and resetting a subscriber's password has no requirement of its
+// own in the SRS; FR-SEC-005 covers the per-route role enforcement these
+// handlers implement, and the rest is named descriptively rather than given a
+// borrowed id.
 //
 // credentials.go was at 2.6%: 75 statements covering the only screen in the
 // product that shows an operator a customer's password.
@@ -127,7 +132,7 @@ func credsHandler(c CredentialManager, b BulkActionExecutor) *Handler {
 // A CSR may reveal a password; a CSR may not reset one. That split is the
 // point of this screen, and it is enforced per handler rather than by the
 // template.
-func TestFR_SEC_004_ACSRMayRevealButNotReset(t *testing.T) {
+func TestFR_SEC_005_ACSRMayRevealButNotReset(t *testing.T) {
 	c := &fakeCredentials{password: "hunter2", stored: true}
 	h := credsHandler(c, &fakeBulk{})
 
@@ -157,7 +162,7 @@ func TestFR_SEC_004_ACSRMayRevealButNotReset(t *testing.T) {
 
 // A technician and a NOC engineer may do none of it. Neither has a reason to
 // see a customer's password.
-func TestFR_SEC_004_TechniciansAndNOCCannotSeeOrChangeCredentials(t *testing.T) {
+func TestFR_SEC_005_TechniciansAndNOCCannotSeeOrChangeCredentials(t *testing.T) {
 	for _, role := range []string{"technician", "noc_engineer"} {
 		c := &fakeCredentials{password: "hunter2", stored: true}
 		h := credsHandler(c, &fakeBulk{})
@@ -181,7 +186,7 @@ func TestFR_SEC_004_TechniciansAndNOCCannotSeeOrChangeCredentials(t *testing.T) 
 }
 
 // Owner and billing admin may do all three.
-func TestFR_SEC_004_OwnerAndBillingMayDoAllThree(t *testing.T) {
+func TestFR_SEC_005_OwnerAndBillingMayDoAllThreeCredentialActions(t *testing.T) {
 	for _, role := range []string{"isp_owner", "billing_admin"} {
 		c := &fakeCredentials{password: "hunter2", stored: true}
 		b := &fakeBulk{planResults: []api.BulkResult{{SubscriberID: 5, OK: true}}}
@@ -203,7 +208,7 @@ func TestFR_SEC_004_OwnerAndBillingMayDoAllThree(t *testing.T) {
 
 // Both actions are attributed to the operator who performed them. A reveal
 // recorded as "unknown" is a read of a customer's password that nobody owns.
-func TestFR_SEC_004_BothActionsAreAttributedToTheOperator(t *testing.T) {
+func TestFR_SEC_005_BothCredentialActionsAreAttributedToTheOperator(t *testing.T) {
 	c := &fakeCredentials{password: "hunter2", stored: true}
 	h := credsHandler(c, &fakeBulk{})
 
@@ -222,7 +227,7 @@ func TestFR_SEC_004_BothActionsAreAttributedToTheOperator(t *testing.T) {
 // A revealed password is shown on that render and is not carried into the
 // page's own state — the next ordinary load of the subscriber must not show
 // it again.
-func TestFR_SUB_006_ARevealedPasswordAppearsOnceAndNotOnTheNextLoad(t *testing.T) {
+func TestARevealedPasswordAppearsOnceAndNotOnTheNextLoad(t *testing.T) {
 	c := &fakeCredentials{password: "hunter2", stored: true}
 	h := credsHandler(c, &fakeBulk{})
 
@@ -246,7 +251,7 @@ func TestFR_SUB_006_ARevealedPasswordAppearsOnceAndNotOnTheNextLoad(t *testing.T
 
 // A subscriber with no recoverable password says so rather than showing an
 // empty field that reads as a blank password.
-func TestFR_SUB_006_NoRecoverablePasswordIsStatedNotShownAsBlank(t *testing.T) {
+func TestNoRecoverablePasswordIsStatedNotShownAsBlank(t *testing.T) {
 	h := credsHandler(&fakeCredentials{password: "", stored: false}, &fakeBulk{})
 	rec := serveCreds(h, sess("csr"), "/staff/subscribers/5/password/reveal", nil)
 	if rec.Code != http.StatusOK {
@@ -262,7 +267,7 @@ func TestFR_SUB_006_NoRecoverablePasswordIsStatedNotShownAsBlank(t *testing.T) {
 
 // A reset needs a password, and a too-short one gets a message the operator
 // can act on rather than a generic failure.
-func TestFR_SUB_006_ResetValidationSaysWhatIsWrong(t *testing.T) {
+func TestPasswordResetValidationSaysWhatIsWrong(t *testing.T) {
 	for name, tc := range map[string]struct {
 		form url.Values
 		err  error
@@ -292,7 +297,7 @@ func TestFR_SUB_006_ResetValidationSaysWhatIsWrong(t *testing.T) {
 
 // A successful reset redirects rather than re-rendering, so a refresh cannot
 // resubmit it, and the confirmation says when the new password takes effect.
-func TestFR_SUB_006_ASuccessfulResetRedirectsWithAConfirmation(t *testing.T) {
+func TestASuccessfulPasswordResetRedirectsWithAConfirmation(t *testing.T) {
 	c := &fakeCredentials{}
 	rec := serveCreds(credsHandler(c, &fakeBulk{}), sess("billing_admin"),
 		"/staff/subscribers/5/password", url.Values{"new_password": {"a-good-password"}})
@@ -315,7 +320,7 @@ func TestFR_SUB_006_ASuccessfulResetRedirectsWithAConfirmation(t *testing.T) {
 // A single plan change goes through the same executor the bulk toolbar uses,
 // with one id — so proration and billing cannot diverge between the two
 // paths.
-func TestFR_SUB_006_ASinglePlanChangeUsesTheBulkPath(t *testing.T) {
+func TestFR_LC_001_ASinglePlanChangeUsesTheBulkPath(t *testing.T) {
 	b := &fakeBulk{planResults: []api.BulkResult{{SubscriberID: 5, OK: true}}}
 	rec := serveCreds(credsHandler(&fakeCredentials{}, b), sess("isp_owner"),
 		"/staff/subscribers/5/plan-change", url.Values{"plan_id": {"7"}})
@@ -335,7 +340,7 @@ func TestFR_SUB_006_ASinglePlanChangeUsesTheBulkPath(t *testing.T) {
 }
 
 // A plan change that fails reports the executor's reason on the page.
-func TestFR_SUB_006_AFailedPlanChangeReportsWhy(t *testing.T) {
+func TestFR_LC_001_AFailedPlanChangeReportsWhy(t *testing.T) {
 	b := &fakeBulk{planResults: []api.BulkResult{
 		{SubscriberID: 5, OK: false, Error: "plan is retired"},
 	}}
@@ -356,7 +361,7 @@ func TestFR_SUB_006_AFailedPlanChangeReportsWhy(t *testing.T) {
 }
 
 // A plan change needs a plan.
-func TestFR_SUB_006_APlanChangeNeedsAPlan(t *testing.T) {
+func TestFR_LC_001_APlanChangeNeedsAPlan(t *testing.T) {
 	for _, planID := range []string{"", "0", "-3", "seven"} {
 		b := &fakeBulk{}
 		body := pageText(serveCreds(credsHandler(&fakeCredentials{}, b), sess("isp_owner"),
@@ -371,7 +376,7 @@ func TestFR_SUB_006_APlanChangeNeedsAPlan(t *testing.T) {
 }
 
 // A bad subscriber id is refused before anything is read or written.
-func TestFR_SUB_006_ABadSubscriberIdIsRefused(t *testing.T) {
+func TestABadSubscriberIdIsRefusedByTheCredentialHandlers(t *testing.T) {
 	c := &fakeCredentials{}
 	b := &fakeBulk{}
 	h := credsHandler(c, b)
@@ -395,7 +400,7 @@ func TestFR_SUB_006_ABadSubscriberIdIsRefused(t *testing.T) {
 
 // An unconfigured deployment says which capability is missing, so an operator
 // is not left guessing whether the feature exists.
-func TestFR_SUB_006_AnUnconfiguredDeploymentNamesWhatIsMissing(t *testing.T) {
+func TestAnUnconfiguredCredentialDeploymentNamesWhatIsMissing(t *testing.T) {
 	noCreds := credsHandler(nil, &fakeBulk{})
 	for _, target := range []string{
 		"/staff/subscribers/5/password/reveal",
@@ -417,7 +422,7 @@ func TestFR_SUB_006_AnUnconfiguredDeploymentNamesWhatIsMissing(t *testing.T) {
 }
 
 // A reveal that fails is reported on the page, without the store's error.
-func TestFR_SUB_006_AFailedRevealIsReported(t *testing.T) {
+func TestAFailedPasswordRevealIsReported(t *testing.T) {
 	h := credsHandler(&fakeCredentials{revealErr: errCreds}, &fakeBulk{})
 	rec := serveCreds(h, sess("csr"), "/staff/subscribers/5/password/reveal", nil)
 	body := pageText(rec.Body.String())

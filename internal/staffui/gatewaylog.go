@@ -108,14 +108,14 @@ func (h *Handler) GatewayLog(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if gd.From != "" {
-		if t, err := time.ParseInLocation("2006-01-02", gd.From, time.UTC); err == nil {
+		if t, err := time.ParseInLocation("2006-01-02", gd.From, time.Local); err == nil {
 			f.From = &t
 		} else {
 			d.Error = "The 'from' date must be a date, for example 2026-04-01."
 		}
 	}
 	if gd.To != "" {
-		if t, err := time.ParseInLocation("2006-01-02", gd.To, time.UTC); err == nil {
+		if t, err := time.ParseInLocation("2006-01-02", gd.To, time.Local); err == nil {
 			end := t.AddDate(0, 0, 1) // inclusive of the chosen day
 			f.To = &end
 		} else {

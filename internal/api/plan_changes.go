@@ -164,7 +164,19 @@ func (h *Handler) SchedulePlanChangeHTTP(w http.ResponseWriter, r *http.Request)
 	// Parsed in UTC, as a bare date: effective_on is a day, and attaching
 	// the server's zone to it would make a change scheduled for the 1st
 	// land on the 31st for half the world.
-	on, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(b.EffectiveOn), time.UTC)
+	// Parsed in the operator's own zone, not UTC.
+	//
+	// effective_on is a plain calendar date: the column is DATE, the due-change
+	// scanner compares it as a date, and Normalise compares it against "today".
+	// Parsing it as UTC midnight made it an instant in a different zone from
+	// the today it is compared with, and from the session the DATE cast uses.
+	//
+	// East of UTC that is merely inconsistent. West of it, 00:00 UTC is the
+	// previous local day, so a change scheduled for today was both refused as
+	// "already passed" and, if stored, written a day early. Three tests failed
+	// on this the first time the suite ran between midnight and 05:30 IST,
+	// which is the only window where UTC and IST disagree about the date.
+	on, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(b.EffectiveOn), time.Local)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION",
 			"effective_on must be a date, for example \"2026-04-01\"")

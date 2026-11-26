@@ -694,7 +694,7 @@ func parseOptionalDate(s *string) (*time.Time, error) {
 	if s == nil || *s == "" {
 		return nil, nil
 	}
-	t, err := time.Parse("2006-01-02", *s)
+	t, err := time.ParseInLocation("2006-01-02", *s, time.Local)
 	if err != nil {
 		return nil, errors.New("due_date must be a YYYY-MM-DD date")
 	}

@@ -72,7 +72,19 @@ func (h *Handler) SchedulePlanChangeForm(w http.ResponseWriter, r *http.Request)
 		h.renderSubscriberDetail(w, r, s, id, "Plan change not scheduled: choose the plan to move them to.")
 		return
 	}
-	on, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(r.PostFormValue("effective_on")), time.UTC)
+	// Parsed in the operator's own zone, not UTC.
+	//
+	// effective_on is a plain calendar date: the column is DATE, the due-change
+	// scanner compares it as a date, and Normalise compares it against "today".
+	// Parsing it as UTC midnight made it an instant in a different zone from
+	// the today it is compared with, and from the session the DATE cast uses.
+	//
+	// East of UTC that is merely inconsistent. West of it, 00:00 UTC is the
+	// previous local day, so a change scheduled for today was both refused as
+	// "already passed" and, if stored, written a day early. Three tests failed
+	// on this the first time the suite ran between midnight and 05:30 IST,
+	// which is the only window where UTC and IST disagree about the date.
+	on, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(r.PostFormValue("effective_on")), time.Local)
 	if err != nil {
 		h.renderSubscriberDetail(w, r, s, id,
 			"Plan change not scheduled: give the date it should take effect from.")
