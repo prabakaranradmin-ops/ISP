@@ -51,7 +51,7 @@
 </div>
 {{end}}
 
-<main class="wrap" id="main">
+<main class="wrap" id="main" tabindex="-1">
   {{if .Error}}<div class="alert bad" role="alert">{{.Error}}</div>{{end}}
   {{if .Message}}<div class="alert ok" role="status">{{.Message}}</div>{{end}}
   {{template "content" .}}
