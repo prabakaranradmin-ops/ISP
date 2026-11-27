@@ -38,6 +38,17 @@ var (
 		Name: "db_partition_rollforward_failures_total",
 		Help: "Failed attempts to provision monthly partitions",
 	})
+	// Exported whether or not retention is configured: with none set these
+	// tables grow without bound, and the only honest thing to do about a
+	// decision nobody has made is to make its cost visible.
+	partitionMonthsHeld = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "db_partition_months_held",
+		Help: "Months of history each monthly-partitioned table is holding",
+	}, []string{"table"})
+	partitionsDropped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "db_partitions_dropped_total",
+		Help: "Expired monthly partitions dropped by the retention policy",
+	}, []string{"table"})
 )
 
 // PartitionScanner keeps the monthly-partitioned tables provisioned ahead of
@@ -54,9 +65,13 @@ type PartitionScanner struct {
 	interval    time.Duration
 	monthsAhead int
 	now         func() time.Time
+	// retention is empty unless an operator has set one. Empty means report
+	// the growth and drop nothing — see partitionretention.go on why there is
+	// no default.
+	retention RetentionPolicy
 }
 
-// NewPartitionScanner constructs the roll-forward.
+// NewPartitionScanner constructs the roll-forward, with no retention policy.
 func NewPartitionScanner(store *MaintenanceStore) *PartitionScanner {
 	return &PartitionScanner{
 		store:       store,
@@ -65,6 +80,13 @@ func NewPartitionScanner(store *MaintenanceStore) *PartitionScanner {
 		now:         time.Now,
 	}
 }
+
+// SetRetention turns on dropping expired partitions.
+//
+// Separate from the constructor so that configuring retention is an explicit
+// act in the caller: a scanner built the ordinary way never deletes anything,
+// and adding a deletion cannot happen by passing a zero value.
+func (s *PartitionScanner) SetRetention(p RetentionPolicy) { s.retention = p }
 
 // Run provisions partitions on a tick until ctx is cancelled, starting with a
 // pass immediately.
@@ -156,5 +178,75 @@ func (s *PartitionScanner) Once(ctx context.Context) error {
 				Msg("db: partition coverage is nearly exhausted")
 		}
 	}
+
+	if err := s.retire(ctx, now); err != nil && firstErr == nil {
+		firstErr = err
+	}
 	return firstErr
+}
+
+// retire reports how much history each table holds and, where a retention is
+// configured, drops at most one expired partition per table.
+//
+// One per pass is deliberate. A first run against years of accumulated
+// history would otherwise drop dozens of partitions in one go, holding a lock
+// on the largest tables in the database while it did; at one a day the
+// backlog clears quietly instead. The reporting half runs either way, because
+// a growth problem nobody has decided about is still a growth problem.
+func (s *PartitionScanner) retire(ctx context.Context, now time.Time) error {
+	all, err := s.store.ListPartitions(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Oldest month held per table, which is what the gauge is about.
+	oldest := map[string]time.Time{}
+	for _, p := range all {
+		if p.Month.IsZero() {
+			continue
+		}
+		if cur, ok := oldest[p.Parent]; !ok || p.Month.Before(cur) {
+			oldest[p.Parent] = p.Month
+		}
+	}
+	thisMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	for table, first := range oldest {
+		held := (thisMonth.Year()-first.Year())*12 + int(thisMonth.Month()-first.Month()) + 1
+		partitionMonthsHeld.WithLabelValues(table).Set(float64(held))
+		if _, set := s.retention.MonthsFor(table); !set && held >= 24 {
+			// Said once a day rather than never: two years of CGNAT and
+			// session history with no decision behind it is a cost somebody
+			// is paying without having chosen to.
+			log.Warn().Str("table", table).Int("months_held", held).
+				Msg("db: no retention configured and the table is holding years of " +
+					"history; set PARTITION_RETENTION_MONTHS or accept the growth " +
+					"deliberately")
+		}
+	}
+
+	droppable := DroppablePartitions(all, s.retention, now)
+	if len(droppable) == 0 {
+		return nil
+	}
+
+	// At most one per table per pass, oldest first.
+	done := map[string]bool{}
+	for _, p := range droppable {
+		if done[p.Parent] {
+			continue
+		}
+		done[p.Parent] = true
+		// Logged before the drop, not after: if this is the wrong decision,
+		// the log line is the only record that it was made.
+		log.Warn().Str("table", p.Parent).Str("partition", p.Name).
+			Time("month", p.Month).
+			Msg("db: dropping an expired partition; the records in it are gone")
+		if err := s.store.DropPartition(ctx, p.Name); err != nil {
+			log.Error().Err(err).Str("partition", p.Name).
+				Msg("db: dropping an expired partition failed")
+			return err
+		}
+		partitionsDropped.WithLabelValues(p.Parent).Inc()
+	}
+	return nil
 }

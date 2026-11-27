@@ -15,6 +15,44 @@ authority**; this is a map, not a replacement.
 
 ---
 
+## ADR-017 — Partition retention is opt-in, and the window is not ours to pick
+**2026-11-27 · Accepted**
+
+The mechanism to drop expired monthly partitions exists and is off.
+`PARTITION_RETENTION_MONTHS` turns it on per table; with none set, the tables
+grow without bound and the growth is reported rather than acted on.
+
+*Why opt-in:* dropping a partition destroys the CGNAT and session records in
+it, and those are what a lawful-interception request asks for. FR-NET-001
+requires the allocations to be recorded and says nothing about how long. A
+default here would be an engineering guess deleting somebody else's evidence
+under a licence condition we have not read. ADR-015 left this open on the same
+reasoning; this is the mechanism without the decision.
+
+*Why per table:* the obligations differ. CGNAT allocations answer a
+lawful-interception request, session history answers a billing dispute, and
+flow records are the largest table in the database within a year of real
+traffic. One global number would be the shortest of the three.
+
+*Cost:* until somebody sets it, `flow_records` grows until the disk does not
+hold it. `db_partition_months_held` is exported whether or not retention is
+configured, and the scanner says so once a day past two years — the only
+honest thing to do about a decision nobody has made is to make its cost
+visible.
+
+*Refusals built in:* a policy that cannot be fully parsed stops the service
+rather than applying the half it understood, because an operator who mistypes
+one table name would otherwise believe those records are kept to schedule
+while they are kept forever. A retention below one month is refused outright.
+At most one partition is dropped per table per pass, so a first run against
+years of history cannot hold a lock on the largest tables while it works
+through them. A child table whose name does not carry a month is never
+touched: it is not something the roll-forward created.
+
+*Detail:* `internal/db/partitionretention.go`, `internal/db/retentionparse.go`.
+
+---
+
 ## ADR-016 — Backups are nightly dumps the operator schedules, and the superuser takes them
 **2026-11-24 · Accepted**
 

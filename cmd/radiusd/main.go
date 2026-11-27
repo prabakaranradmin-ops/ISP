@@ -274,6 +274,18 @@ func run(ctx context.Context) error {
 	// the accounting writes above, which is why it lives in this binary and
 	// starts with a pass rather than on its first tick.
 	partitions := db.NewPartitionScanner(database.Maintenance())
+	// Retention is opt-in and refuses to start on a policy it only half
+	// understood: an operator who mistypes one table name would otherwise
+	// believe those records are being kept to schedule while they are in fact
+	// kept forever, or deleted after a month. Neither is discovered until
+	// somebody asks for the records.
+	if retention, err := db.ParseRetentionPolicy(cfg.PartitionRetentionMonths); err != nil {
+		log.Fatal().Err(err).Msg("radiusd: PARTITION_RETENTION_MONTHS is not usable")
+	} else if len(retention) > 0 {
+		partitions.SetRetention(retention)
+		log.Info().Interface("retention_months", retention).
+			Msg("radiusd: partition retention configured — expired partitions will be dropped")
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

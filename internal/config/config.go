@@ -64,6 +64,8 @@ type Config struct {
 	// deployment that has not chosen where its invoices and KYC scans live
 	// should not have that decided for it by a constant.
 	ArchiveDir string
+	// PartitionRetentionMonths is "table=months" pairs; see Load.
+	PartitionRetentionMonths string
 	// ArchiveS3* configure the off-machine copy (FR-NET-008). A bucket turns
 	// it on and takes precedence over ArchiveDir, because a copy on the same
 	// disk as the database is not disaster recovery — which is the whole
@@ -194,6 +196,16 @@ func Load(service string) (*Config, error) {
 		RadiusAddr:     env("RADIUS_ADDR", ":1812"),
 		RadiusAcctAddr: env("RADIUS_ACCT_ADDR", ":1813"),
 		ArchiveDir:     env("ARCHIVE_DIR", ""),
+
+		// How long each monthly-partitioned table keeps history, as
+		// "table=months" pairs. Empty means keep everything, which is the
+		// state of every deployment today and the only safe default:
+		// dropping a partition destroys CGNAT and session evidence, and how
+		// long that must be kept is a licence condition rather than an
+		// engineering choice.
+		//
+		//   PARTITION_RETENTION_MONTHS=flow_records=24,cgnat_allocations=24
+		PartitionRetentionMonths: env("PARTITION_RETENTION_MONTHS", ""),
 
 		ArchiveS3Endpoint:  env("ARCHIVE_S3_ENDPOINT", ""),
 		ArchiveS3Bucket:    env("ARCHIVE_S3_BUCKET", ""),
