@@ -550,15 +550,114 @@ Copy-Item E:\isp-backups\isp-bss-20261124-023000\keys 'C:\ProgramData\ISP BSS\co
 Start-Service aaa_core_daemon, api_service
 ```
 
-### Point-in-time recovery is not configured
+### Point-in-time recovery
 
-This installation takes nightly dumps. It does not archive WAL, so the
-recovery point is the last nightly backup and the worst-case data loss is
-24 hours. Continuous archiving (`archive_mode`, `archive_command`, and a
-`pg_basebackup` chain) is a separate piece of work and is not set up by the
-installer — said plainly here because an earlier version of this section was
-headed "Point-in-Time Restore" over a command that restores a nightly dump,
-which is the kind of claim nobody tests until the day it matters.
+Nightly dumps put the recovery point at the last backup: up to 24 hours of
+recharges, payments and session records. Continuous WAL archiving moves it to
+the last committed transaction, and lets a restore stop at a chosen instant
+— "the state at 14:05, just before the bad import".
+
+**It is off until you turn it on:**
+
+```powershell
+# Elevated. Put the archive on a different disk from the database.
+.\scripts\windows\enable_wal_archiving.ps1 -ArchiveRoot E:\isp-wal
+```
+
+That writes the config, restarts PostgreSQL, forces a WAL switch and checks the
+segment actually lands before reporting success. Then base backups on a
+schedule, because **WAL replays on top of a base backup and restores nothing on
+its own**:
+
+```powershell
+.\scripts\windows\basebackup.ps1 -ArchiveRoot E:\isp-wal -KeepLast 2
+```
+
+`basebackup.ps1` also prunes the archive, and it prunes against the *oldest
+base backup it is keeping* rather than by age. "Delete WAL older than 30 days"
+is the rule that quietly deletes the segment a 31-day-old base backup needs,
+and nothing reports it until the restore.
+
+#### Restoring to an instant
+
+Onto a scratch cluster first, never over the live one. Everything below was
+executed before it was written down.
+
+```powershell
+# 1. A copy of a base backup to recover into.
+Copy-Item E:\isp-wal\base\base-20261127-020000 D:\restore-probe -Recurse
+Remove-Item D:\restore-probe\postmaster.pid -ErrorAction SilentlyContinue
+
+# 2. Tell it where the WAL is and when to stop.
+#
+#    The backslashes below are DOUBLED, and that is not a typo.
+#    postgresql.conf processes escapes inside a single-quoted value, so a
+#    backslash followed by digits is read as an OCTAL escape and silently
+#    becomes a different character. A path containing \475 became "=" during
+#    the rehearsal and the archiver failed twelve times against a directory
+#    that does not exist — reported as "The system cannot find the file
+#    specified", which reads like a missing segment.
+#
+#    Forward slashes are not the way out: `copy` is a cmd builtin and will not
+#    READ a forward-slash path, though it will happily write to one. That
+#    asymmetry makes archiving look correct while restoring fails.
+Add-Content D:\restore-probe\postgresql.conf @'
+port = 55999
+archive_mode = off
+restore_command = 'copy "E:\\isp-wal\\wal\\%f" "%p"'
+recovery_target_time = '2026-11-27 14:05:00+05:30'
+recovery_target_action = 'promote'
+'@
+
+# 3. recovery.signal is what makes this a recovery rather than a normal start.
+New-Item -ItemType File D:\restore-probe\recovery.signal | Out-Null
+
+# 4. Start it and watch the log, not the exit code.
+& 'C:\Program Files\ISP BSS\pgsql\bin\pg_ctl.exe' -D D:\restore-probe -l D:\restore-probe\recover.log start
+Get-Content D:\restore-probe\recover.log -Wait -Tail 20
+```
+
+What a working recovery looks like in that log:
+
+```
+LOG:  starting point-in-time recovery to 2026-11-27 14:05:00+05:30
+LOG:  restored log file "000000010000000000000003" from archive
+LOG:  recovery stopping before commit of transaction 755, time ...
+LOG:  archive recovery complete
+```
+
+`recovery stopping before commit` is the line that matters: it means the target
+was reached. Its absence, with
+`FATAL: recovery ended before configured recovery target was reached`, means
+the archive is missing segments — in practice a broken `restore_command`
+path, not a lost segment.
+
+Then check what came back, which is the only thing that settles it:
+
+```sql
+-- A row you know was committed before the target must be present; one
+-- committed after it must not.
+SELECT max(created_at) FROM wallet_ledgers;
+```
+
+#### What this does not cover
+
+`recovery_target_action = 'promote'` ends recovery and opens the cluster for
+writes on a new timeline. That is right for a scratch probe. Promoting a
+restore into production is a separate decision: the old timeline's WAL is
+still in the archive, and a second restore to a different instant has to pick
+the timeline explicitly with `recovery_target_timeline`.
+
+#### Rehearse it
+
+Executed end to end on a throwaway cluster on 2026-11-27: a row committed
+after the base backup and before the chosen instant came back, and a row
+committed two seconds after that instant did not. Both Windows traps above
+were found that way and not by reading the documentation.
+
+Rehearse it again after any change to the archive location, the PostgreSQL
+version, or the backup schedule. A recovery procedure nobody has run is a
+hypothesis.
 
 ### Live Session State — Nothing to Restore
 
