@@ -136,25 +136,31 @@ func (h *Handler) renderLedger(w http.ResponseWriter, r *http.Request, s Session
 // window on the API honoured both parameters. Found by unparam noticing the
 // parameter was unused.
 //
-// An unparseable date returns ok=false and keeps the month, so the caller can
-// say so rather than silently showing a period nobody asked for.
+// An unparseable date returns ok=false and the whole of this month, so the
+// caller can say so rather than silently showing a period nobody asked for.
+//
+// The whole month, not whatever had parsed before the bad one: with a valid
+// ?from and an invalid ?to it used to return the typed from with this month's
+// end, so the screen showed January to November under a message saying
+// "showing this month instead".
 func monthWindow(r *http.Request) (from, to time.Time, ok bool) {
 	now := time.Now()
-	from = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-	to = from.AddDate(0, 1, 0)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	monthEnd := monthStart.AddDate(0, 1, 0)
+	from, to = monthStart, monthEnd
 
 	q := r.URL.Query()
 	if v := q.Get("from"); v != "" {
 		parsed, err := time.ParseInLocation("2006-01-02", v, now.Location())
 		if err != nil {
-			return from, to, false
+			return monthStart, monthEnd, false
 		}
 		from = parsed
 	}
 	if v := q.Get("to"); v != "" {
 		parsed, err := time.ParseInLocation("2006-01-02", v, now.Location())
 		if err != nil {
-			return from, to, false
+			return monthStart, monthEnd, false
 		}
 		// Inclusive of the named day, as the API does it.
 		to = parsed.AddDate(0, 0, 1)
@@ -201,6 +207,11 @@ func (h *Handler) CreateLedgerAccountForm(w http.ResponseWriter, r *http.Request
 // four-line grid (most entries are two lines; four covers the common
 // three-or-four-way split without a dynamic add-row control) — any line
 // left with both amounts blank is simply dropped before posting.
+//
+// A line with an amount and no account is refused, not dropped. It used to
+// be dropped with the blank ones, and two such lines that cancelled each
+// other left the rest balanced, so the entry posted without them and the
+// operator believed every line they had typed had gone in.
 func (h *Handler) PostJournalEntryForm(w http.ResponseWriter, r *http.Request) {
 	s, ok := h.requireSection(w, r, "ledger")
 	if !ok {
@@ -223,8 +234,12 @@ func (h *Handler) PostJournalEntryForm(w http.ResponseWriter, r *http.Request) {
 		accountRaw := strings.TrimSpace(r.PostFormValue("account_id_" + suffix))
 		debit := strings.TrimSpace(r.PostFormValue("debit_" + suffix))
 		credit := strings.TrimSpace(r.PostFormValue("credit_" + suffix))
-		if accountRaw == "" || (debit == "" && credit == "") {
+		if debit == "" && credit == "" {
 			continue
+		}
+		if accountRaw == "" {
+			h.renderLedger(w, r, s, "", fmt.Sprintf("Line %d has an amount but no account.", i))
+			return
 		}
 		accountID, err := strconv.Atoi(accountRaw)
 		if err != nil {
