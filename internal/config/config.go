@@ -12,6 +12,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -409,25 +410,118 @@ func setOrUnset(v string) string {
 	return "set"
 }
 
-// redactDSN strips the password from a PostgreSQL DSN so it can be logged.
+// redactDSN strips every password from a PostgreSQL DSN, in either form pgx
+// accepts, so it can be logged.
+//
+// It used to split on whitespace and mask any field beginning "password=".
+// Five valid DSNs got through: a quoted password containing a space (all but
+// its first word), spaces around "=" (libpq allows them), sslpassword (the
+// passphrase of an encrypted client key) in either form, and a password in a
+// URL's query string. No shipped compose file uses any of them; each is a DSN
+// an operator could write, and the result would sit in every startup log.
+//
+// A DSN it cannot tokenise is reported as set rather than echoed: if it does
+// not parse here, this function cannot vouch for what it would print.
 func redactDSN(dsn string) string {
 	if dsn == "" {
 		return "unset"
 	}
-	// URL form: postgres://user:password@host/db
-	if at := strings.LastIndex(dsn, "@"); at > 0 {
-		if scheme := strings.Index(dsn, "://"); scheme >= 0 && scheme+3 < at {
-			return dsn[:scheme+3] + "***@" + dsn[at+1:]
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		return redactURLDSN(dsn)
+	}
+	return redactKeywordDSN(dsn)
+}
+
+const dsnUnshowable = "set (not shown: could not be parsed for redaction)"
+
+// isSecretDSNKey matches password and sslpassword, and any future
+// *password parameter, without a list to keep current.
+func isSecretDSNKey(k string) bool {
+	return strings.Contains(strings.ToLower(k), "password")
+}
+
+// redactURLDSN masks the userinfo password and any password parameter in
+// postgres://user:password@host:port,host:port/db?param=value.
+func redactURLDSN(dsn string) string {
+	scheme, rest, _ := strings.Cut(dsn, "://")
+	beforeQuery, query, hasQuery := strings.Cut(rest, "?")
+
+	// The last "@" before the query ends the userinfo, so an unescaped "/" or
+	// "@" inside a password still lands on the masked side.
+	if at := strings.LastIndex(beforeQuery, "@"); at >= 0 {
+		user, _, hasPassword := strings.Cut(beforeQuery[:at], ":")
+		if hasPassword {
+			user += ":***"
+		}
+		beforeQuery = user + "@" + beforeQuery[at+1:]
+	}
+	out := scheme + "://" + beforeQuery
+	if !hasQuery {
+		return out
+	}
+
+	params := strings.Split(query, "&")
+	for i, p := range params {
+		key, _, _ := strings.Cut(p, "=")
+		if k, err := url.QueryUnescape(key); err == nil {
+			key = k
+		}
+		if isSecretDSNKey(key) {
+			params[i] = key + "=***"
 		}
 	}
-	// Keyword form: host=... password=... dbname=...
-	fields := strings.Fields(dsn)
-	for i, f := range fields {
-		if strings.HasPrefix(strings.ToLower(f), "password=") {
-			fields[i] = "password=***"
+	return out + "?" + strings.Join(params, "&")
+}
+
+// redactKeywordDSN masks password values in libpq's keyword form:
+// key = value pairs, spaces around "=" optional, a value either bare or
+// single-quoted, with a backslash escaping the next character in both.
+func redactKeywordDSN(dsn string) string {
+	const space = " \t\n\r\f\v"
+	var out []string
+	s := dsn
+	for {
+		s = strings.TrimLeft(s, space)
+		if s == "" {
+			return strings.Join(out, " ")
 		}
+		i := strings.IndexAny(s, "="+space)
+		if i <= 0 {
+			return dsnUnshowable
+		}
+		key := s[:i]
+		s = strings.TrimLeft(s[i:], space)
+		if !strings.HasPrefix(s, "=") {
+			return dsnUnshowable
+		}
+		s = strings.TrimLeft(s[1:], space)
+
+		var j int
+		if strings.HasPrefix(s, "'") {
+			for j = 1; j < len(s) && s[j] != '\''; j++ {
+				if s[j] == '\\' {
+					j++
+				}
+			}
+			if j >= len(s) {
+				return dsnUnshowable // unterminated quote
+			}
+			j++ // include the closing quote
+		} else {
+			for j = 0; j < len(s) && !strings.ContainsRune(space, rune(s[j])); j++ {
+				if s[j] == '\\' {
+					j++
+				}
+			}
+			j = min(j, len(s))
+		}
+		value := s[:j]
+		s = s[j:]
+		if isSecretDSNKey(key) {
+			value = "***"
+		}
+		out = append(out, key+"="+value)
 	}
-	return strings.Join(fields, " ")
 }
 
 func env(key, fallback string) string {
