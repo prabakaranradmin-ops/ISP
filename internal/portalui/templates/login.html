@@ -3,6 +3,7 @@
   <div class="card login-card">
     <h2>Sign in</h2>
     {{if .Error}}<div class="alert alert-error" role="alert">{{.Error}}</div>{{end}}
+    {{if .Suspended}}<div class="alert alert-warn" role="status">Your internet service is paused because your plan has expired, so other websites are blocked. Sign in and renew to restore it; service returns within about 15 minutes of your payment.</div>{{end}}
     <form method="post" action="/ui/login">
       <div class="form-group">
         <label for="username">Username</label>

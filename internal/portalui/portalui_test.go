@@ -272,6 +272,31 @@ func TestLoginPage_RendersForm(t *testing.T) {
 	}
 }
 
+// Somebody the walled garden sent here tried to open another site and got a
+// sign-in form instead; the page says why (FR-BIL-004). Nobody else is told
+// their service is paused.
+func TestFR_BIL_004_TheSignInPageExplainsAWalledGardenArrival(t *testing.T) {
+	mux := newTestMux(t, &stubSessionsOnline{}, &stubSessionHistory{})
+	page := func(target string) string {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", target, nil)) //nolint:noctx
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d", target, rec.Code)
+		}
+		return rec.Body.String()
+	}
+	const notice = "Your internet service is paused"
+	if body := page("/ui/login?suspended=1"); !strings.Contains(body, notice) || !strings.Contains(body, `role="status"`) {
+		t.Errorf("a walled-garden arrival is not told why they are here: %s", body)
+	}
+	for _, target := range []string{"/ui/login", "/ui/login?suspended=0", "/ui/login?suspended=yes"} {
+		if strings.Contains(page(target), notice) {
+			t.Errorf("%s tells the subscriber their service is paused", target)
+		}
+	}
+}
+
 func TestLogin_ValidCredentials_SetsCookieAndRedirects(t *testing.T) {
 	mux := newTestMux(t, &stubSessionsOnline{}, &stubSessionHistory{})
 

@@ -189,7 +189,13 @@ func (d *RadiusDaemon) handleMAB(ctx context.Context, w radius.ResponseWriter, r
 	// hotspot sessions are shaped by the same plan and policed by the same CoA
 	// machinery, because they are the same Access-Accept.
 	resp := r.Response(radius.CodeAccessAccept)
-	d.applyRateLimit(resp, sub, r)
+	if err := d.applyRateLimit(resp, sub, r); err != nil {
+		// Soft-suspended on a NAS with no walled garden: see applyRateLimit.
+		mabAttemptsTotal.WithLabelValues("suspended").Inc()
+		w.Write(r.Response(radius.CodeAccessReject)) //nolint:errcheck,gosec
+		d.authRejected(r, RejectNotAuthorised, MethodMAB)
+		return true
+	}
 
 	mabAttemptsTotal.WithLabelValues("accepted").Inc()
 	d.authAccepted(r, MethodMAB)

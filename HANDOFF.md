@@ -353,6 +353,25 @@ is cheaper to decide before the console grows past 53 templates than after.
   `$(link-login-only)` so the router authenticates immediately — is the
   smoother path and is not built. Also note the walled garden must allow the
   portal host, or a client cannot reach the sign-in page at all.
+- **Soft suspension needs router rules to restrict anything (2026-11-28).**
+  Until then it restricted nothing: RADIUS accepted a soft-suspended login
+  like an active one, though the dunning screen said "Browsing redirected to
+  the payment page". RADIUS now puts the session on the MikroTik address list
+  `isp-suspended` (PAP, EAP and MAB alike), and every move into or out of soft
+  suspension ends the live session so the redial picks up the new terms. The
+  rest is deployment:
+  - run `deploy/mikrotik/walled-garden.rsc` on every MikroTik router, after
+    setting its four values;
+  - set `WALLED_GARDEN_ADDR` and `WALLED_GARDEN_REDIRECT_URL` on the API
+    server and open that port to the routers.
+  The dunning screen says whether the redirector is on. Decisions worth
+  knowing: on a non-MikroTik NAS a soft-suspended login is *refused*, counted
+  in `radius_walled_garden_refused_total`, because no walled garden is built
+  for those vendors; it covers IPv4 only; HTTPS outside the garden is reset
+  rather than redirected; and payment pages outside Razorpay's own hosts
+  (net banking, some 3-D Secure, UPI apps on the same Wi-Fi) need adding to
+  the script's list. The script follows RouterOS v6.45/v7 syntax but has not
+  been run on a router from this repository. Try it on a lab router first.
 - **Document archival is local-filesystem only.** The `archive.Store`
   interface is the seam for S3 or SFTP; neither is implemented, and a copy on
   the same machine is not disaster recovery.

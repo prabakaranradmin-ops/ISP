@@ -397,31 +397,48 @@ func enqueueCoAIfSessionActive(ctx context.Context, h *Handler, subscriberID int
 	}
 }
 
-// cutOffIfNoLongerAuthorised ends a subscriber's live session after a status
-// change that RADIUS would refuse on their next login.
+// endSessionIfTermsChanged ends a subscriber's live session after a status
+// change that alters what RADIUS would now accept them with:
+// radius.LiveSessionMustEnd decides, so the API and the login path cannot
+// disagree.
 //
-// PATCH /subscribers/{id} and the console's bulk "Suspend" set such a status
-// and, until 2026-11-28, left the login already in progress alone: a
-// subscriber hard-suspended by hand kept full service until the line dropped,
-// which on always-on PPPoE can be weeks. The same allowlist RADIUS uses
-// decides, so the two cannot disagree about who is cut off — soft suspension
-// and grace leave the session up, as they do at login.
+// PATCH /subscribers/{id} and the console's bulk status change set such
+// statuses and, until 2026-11-28, left the login already in progress alone.
+// A subscriber hard-suspended by hand kept full service until the line
+// dropped, which on always-on PPPoE can be weeks. Soft suspension has the
+// same shape in both directions now that it walls the session in at login.
+// A session up before the change keeps full service unless it is ended, and
+// one walled in before a restore stays walled in.
 //
-// The cache invalidation reaches the shared verifier tier only; radiusd's own
-// one-minute cache holds nobody who has not authenticated in the last minute,
-// so a session that has been up for days reconnects against the new status.
-func (h *Handler) cutOffIfNoLongerAuthorised(ctx context.Context, sub *SubscriberRecord) {
-	if sub == nil || radius.AuthorisesService(sub.Status) {
+// before is the status ahead of the change, "" if it could not be read,
+// which counts as a change (see LiveSessionMustEnd).
+//
+// The subscriber's username rides on the disconnect, so radiusd clears its
+// own auth cache before the redial; the invalidation here reaches only this
+// process. See fup.PoDHandler.SetSubscriberCache.
+func (h *Handler) endSessionIfTermsChanged(ctx context.Context, before string, sub *SubscriberRecord) {
+	if sub == nil || !radius.LiveSessionMustEnd(before, sub.Status) {
 		return
 	}
 	h.invalidateSubscriberCache(ctx, sub.Username)
-	enqueuePoDIfSessionActive(ctx, h, sub.ID)
+	enqueuePoDIfSessionActive(ctx, h, sub.ID, sub.Username)
+}
+
+// statusBefore reads a subscriber's status ahead of a change, or "" when it
+// cannot be read. A failed read is not a reason to refuse the change; the
+// change itself will report whether the subscriber exists.
+func (h *Handler) statusBefore(ctx context.Context, id int) string {
+	sub, err := h.db.GetSubscriberByID(ctx, id)
+	if err != nil || sub == nil {
+		return ""
+	}
+	return sub.Status
 }
 
 // enqueuePoDIfSessionActive mirrors DisconnectSession's PoD-enqueue pattern,
 // starting from a subscriber_id. A subscriber with no active session has
 // nothing to disconnect.
-func enqueuePoDIfSessionActive(ctx context.Context, h *Handler, subscriberID int) {
+func enqueuePoDIfSessionActive(ctx context.Context, h *Handler, subscriberID int, username string) {
 	if h.sessions == nil || h.tasks == nil {
 		return
 	}
@@ -429,7 +446,7 @@ func enqueuePoDIfSessionActive(ctx context.Context, h *Handler, subscriberID int
 	if err != nil || sess == nil {
 		return
 	}
-	payload, _ := json.Marshal(fup.PoDPayload{SubscriberID: subscriberID}) //nolint:errcheck
+	payload, _ := json.Marshal(fup.PoDPayload{SubscriberID: subscriberID, Username: username}) //nolint:errcheck
 	task := jobqueue.NewTask(fup.TaskTypePoD, payload,
 		jobqueue.Queue(fup.QueueNetCommands), jobqueue.MaxRetry(5), jobqueue.Retention(lifecycleTaskRetention))
 	if _, err := h.tasks.Enqueue(task); err != nil {

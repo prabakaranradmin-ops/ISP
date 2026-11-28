@@ -32,7 +32,45 @@ var allKeys = []string{
 	"SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM",
 	"ONESIGNAL_APP_ID", "ONESIGNAL_API_KEY", "GST_HOME_STATE",
 	"GST_SUPPLIER_GSTIN", "GST_SUPPLIER_NAME", "CHROMIUM_PATH",
-	"PAGERDUTY_ROUTING_KEY",
+	"PAGERDUTY_ROUTING_KEY", "WALLED_GARDEN_ADDR", "WALLED_GARDEN_REDIRECT_URL",
+}
+
+// The walled-garden redirector is off unless asked for, and asking for it
+// without saying where to send people is refused at startup rather than
+// discovered by a suspended subscriber looking at an error page.
+func TestTheWalledGardenListenerNeedsSomewhereToSendPeople(t *testing.T) {
+	apiEnv(t)
+	cfg, err := Load("api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WalledGardenAddr != "" {
+		t.Errorf("the redirector is on by default at %q", cfg.WalledGardenAddr)
+	}
+
+	t.Setenv("WALLED_GARDEN_ADDR", ":8088")
+	if _, err := Load("api"); err == nil || !strings.Contains(err.Error(), "WALLED_GARDEN_REDIRECT_URL is required") {
+		t.Errorf("a listener with no target: err = %v", err)
+	}
+
+	t.Setenv("WALLED_GARDEN_REDIRECT_URL", "https://portal.example.net/ui/login?suspended=1")
+	cfg, err = Load("api")
+	if err != nil {
+		t.Fatalf("a listener with a target: %v", err)
+	}
+	if cfg.WalledGardenAddr != ":8088" || cfg.Redact()["walled_garden_redirect"] != "https://portal.example.net/ui/login?suspended=1" {
+		t.Errorf("addr %q, redact %q", cfg.WalledGardenAddr, cfg.Redact()["walled_garden_redirect"])
+	}
+
+	// radiusd runs no listener, so it does not need the target.
+	cleanEnv(t)
+	t.Setenv("DB_DSN", "host=db")
+	t.Setenv("RADIUS_SECRET", longSecret)
+	t.Setenv("RADIUS_VERIFIER_SECRET", longSecret)
+	t.Setenv("WALLED_GARDEN_ADDR", ":8088")
+	if _, err := Load("radiusd"); err != nil {
+		t.Errorf("radiusd refused over the API's redirector: %v", err)
+	}
 }
 
 func cleanEnv(t *testing.T) {

@@ -254,6 +254,11 @@ type HandlerDeps struct {
 	// Dunning sets grace extensions and the dunning schedule
 	// (FR-BIL-016/017). The API handler.
 	Dunning DunningManager
+	// WalledGarden is how this server answers soft-suspended subscribers'
+	// redirected web traffic (FR-BIL-004), shown on the dunning screen so
+	// "browsing redirected to the payment page" can be checked rather than
+	// taken on trust. Zero when the redirector is off.
+	WalledGarden WalledGardenInfo
 	// GatewayLog reads the payment-gateway order and callback log
 	// (FR-PAY-001).
 	GatewayLog GatewayLogReader
@@ -342,6 +347,7 @@ type Handler struct {
 	creditNotes        CreditNoteRequester
 	payments           PaymentManager
 	dunning            DunningManager
+	walledGarden       WalledGardenInfo
 	proformas          ProformaManager
 	products           ProductManager
 	planChanges        PlanChangeManager
@@ -409,6 +415,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 		creditNotes:        deps.CreditNotes,
 		payments:           deps.Payments,
 		dunning:            deps.Dunning,
+		walledGarden:       deps.WalledGarden,
 		proformas:          deps.Proformas,
 		products:           deps.Products,
 		planChanges:        deps.PlanChanges,

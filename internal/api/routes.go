@@ -1154,6 +1154,12 @@ func (h *Handler) UpdateSubscriber(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", err.Error())
 		return
 	}
+	// Read only for a status change, which is the only edit that can alter a
+	// live session's terms. See endSessionIfTermsChanged.
+	before := ""
+	if body.Status != nil {
+		before = h.statusBefore(r.Context(), id)
+	}
 	updated, err := h.db.UpdateSubscriber(r.Context(), id, body.PlanID, body.Status, body.PlanExpiry)
 	if err != nil {
 		// Migration 048's invariant: an authorising status requires a
@@ -1180,9 +1186,11 @@ func (h *Handler) UpdateSubscriber(w http.ResponseWriter, r *http.Request) {
 	// that never happened.
 	if body.Status != nil {
 		h.emit(r.Context(), partner.EventSubscriberStatusChanged, id)
-		// A status RADIUS refuses ends the session already up, not just
-		// the next login. See cutOffIfNoLongerAuthorised.
-		h.cutOffIfNoLongerAuthorised(r.Context(), updated)
+		// A change to what RADIUS would accept them with reaches the
+		// session already up, not just the next login: suspension cuts it,
+		// soft suspension walls it in, and lifting soft suspension lets it
+		// out. See endSessionIfTermsChanged.
+		h.endSessionIfTermsChanged(r.Context(), before, updated)
 	}
 	writeJSON(w, http.StatusOK, updated)
 }

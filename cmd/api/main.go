@@ -42,6 +42,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/staffui"
 	"github.com/maaransoft/isp-bss-oss/internal/svclog"
 	"github.com/maaransoft/isp-bss-oss/internal/tr069"
+	"github.com/maaransoft/isp-bss-oss/internal/walledgarden"
 	"github.com/maaransoft/isp-bss-oss/pkg/chromium"
 	"github.com/maaransoft/isp-bss-oss/pkg/crypto"
 	"github.com/maaransoft/isp-bss-oss/pkg/tlscert"
@@ -523,10 +524,13 @@ func run(ctx context.Context) error {
 		// Credit-note requests go through the API's approval workflow.
 		CreditNotes: apiHandler,
 		Dunning:     apiHandler,
-		Proformas:   apiHandler,
-		Diagnostics: apiHandler,
-		BillingRuns: apiHandler,
-		Receipts:    apiHandler,
+		// Shown on the dunning screen, which promises the payment-page
+		// redirect, so an operator can see whether this server does it.
+		WalledGarden: staffui.WalledGardenInfo{Addr: cfg.WalledGardenAddr, RedirectURL: cfg.WalledGardenRedirectURL},
+		Proformas:    apiHandler,
+		Diagnostics:  apiHandler,
+		BillingRuns:  apiHandler,
+		Receipts:     apiHandler,
 		// Product catalogue and subscriber charges (FR-BIL-022) through the
 		// API handler, so the console validates, audits and counts exactly
 		// as the API does.
@@ -636,7 +640,32 @@ func run(ctx context.Context) error {
 		ReadHeaderTimeout: readTimeout,
 	}
 
-	errCh := make(chan error, 2)
+	// The walled garden's payment-page redirector (FR-BIL-004). Plain HTTP,
+	// deliberately: it answers whatever page a soft-suspended subscriber's
+	// browser tried to open, after the router rewrote that request's
+	// destination (deploy/mikrotik/walled-garden.rsc). The browser asked for
+	// some other site, so no certificate this server holds could answer it;
+	// all it does is send them on to the portal, which is HTTPS. Off unless
+	// WALLED_GARDEN_ADDR is set.
+	var gardenServer *http.Server
+	if cfg.WalledGardenAddr != "" {
+		gardenServer, err = walledgarden.NewServer(cfg.WalledGardenAddr, cfg.WalledGardenRedirectURL)
+		if err != nil {
+			return fmt.Errorf("walled garden: %w", err)
+		}
+	}
+
+	errCh := make(chan error, 3)
+
+	if gardenServer != nil {
+		go func() {
+			log.Info().Str("addr", cfg.WalledGardenAddr).Str("redirect", cfg.WalledGardenRedirectURL).
+				Msg("api: walled-garden redirector listening (HTTP)")
+			if err := gardenServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("walled-garden redirector: %w", err)
+			}
+		}()
+	}
 
 	go func() {
 		log.Info().Str("addr", cfg.APIAddr).Msg("api: listening (HTTPS, TLS 1.3)")
@@ -669,6 +698,11 @@ func run(ctx context.Context) error {
 	}
 	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
 		log.Error().Err(err).Msg("api: metrics shutdown failed")
+	}
+	if gardenServer != nil {
+		if err := gardenServer.Shutdown(shutdownCtx); err != nil {
+			log.Error().Err(err).Msg("api: walled-garden redirector shutdown failed")
+		}
 	}
 
 	log.Info().Msg("api: stopped")

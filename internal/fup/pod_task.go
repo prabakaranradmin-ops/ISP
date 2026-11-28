@@ -8,6 +8,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/rs/zerolog/log"
 	"layeh.com/radius"
 
 	"github.com/maaransoft/isp-bss-oss/internal/nas"
@@ -26,6 +27,9 @@ var podAckTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 // chk_grant_has_exactly_one_source.
 type PoDPayload struct {
 	SubscriberID int `json:"subscriber_id,omitempty"`
+	// Username, when given, is dropped from radiusd's auth cache just before
+	// the disconnect goes out. See PoDHandler.SetSubscriberCache.
+	Username string `json:"username,omitempty"`
 	// NasIP and SessionID, when both set, are used as-is and no subscriber
 	// lookup happens.
 	NasIP     string `json:"nas_ip,omitempty"`
@@ -44,7 +48,29 @@ type PoDHandler struct {
 	secret      []byte
 	port        int
 	nasResolver *nas.Resolver
+	subCache    SubscriberCacheInvalidator
 }
+
+// SubscriberCacheInvalidator drops one subscriber from the RADIUS auth
+// cache. Satisfied by *cache.SubscriberCache.
+type SubscriberCacheInvalidator interface {
+	InvalidateSubscriber(ctx context.Context, username string) error
+}
+
+// SetSubscriberCache attaches radiusd's auth cache, so a disconnect that
+// names its subscriber clears them from it first.
+//
+// A disconnect after a status change is how the change reaches a live
+// session: the router redials and the new Accept carries the new terms. But
+// radiusd answers that redial from a cache that holds a subscriber for a
+// minute after they last authenticated, and only radiusd can clear it. The
+// API, which runs in another process, cannot. So a change made there within
+// a minute of the subscriber's last login, such as a suspension reverted by
+// the operator who made it, was answered on the old status. A subscriber
+// just restored to active was walled in again, or one just suspended was
+// back online. Clearing the entry here, in the process that holds it and
+// just before the disconnect, closes that window whoever queued the task.
+func (h *PoDHandler) SetSubscriberCache(c SubscriberCacheInvalidator) { h.subCache = c }
 
 // NewPoDHandler constructs a PoDHandler targeting DefaultCoAPort.
 func NewPoDHandler(db CoAQuerier, secret []byte) *PoDHandler {
@@ -69,6 +95,14 @@ func (h *PoDHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	var p PoDPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		return fmt.Errorf("pod: unmarshal payload: %w", err)
+	}
+
+	// First, and whether or not a session turns out to be live: a redial
+	// already in flight should read the new status too.
+	if h.subCache != nil && p.Username != "" {
+		if err := h.subCache.InvalidateSubscriber(ctx, p.Username); err != nil {
+			log.Warn().Err(err).Str("username", p.Username).Msg("pod: auth-cache invalidation failed")
+		}
 	}
 
 	nasIP, sessionID := p.NasIP, p.SessionID

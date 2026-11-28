@@ -10,6 +10,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
+	"github.com/maaransoft/isp-bss-oss/internal/radius"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
@@ -74,16 +75,17 @@ var (
 		Name: "billing_dunning_notice_enqueued_total",
 		Help: "Dunning notifications enqueued",
 	})
-	// A failure here is somebody suspended for not paying who is still
-	// online, so it is counted where an alert can see it.
-	dunningCutoffQueued = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "billing_dunning_cutoff_queued_total",
-		Help: "Hard-suspension disconnects queued",
-	})
-	dunningCutoffFailed = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "billing_dunning_cutoff_failed_total",
-		Help: "Hard-suspension disconnects that could not be queued",
-	})
+	// A failure here is a session left on the wrong terms: somebody suspended
+	// for not paying who still has full service, or somebody who has paid
+	// still walled in. So it is counted where an alert can see it.
+	dunningDisconnectQueued = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "billing_dunning_disconnect_queued_total",
+		Help: "Dunning disconnects queued so a live session picks up its new terms, by the stage entered",
+	}, []string{"to_state"})
+	dunningDisconnectFailed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "billing_dunning_disconnect_failed_total",
+		Help: "Dunning disconnects that could not be queued, by the stage entered",
+	}, []string{"to_state"})
 )
 
 // DunningCandidate is a subscriber the scanner may need to advance.
@@ -174,8 +176,8 @@ func NewDunningScanner(db DunningScanQuerier, client *jobqueue.Client) *DunningS
 // SetTaskEnqueuer replaces the queue the notices and disconnects go to.
 func (s *DunningScanner) SetTaskEnqueuer(t TaskEnqueuer) { s.tasks = t }
 
-// SetSubscriberCache attaches the RADIUS auth cache, so a hard suspension is
-// forgotten there before the line is cut. See cutOff.
+// SetSubscriberCache attaches the RADIUS auth cache, so a stage change is
+// forgotten there before the session is ended. See endSession.
 func (s *DunningScanner) SetSubscriberCache(c CacheInvalidator) { s.subCache = c }
 
 // Run scans hourly until ctx is cancelled. It scans once immediately: after a
@@ -269,10 +271,12 @@ func (s *DunningScanner) advance(ctx context.Context, c DunningCandidate, target
 		return fmt.Errorf("did not reach %s from %s within %d steps", target, c.State, maxSteps)
 	}
 
-	// Only the move into hard suspension, not every pass over someone
-	// already there.
-	if target == DunningHardSuspended && c.State != DunningHardSuspended {
-		s.cutOff(ctx, c)
+	// Only a move that changes what RADIUS would accept them with, and only
+	// once: into soft suspension (walled in), into hard suspension (cut
+	// off), and out of soft suspension (let out). Not every pass over
+	// someone already there.
+	if radius.LiveSessionMustEnd(dunningToSubscriberStatus(c.State), dunningToSubscriberStatus(target)) {
+		s.endSession(ctx, c, target, now)
 	}
 
 	templateID, notify := TemplateForDunningState(target)
@@ -351,55 +355,66 @@ func DunningNoticeTaskID(subscriberID int, state DunningState, planExpiry time.T
 	return fmt.Sprintf("dunning-%d-%s-%d", subscriberID, state, planExpiry.Unix())
 }
 
-// DunningCutoffTaskID keys the hard-suspension disconnect per subscriber per
-// billing cycle, like the notice, so an overlapping pass cannot queue two and
-// a later lapse is not suppressed by an earlier one's id.
-func DunningCutoffTaskID(subscriberID int, planExpiry time.Time) string {
-	return fmt.Sprintf("dunning-cutoff-%d-%d", subscriberID, planExpiry.Unix())
+// DunningDisconnectTaskID keys a dunning disconnect per subscriber, per stage
+// entered, per billing cycle, per scan hour.
+//
+// The stage and the cycle keep it apart from the notice's id and from a
+// later lapse, like the notice. The hour is what lets the same stage be
+// entered twice in one cycle: a grace extension lifts a soft suspension and
+// then runs out, and the second entry into soft suspension must disconnect
+// again, or the session the extension let out keeps full service. Two passes
+// in the same hour, the overlap the id is there to absorb, still share one.
+func DunningDisconnectTaskID(subscriberID int, entered DunningState, planExpiry, now time.Time) string {
+	return fmt.Sprintf("dunning-disconnect-%d-%s-%d-%d", subscriberID, entered, planExpiry.Unix(), now.Unix()/3600)
 }
 
-// cutOff ends a newly hard-suspended subscriber's live session.
+// endSession ends the live session of a subscriber whose dunning stage has
+// just changed what RADIUS accepts them with, so the router redials into the
+// new terms: cut off on hard suspension, walled in on soft suspension, let
+// out of the walled garden when soft suspension lifts.
 //
-// The dunning screen says hard suspension means "Disconnected", and RADIUS
-// refuses the next login, but until 2026-11-28 nothing ended the login they
-// already had: the status changed, the notice went, and a session that was
-// up stayed up for as long as the line held — on always-on PPPoE, days or
-// weeks of service for somebody suspended for not paying.
+// The dunning screen says hard suspension means "Disconnected" and soft
+// suspension means browsing goes to the payment page. Until 2026-11-28
+// neither touched a session already up: the status changed, the notice went,
+// and the session carried on for as long as the line held, which on
+// always-on PPPoE means days or weeks of full service for somebody suspended
+// for not paying.
 //
 // The cache goes first. A disconnected router reconnects within seconds and
 // radiusd answers from an auth cache that holds a subscriber for a minute;
 // without the invalidation the reconnect is accepted on the old status and
-// the session is simply back.
+// nothing has changed. The username also rides on the disconnect, so the
+// handler clears it again at the moment it sends.
 //
 // The disconnect names the subscriber, not a session: the PoD handler looks
 // up whatever session is live when it runs and skips without retrying when
 // there is none. Failures are logged and counted, never returned — the
-// suspension has committed and the notice should still go.
-func (s *DunningScanner) cutOff(ctx context.Context, c DunningCandidate) {
+// stage change has committed and the notice should still go.
+func (s *DunningScanner) endSession(ctx context.Context, c DunningCandidate, entered DunningState, now time.Time) {
 	if s.subCache != nil {
 		if err := s.subCache.InvalidateSubscriber(ctx, c.Username); err != nil {
-			log.Error().Err(err).Int("subscriber_id", c.SubscriberID).
-				Msg("billing: auth-cache invalidation failed on hard suspension")
+			log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Str("entered", string(entered)).
+				Msg("billing: auth-cache invalidation failed on a dunning change")
 		}
 	}
 	if s.tasks == nil {
 		return
 	}
-	payload, err := json.Marshal(fup.PoDPayload{SubscriberID: c.SubscriberID})
+	payload, err := json.Marshal(fup.PoDPayload{SubscriberID: c.SubscriberID, Username: c.Username})
 	if err != nil {
 		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Msg("billing: disconnect payload")
 		return
 	}
 	task := jobqueue.NewTask(fup.TaskTypePoD, payload,
 		jobqueue.Queue(fup.QueueNetCommands),
-		jobqueue.TaskID(DunningCutoffTaskID(c.SubscriberID, c.PlanExpiry)),
+		jobqueue.TaskID(DunningDisconnectTaskID(c.SubscriberID, entered, c.PlanExpiry, now)),
 		jobqueue.MaxRetry(5),
 		jobqueue.Retention(24*time.Hour))
 	if _, err := s.tasks.EnqueueContext(ctx, task); err != nil && !errors.Is(err, jobqueue.ErrTaskIDConflict) {
-		dunningCutoffFailed.Inc()
-		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).
-			Msg("billing: could not queue the hard-suspension disconnect; the live session stays up")
+		dunningDisconnectFailed.WithLabelValues(string(entered)).Inc()
+		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Str("entered", string(entered)).
+			Msg("billing: could not queue the dunning disconnect; the live session keeps its old terms")
 		return
 	}
-	dunningCutoffQueued.Inc()
+	dunningDisconnectQueued.WithLabelValues(string(entered)).Inc()
 }

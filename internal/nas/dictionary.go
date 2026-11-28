@@ -129,9 +129,10 @@ var vendorAttributes = map[Vendor][]AttributeDef{
 		},
 		{
 			Name: "Mikrotik-Address-List", Kind: KindString,
-			VendorID: mikrotikVendorID, SubType: 19,
+			VendorID: mikrotikVendorID, SubType: mikrotikAddressListType,
 			Help: "Adds the subscriber's address to this MikroTik address list for the life of " +
-				"the session, so firewall rules can be written against the plan.",
+				"the session, so firewall rules can be written against the plan. A soft-suspended " +
+				"subscriber is put on the " + WalledGardenAddressList + " list instead.",
 		},
 		{
 			Name: "Mikrotik-Group", Kind: KindString,
@@ -145,7 +146,7 @@ var vendorAttributes = map[Vendor][]AttributeDef{
 		},
 		{
 			Name: "Mikrotik-Delegated-IPv6-Pool", Kind: KindString,
-			VendorID: mikrotikVendorID, SubType: 22,
+			VendorID: mikrotikVendorID, SubType: mikrotikDelegatedIPv6PoolType,
 			Help: "Name of a router-side pool to delegate an IPv6 prefix from (see FR-NET-003 for " +
 				"how delegations are recorded).",
 			Unverified: true,

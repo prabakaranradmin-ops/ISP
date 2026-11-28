@@ -11,6 +11,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/health"
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
+	"github.com/maaransoft/isp-bss-oss/internal/radius"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
@@ -502,6 +503,12 @@ func (s *RecurringBillingScanner) renew(ctx context.Context, c RenewalCandidate)
 			log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Msg("billing: auto-renewal dunning restore failed")
 			res.fail(c, StageDunning, err)
 		} else if wasCutOff(c.DunningState) {
+			// A soft-suspended subscriber is still online, behind the walled
+			// garden their session was accepted into. Paying does not change
+			// that session; ending it does. See releaseSession.
+			if radius.LiveSessionMustEnd(dunningToSubscriberStatus(c.DunningState), dunningToSubscriberStatus(DunningActive)) {
+				s.releaseSession(ctx, c, newExpiry)
+			}
 			// FR-NOTIF-006, sent from here because here is where service is
 			// actually restored.
 			//
@@ -551,6 +558,46 @@ func renewalMemo(planName string, lineCount int) string {
 // authorises (radius.AuthorisesService), so nothing was ever restored.
 func wasCutOff(state DunningState) bool {
 	return state == DunningSoftSuspended || state == DunningHardSuspended
+}
+
+// releaseSession ends the live session of a subscriber this renewal has just
+// lifted out of soft suspension, so the router redials and the new Accept
+// carries full service instead of the walled garden.
+//
+// Without it a subscriber who paid would be told their service was restored
+// (enqueueRestorationNotice, below) while still reaching nothing but the
+// payment page, and would stay that way until their line happened to drop.
+// The username rides on the disconnect so radiusd clears its auth cache just
+// before sending it; the cache is cleared here too, in case the redial beats
+// the queue.
+//
+// Failures are logged and swallowed for the reason the notice's are: the
+// renewal has committed, and undoing it over a disconnect would be worse.
+func (s *RecurringBillingScanner) releaseSession(ctx context.Context, c RenewalCandidate, newExpiry time.Time) {
+	if s.subCache != nil {
+		if err := s.subCache.InvalidateSubscriber(ctx, c.Username); err != nil {
+			log.Error().Err(err).Int("subscriber_id", c.SubscriberID).
+				Msg("billing: auth-cache invalidation failed releasing a renewed subscriber")
+		}
+	}
+	if s.tasks == nil {
+		return
+	}
+	payload, err := json.Marshal(fup.PoDPayload{SubscriberID: c.SubscriberID, Username: c.Username})
+	if err != nil {
+		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Msg("billing: release disconnect payload")
+		return
+	}
+	// Keyed per renewal, like the notice, so an overlapping pass queues one.
+	task := jobqueue.NewTask(fup.TaskTypePoD, payload,
+		jobqueue.Queue(fup.QueueNetCommands),
+		jobqueue.TaskID(fmt.Sprintf("renewal-release-%d-%d", c.SubscriberID, newExpiry.Unix())),
+		jobqueue.MaxRetry(5),
+		jobqueue.Retention(24*time.Hour))
+	if _, err := s.tasks.EnqueueContext(ctx, task); err != nil && !errors.Is(err, jobqueue.ErrTaskIDConflict) {
+		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).
+			Msg("billing: could not queue the disconnect that lets a renewed subscriber out of the walled garden")
+	}
 }
 
 // enqueueRestorationNotice tells a subscriber their service is back.

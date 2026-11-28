@@ -365,7 +365,7 @@ func (h *Handler) performGatedAction(ctx context.Context, req *workflow.Approval
 		}
 		auditGatedAction(ctx, req, map[string]any{"username": updated.Username})
 
-		enqueuePoDIfSessionActive(ctx, h, req.SubscriberID)
+		enqueuePoDIfSessionActive(ctx, h, req.SubscriberID, updated.Username)
 		h.openCPERecoveryTasks(ctx, req.SubscriberID, updated.Username)
 		return nil, nil
 

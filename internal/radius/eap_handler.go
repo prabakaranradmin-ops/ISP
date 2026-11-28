@@ -8,8 +8,6 @@ import (
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2869"
-
-	"github.com/maaransoft/isp-bss-oss/internal/nas"
 )
 
 // EAP-MSCHAPv2 conversation driver — FR-AAA-006 | MDS §4.18.
@@ -232,6 +230,13 @@ func (d *RadiusDaemon) eapFinish(ctx context.Context, w radius.ResponseWriter, r
 		d.writeEAPReject(w, r, sess.EAPIdentifier)
 		return
 	}
+	// Checked again, not trusted from the verify step: this is a fresh read,
+	// and a subscriber suspended between the two packets must not be let on
+	// by the second.
+	if !AuthorisesService(sub.Status) {
+		d.writeEAPReject(w, r, sess.EAPIdentifier)
+		return
+	}
 
 	if err := d.guard.Reset(ctx, sess.Username); err != nil {
 		log.Warn().Err(err).Str("username", sess.Username).Msg("radius: EAP brute-force reset failed")
@@ -245,28 +250,17 @@ func (d *RadiusDaemon) eapFinish(ctx context.Context, w radius.ResponseWriter, r
 		return
 	}
 
-	// The same vendor-aware rate-limit attributes PAP gets: an EAP
-	// subscriber must land on their plan's speed, not an unshaped default.
-	rateLimit := sub.RateLimitStr
-	if sub.FUPActive && sub.FUPThrottle != "" {
-		rateLimit = sub.FUPThrottle
-	}
-	vendor := nas.VendorMikrotik
-	profileName := ""
-	if d.nasResolver != nil {
-		device := d.nasResolver.ResolveAddr(r.RemoteAddr)
-		vendor = device.Vendor
-		profileName = d.nasResolver.ResolveProfile(sub.PlanID, vendor)
-	}
-	if attrs, err := nas.BuildAcceptAttrs(vendor, nas.RateProfile{
-		RateLimitString: rateLimit, ProfileName: profileName,
-	}); err == nil {
-		for _, a := range attrs {
-			resp.Add(a.Type, a.Value)
-		}
-	} else {
-		log.Warn().Err(err).Str("vendor", string(vendor)).
-			Msg("radius: EAP accept without bandwidth attributes")
+	// The Accept PAP and MAB build, through the same function.
+	//
+	// This used to be a copy of the rate-limit half of it, and the copy had
+	// drifted: an EAP subscriber got no static address (FR-NET-005), no
+	// speed override, no bandwidth-profile burst (FR-CAT-002) and none of
+	// the plan's extra attributes (FR-CAT-004). It would also have missed
+	// the walled garden, letting a soft-suspended subscriber step around it
+	// by authenticating over EAP instead of PAP.
+	if err := d.applyRateLimit(resp, sub, r); err != nil {
+		d.writeEAPReject(w, r, sess.EAPIdentifier)
+		return
 	}
 
 	d.writeWithMessageAuthenticator(w, resp)

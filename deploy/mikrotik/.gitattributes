@@ -1,0 +1,3 @@
+# RouterOS scripts keep LF endings whatever the checkout's core.autocrlf,
+# so a script copied to a router is byte-for-byte the one that was tested.
+*.rsc text eol=lf

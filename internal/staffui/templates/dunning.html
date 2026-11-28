@@ -38,7 +38,18 @@
       {{end}}
       </tbody>
     </table>
-    <p class="muted small">Paying at any stage restores service on the next pass. Changes apply within the hour.</p>
+    <p class="muted small">Paying at any stage restores service on the next pass. Changes apply within the hour. Anyone online when they enter or leave a suspension is reconnected, so the change reaches the session they already have.</p>
   </div>
+</div>
+
+<div class="card">
+  <h3>How soft suspension is enforced</h3>
+  <p>A soft-suspended subscriber's MikroTik session is put on the address list <code>{{$d.GardenList}}</code>. The router restricts that list only once <code>deploy/mikrotik/walled-garden.rsc</code> has been run on it. On a router without those rules, soft suspension restricts nothing.</p>
+  <p>On a NAS that is not MikroTik there is no walled garden, so a soft-suspended subscriber is refused, the same as at hard suspension, and counted in <code>radius_walled_garden_refused_total</code>.</p>
+  {{if $d.Garden.Addr}}
+  <p>Redirected web traffic reaches this server on <code>{{$d.Garden.Addr}}</code> and is sent on to <code>{{$d.Garden.RedirectURL}}</code>.</p>
+  {{else}}
+  <div class="alert warn" role="status">The payment-page redirector is off on this server (<code>WALLED_GARDEN_ADDR</code> is not set). A walled-in subscriber's browser has nowhere to land, so they see a connection error rather than the payment page.</div>
+  {{end}}
 </div>
 {{end}}

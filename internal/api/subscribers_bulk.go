@@ -145,6 +145,7 @@ func (h *Handler) BulkUpdateStatus(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) UpdateStatusForMany(ctx context.Context, ids []int, status string) []BulkResult {
 	results := make([]BulkResult, 0, len(ids))
 	for _, id := range ids {
+		before := h.statusBefore(ctx, id)
 		// nil plan_expiry: a bulk suspend/resume changes status only and must
 		// never move anyone's billed period as a side effect.
 		updated, err := h.db.UpdateSubscriber(ctx, id, nil, &status, nil)
@@ -158,9 +159,9 @@ func (h *Handler) UpdateStatusForMany(ctx context.Context, ids []int, status str
 		}
 		middleware.Audit(ctx, "subscriber.update", strconv.Itoa(id), map[string]any{"status": status})
 		h.emit(ctx, partner.EventSubscriberStatusChanged, id)
-		// A suspension the router would refuse at login ends the session
-		// already up, as PATCH does. See cutOffIfNoLongerAuthorised.
-		h.cutOffIfNoLongerAuthorised(ctx, updated)
+		// The session already up follows the new status, as PATCH does.
+		// See endSessionIfTermsChanged.
+		h.endSessionIfTermsChanged(ctx, before, updated)
 		results = append(results, BulkResult{SubscriberID: id, OK: true})
 	}
 	return results

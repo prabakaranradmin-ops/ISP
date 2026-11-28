@@ -127,25 +127,34 @@ func (d *RadiusDaemon) handleAuth(ctx context.Context, w radius.ResponseWriter, 
 	// resolver is wired, falling back to the MikroTik VSA unconditionally
 	// (today's exact, unchanged behavior) when it is not.
 	resp := r.Response(radius.CodeAccessAccept)
-	d.applyRateLimit(resp, sub, r)
+	if err := d.applyRateLimit(resp, sub, r); err != nil {
+		w.Write(r.Response(radius.CodeAccessReject)) //nolint:errcheck,gosec
+		d.authRejected(r, RejectNotAuthorised, MethodPAP)
+		return
+	}
 
 	w.Write(resp) //nolint:errcheck,gosec
 	d.authAccepted(r, MethodPAP)
 }
 
 // applyRateLimit attaches the vendor-appropriate bandwidth attributes for a
-// subscriber's plan (FR-NAS-001..004, MDS §4.11).
+// subscriber's plan (FR-NAS-001..004, MDS §4.11), and for a soft-suspended
+// subscriber the walled garden (FR-BIL-004).
 //
 // Extracted so every authentication method — PAP, EAP-MSCHAPv2 and MAB —
 // shapes a session through the same code rather than three copies that can
 // drift. That shared path is what makes FR-HSP-003 true: a hotspot session is
 // rate-limited and later throttled by the identical machinery as PPPoE,
-// because it is literally the same Access-Accept construction.
-func (d *RadiusDaemon) applyRateLimit(resp *radius.Packet, sub *Subscriber, r *radius.Request) {
-	applyStaticIP(resp, sub)
-
-	rateLimit, shaping := effectiveRateLimit(sub)
-
+// because it is literally the same Access-Accept construction. It is also
+// what makes the walled garden impossible to step around by choosing a
+// different access method.
+//
+// It returns an error, with nothing added to resp, only when the subscriber
+// is soft-suspended and the NAS has no walled garden (nas.ErrNoWalledGarden).
+// The caller must then refuse the login: accepting it would hand a
+// subscriber suspended for not paying their full service, which is what soft
+// suspension did before the walled garden existed.
+func (d *RadiusDaemon) applyRateLimit(resp *radius.Packet, sub *Subscriber, r *radius.Request) error {
 	vendor := nas.VendorMikrotik
 	profileName := ""
 	if d.nasResolver != nil {
@@ -153,6 +162,23 @@ func (d *RadiusDaemon) applyRateLimit(resp *radius.Packet, sub *Subscriber, r *r
 		vendor = device.Vendor
 		profileName = d.nasResolver.ResolveProfile(sub.PlanID, vendor)
 	}
+
+	walled := InWalledGarden(sub.Status)
+	var garden []nas.Attr
+	if walled {
+		var err error
+		if garden, err = nas.WalledGardenAttrs(vendor); err != nil {
+			walledGardenRefused.WithLabelValues(string(vendor)).Inc()
+			log.Warn().Err(err).Str("username", sub.Username).Str("vendor", string(vendor)).
+				Msg("radius: soft-suspended login refused: this NAS has no walled garden, " +
+					"and accepting it would give full service")
+			return err
+		}
+	}
+
+	applyStaticIP(resp, sub)
+
+	rateLimit, shaping := effectiveRateLimit(sub)
 
 	attrs, err := nas.BuildAcceptAttrs(vendor, nas.RateProfile{
 		RateLimitString: rateLimit, ProfileName: profileName, Shaping: shaping})
@@ -178,11 +204,21 @@ func (d *RadiusDaemon) applyRateLimit(resp *radius.Packet, sub *Subscriber, r *r
 	// rather than costing this subscriber their authentication. The
 	// dictionary also refuses any attribute a bandwidth builder sends, so
 	// these cannot compete with the attributes added above.
+	//
+	// Behind the walled garden, the plan's address list and IPv6 delegation
+	// give way to the garden's own list; see nas.SupersededByWalledGarden.
 	if d.nasResolver != nil {
 		for _, a := range d.nasResolver.ResolveReplyAttributes(sub.PlanID, vendor) {
+			if walled && nas.SupersededByWalledGarden(a) {
+				continue
+			}
 			resp.Add(a.Type, a.Value)
 		}
 	}
+	for _, a := range garden {
+		resp.Add(a.Type, a.Value)
+	}
+	return nil
 }
 
 // applyStaticIP attaches Framed-IP-Address when the subscriber holds a

@@ -60,6 +60,16 @@ type Config struct {
 	// there; sharing one port would drop every accounting record on the wire.
 	RadiusAcctAddr string
 
+	// WalledGardenAddr is the plain-HTTP listener a router sends
+	// soft-suspended subscribers' web traffic to (FR-BIL-004); see
+	// internal/walledgarden and deploy/mikrotik/walled-garden.rsc. Empty, the
+	// default, runs no listener. WalledGardenRedirectURL is where it sends
+	// them, normally the portal's sign-in page, and is required once the
+	// listener is on: a redirector with nowhere to redirect to would be the
+	// payment page nobody can reach.
+	WalledGardenAddr        string
+	WalledGardenRedirectURL string
+
 	// ArchiveDir roots the local document-archival backend (FR-DOC-001).
 	// Empty disables archival entirely rather than defaulting to a path: a
 	// deployment that has not chosen where its invoices and KYC scans live
@@ -197,6 +207,9 @@ func Load(service string) (*Config, error) {
 		RadiusAddr:     env("RADIUS_ADDR", ":1812"),
 		RadiusAcctAddr: env("RADIUS_ACCT_ADDR", ":1813"),
 		ArchiveDir:     env("ARCHIVE_DIR", ""),
+
+		WalledGardenAddr:        env("WALLED_GARDEN_ADDR", ""),
+		WalledGardenRedirectURL: env("WALLED_GARDEN_REDIRECT_URL", ""),
 
 		// How long each monthly-partitioned table keeps history, as
 		// "table=months" pairs. Empty means keep everything, which is the
@@ -337,6 +350,10 @@ func Load(service string) (*Config, error) {
 		case Optional:
 		}
 	}
+	if service == "api" && cfg.WalledGardenAddr != "" && cfg.WalledGardenRedirectURL == "" {
+		problems = append(problems, "WALLED_GARDEN_REDIRECT_URL is required when WALLED_GARDEN_ADDR is set: "+
+			"it is where suspended subscribers are sent to pay, normally the portal's sign-in page")
+	}
 
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("config: invalid configuration for %s:\n  - %s",
@@ -358,6 +375,8 @@ func (c *Config) Redact() map[string]string {
 		"metrics_addr":           c.MetricsAddr,
 		"radius_addr":            c.RadiusAddr,
 		"radius_acct_addr":       c.RadiusAcctAddr,
+		"walled_garden_addr":     c.WalledGardenAddr,
+		"walled_garden_redirect": c.WalledGardenRedirectURL,
 		"archive_dir":            c.ArchiveDir,
 		"archive_s3_bucket":      c.ArchiveS3Bucket,
 		"archive_s3_endpoint":    c.ArchiveS3Endpoint,

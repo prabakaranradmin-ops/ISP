@@ -168,11 +168,16 @@ func redirectToLoginOn401(next http.Handler) http.Handler {
 
 type loginData struct {
 	baseData
+	// Suspended explains the page to somebody the walled garden sent here
+	// (FR-BIL-004): they tried to open some other site and landed on a
+	// sign-in form, which needs a sentence of explanation to make sense.
+	Suspended bool
 }
 
-// LoginPage handles GET /ui/login.
+// LoginPage handles GET /ui/login. ?suspended=1 is what the walled-garden
+// redirector is normally pointed at (WALLED_GARDEN_REDIRECT_URL).
 func (h *Handler) LoginPage(w http.ResponseWriter, r *http.Request) {
-	renderPage(w, http.StatusOK, "login", loginData{})
+	renderPage(w, http.StatusOK, "login", loginData{Suspended: r.URL.Query().Get("suspended") == "1"})
 }
 
 // Login handles POST /ui/login — a browser form submission, not the JSON
@@ -180,24 +185,24 @@ func (h *Handler) LoginPage(w http.ResponseWriter, r *http.Request) {
 // truth for what makes a valid subscriber login.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		renderPage(w, http.StatusBadRequest, "login", loginData{baseData{Error: "Invalid form submission."}})
+		renderPage(w, http.StatusBadRequest, "login", loginData{baseData: baseData{Error: "Invalid form submission."}})
 		return
 	}
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 	if username == "" || password == "" {
-		renderPage(w, http.StatusUnprocessableEntity, "login", loginData{baseData{Error: "Username and password are required."}})
+		renderPage(w, http.StatusUnprocessableEntity, "login", loginData{baseData: baseData{Error: "Username and password are required."}})
 		return
 	}
 
 	token, err := portal.Authenticate(r.Context(), h.subscribers, username, password, h.jwtSecret)
 	if errors.Is(err, portal.ErrInvalidCredentials) {
-		renderPage(w, http.StatusUnauthorized, "login", loginData{baseData{Error: "Invalid username or password."}})
+		renderPage(w, http.StatusUnauthorized, "login", loginData{baseData: baseData{Error: "Invalid username or password."}})
 		return
 	}
 	if err != nil {
 		log.Error().Err(err).Msg("portalui: login failed")
-		renderPage(w, http.StatusInternalServerError, "login", loginData{baseData{Error: "Something went wrong. Please try again."}})
+		renderPage(w, http.StatusInternalServerError, "login", loginData{baseData: baseData{Error: "Something went wrong. Please try again."}})
 		return
 	}
 

@@ -599,6 +599,11 @@ func run(ctx context.Context) error {
 	coaHandler := fup.NewCoAHandler(database.FUP(), []byte(cfg.RadiusSecret))
 	coaHandler.SetLiveSessions(liveSessions)
 	podHandler := fup.NewPoDHandler(database.FUP(), []byte(cfg.RadiusSecret))
+	// A disconnect that names its subscriber clears them from this
+	// process's auth cache first, so the redial is answered on the status
+	// that caused the disconnect rather than a cached one. The API cannot
+	// reach this cache itself; see PoDHandler.SetSubscriberCache.
+	podHandler.SetSubscriberCache(subscriberCache)
 	if nasResolver != nil {
 		coaHandler.SetNASResolver(nasResolver)
 		podHandler.SetNASResolver(nasResolver)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
+	"github.com/maaransoft/isp-bss-oss/internal/nas"
 	"github.com/rs/zerolog/log"
 )
 
@@ -127,6 +128,18 @@ type dunningData struct {
 	Policy  billing.DunningPolicy
 	Ladder  []ladderStep
 	CanEdit bool
+	Garden  WalledGardenInfo
+	// GardenList is the address list RADIUS puts soft-suspended sessions
+	// on, named so the screen and the router rules say the same thing.
+	GardenList string
+}
+
+// WalledGardenInfo is the payment-page redirector's configuration
+// (WALLED_GARDEN_ADDR, WALLED_GARDEN_REDIRECT_URL). Addr is empty when it is
+// off.
+type WalledGardenInfo struct {
+	Addr        string
+	RedirectURL string
 }
 
 // ladderStep is one row of the spelled-out schedule. State only colours the
@@ -190,7 +203,8 @@ func (h *Handler) DunningSettings(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderDunning(w http.ResponseWriter, _ *http.Request, s Session, p billing.DunningPolicy, errMsg, msg string) {
 	d := h.page(s, "Dunning Settings", "dunning")
 	d.Error, d.Message = errMsg, msg
-	d.Data = dunningData{Policy: p, Ladder: ladderFor(p), CanEdit: canEditDunning(s.Role)}
+	d.Data = dunningData{Policy: p, Ladder: ladderFor(p), CanEdit: canEditDunning(s.Role),
+		Garden: h.walledGarden, GardenList: nas.WalledGardenAddressList}
 	h.render(w, "dunning", d)
 }
 
