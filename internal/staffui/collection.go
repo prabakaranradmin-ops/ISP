@@ -3,6 +3,7 @@ package staffui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	neturl "net/url"
 	"strconv"
@@ -29,9 +30,16 @@ type CollectionManager interface {
 }
 
 var collectionMessages = map[string]string{
-	"collected": "Payment recorded and credited. The subscriber's service resumes on their next authentication, within a minute.",
-	"assigned":  "Subscriber added to that collector's round.",
-	"cleared":   "Subscriber taken off the collection round.",
+	// Not "within a minute", which this said until 2026-11-28 and a
+	// collector at the door would repeat to the customer. The payment
+	// credits the wallet; service comes back when the renewal pass charges
+	// the cycle, and only if the balance covers it. The wait is the
+	// scanner's own interval, so the sentence cannot drift from it.
+	"collected": fmt.Sprintf("Payment recorded and credited. If the balance now covers their renewal, "+
+		"service comes back at the next renewal pass, within %d minutes, and they are sent a message when it does.",
+		int(billing.RenewalScanInterval.Minutes())),
+	"assigned": "Subscriber added to that collector's round.",
+	"cleared":  "Subscriber taken off the collection round.",
 
 	"notyours": "Not recorded: that subscriber is not on your round. Ask the owner or billing to assign them, or to record it themselves.",
 	"missing":  "No subscriber with that id.",

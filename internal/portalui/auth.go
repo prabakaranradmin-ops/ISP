@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
 	"github.com/rs/zerolog/log"
 )
@@ -172,12 +173,19 @@ type loginData struct {
 	// (FR-BIL-004): they tried to open some other site and landed on a
 	// sign-in form, which needs a sentence of explanation to make sense.
 	Suspended bool
+	// RenewalMinutes is how long after payment service can take to return:
+	// the renewal scanner's interval, read from it so the page cannot
+	// promise faster than the scanner runs.
+	RenewalMinutes int
 }
 
 // LoginPage handles GET /ui/login. ?suspended=1 is what the walled-garden
 // redirector is normally pointed at (WALLED_GARDEN_REDIRECT_URL).
 func (h *Handler) LoginPage(w http.ResponseWriter, r *http.Request) {
-	renderPage(w, http.StatusOK, "login", loginData{Suspended: r.URL.Query().Get("suspended") == "1"})
+	renderPage(w, http.StatusOK, "login", loginData{
+		Suspended:      r.URL.Query().Get("suspended") == "1",
+		RenewalMinutes: int(billing.RenewalScanInterval.Minutes()),
+	})
 }
 
 // Login handles POST /ui/login — a browser form submission, not the JSON

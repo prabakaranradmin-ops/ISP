@@ -3,6 +3,7 @@ package portalui_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -287,8 +288,13 @@ func TestFR_BIL_004_TheSignInPageExplainsAWalledGardenArrival(t *testing.T) {
 		return rec.Body.String()
 	}
 	const notice = "Your internet service is paused"
-	if body := page("/ui/login?suspended=1"); !strings.Contains(body, notice) || !strings.Contains(body, `role="status"`) {
+	body := page("/ui/login?suspended=1")
+	if !strings.Contains(body, notice) || !strings.Contains(body, `role="status"`) {
 		t.Errorf("a walled-garden arrival is not told why they are here: %s", body)
+	}
+	// The wait it promises is the renewal scanner's own interval.
+	if want := fmt.Sprintf("within about %d minutes", int(billing.RenewalScanInterval.Minutes())); !strings.Contains(body, want) {
+		t.Errorf("the notice does not say %q: %s", want, body)
 	}
 	for _, target := range []string{"/ui/login", "/ui/login?suspended=0", "/ui/login?suspended=yes"} {
 		if strings.Contains(page(target), notice) {

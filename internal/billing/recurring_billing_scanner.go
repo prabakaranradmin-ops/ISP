@@ -29,13 +29,16 @@ import (
 // FR: FR-BIL-008, FR-BIL-009 | MDS §4.14
 
 const (
-	// recurringBillingScanInterval is shorter than dunning's hourly tick so
-	// this scanner reliably gets a chance to renew a funded subscriber first
-	// — though because NextDunningState walks any suspended state back to
+	// RenewalScanInterval is shorter than dunning's hourly tick so this
+	// scanner reliably gets a chance to renew a funded subscriber first —
+	// though because NextDunningState walks any suspended state back to
 	// active once plan_expiry moves to the future, a renewal that lands
 	// after an escalation self-heals on dunning's next tick regardless of
 	// ordering.
-	recurringBillingScanInterval = 15 * time.Minute
+	//
+	// Exported because it is the longest a paying subscriber waits for
+	// service to come back, which the console and the portal tell people.
+	RenewalScanInterval = 15 * time.Minute
 )
 
 var (
@@ -231,7 +234,7 @@ func (s *RecurringBillingScanner) Run(ctx context.Context) {
 	if err := s.Scan(ctx); err != nil {
 		log.Error().Err(err).Msg("billing: auto-renewal scan error")
 	}
-	ticker := time.NewTicker(recurringBillingScanInterval)
+	ticker := time.NewTicker(RenewalScanInterval)
 	defer ticker.Stop()
 	for {
 		select {
