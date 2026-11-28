@@ -27,7 +27,21 @@ var staticFS = func() fs.FS {
 	return sub
 }()
 
-func staticHandler() http.Handler { return http.FileServer(http.FS(staticFS)) }
+// staticHandler serves the console's stylesheet and script, and nothing that
+// ends in a slash. http.FileServer lists a directory it is asked for, so
+// /staff/static/ answered every anonymous visitor with an index of the
+// assets. Two public files made that harmless, and it was still the first
+// thing a scanner would report.
+func staticHandler() http.Handler {
+	files := http.FileServer(http.FS(staticFS))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "" || strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		files.ServeHTTP(w, r)
+	})
+}
 
 var funcMap = template.FuncMap{
 	// Interface traffic (FR-NET-006): rates and link speeds in SI bit/s, and

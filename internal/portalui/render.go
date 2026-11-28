@@ -28,6 +28,21 @@ var staticFS = func() fs.FS {
 	return sub
 }()
 
+// staticHandler serves the portal's assets, and nothing that ends in a slash.
+// http.FileServerFS lists a directory it is asked for, so /ui/static/ handed
+// any visitor an index of the assets: harmless with three public files in it,
+// and still the first thing a scanner would report.
+func staticHandler() http.Handler {
+	files := http.FileServerFS(staticFS)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "" || strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		files.ServeHTTP(w, r)
+	})
+}
+
 var funcMap = template.FuncMap{
 	"money":       func(d decimal.Decimal) string { return d.StringFixed(2) },
 	"gb":          func(d decimal.Decimal) string { return d.StringFixed(2) },

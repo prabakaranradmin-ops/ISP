@@ -990,6 +990,16 @@ func TestStaticAssets_Served(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
+
+	// The route is public, and http.FileServer lists a directory it is
+	// asked for. Harmless with three public files in it, and still the first
+	// thing a scanner reports.
+	req = httptest.NewRequest("GET", "/ui/static/", nil) //nolint:noctx
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Errorf("/ui/static/ lists its directory: %.200s", rec.Body.String())
+	}
 }
 
 // RateTicket records the rating this fake was asked for, so a test can prove

@@ -104,5 +104,5 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /ui/tickets/{id}/rating", self(h.requireCSRF(h.RateTicket)))
 	mux.Handle("GET /ui/notifications", redirectToLoginOn401(self(h.Notifications)))
 
-	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServerFS(staticFS)))
+	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", staticHandler()))
 }
