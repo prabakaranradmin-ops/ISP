@@ -126,7 +126,9 @@ func (h *PoDHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	// is answered "no such session", which counts as done.
 	var errs []error
 	for _, s := range sessions {
-		if err := h.sendTo(s); err != nil && !errors.Is(err, ErrSessionNotFound) {
+		err := h.sendTo(s)
+		closeIfGone(ctx, h.db, s, err)
+		if err != nil && !errors.Is(err, ErrSessionNotFound) {
 			errs = append(errs, err)
 		}
 	}

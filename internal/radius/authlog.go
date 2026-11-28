@@ -27,9 +27,9 @@ import (
 // batching goroutine, and the auth path's cost is one non-blocking
 // channel send.
 
-// Reject reasons, matching migration 063's chk_auth_log_reason_vocab. A
-// fixed vocabulary so the column can be grouped and counted rather than
-// read.
+// Reject reasons, matching chk_auth_log_reason_vocab (migration 063, widened
+// by 077). A fixed vocabulary so the column can be grouped and counted
+// rather than read.
 const (
 	RejectUnknownUser   = "unknown_user"
 	RejectBadPassword   = "bad_password"
@@ -38,7 +38,21 @@ const (
 	RejectNoMABDevice   = "no_mab_device"
 	RejectEAPFailed     = "eap_failed"
 	RejectInternalError = "internal_error"
+	// RejectConnectionLimit: the credentials were right, but the subscriber
+	// already holds as many connections as they pay for.
+	RejectConnectionLimit = "connection_limit"
 )
+
+// RejectReasons is every reason the daemon can record. The vocabulary check
+// and the console's labels both range over it, so a reason added here and
+// forgotten in either place fails a test rather than a batch insert or a
+// raw string on screen.
+func RejectReasons() []string {
+	return []string{
+		RejectUnknownUser, RejectBadPassword, RejectNotAuthorised, RejectLockedOut,
+		RejectNoMABDevice, RejectEAPFailed, RejectInternalError, RejectConnectionLimit,
+	}
+}
 
 // Authentication methods.
 const (

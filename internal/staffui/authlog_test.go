@@ -81,11 +81,7 @@ func TestFR_NET_004_AuthLogScreenRendersAttempts(t *testing.T) {
 // The stored vocabulary is short and groupable; the screen must not show
 // it raw.
 func TestFR_NET_004_EveryRejectReasonHasALabelAndAdvice(t *testing.T) {
-	for _, reason := range []string{
-		radius.RejectUnknownUser, radius.RejectBadPassword, radius.RejectNotAuthorised,
-		radius.RejectLockedOut, radius.RejectNoMABDevice, radius.RejectEAPFailed,
-		radius.RejectInternalError,
-	} {
+	for _, reason := range radius.RejectReasons() {
 		if rejectReasonLabels[reason] == "" {
 			t.Errorf("reject reason %q has no operator-facing label", reason)
 		}
@@ -99,11 +95,7 @@ func TestFR_NET_004_EveryRejectReasonHasALabelAndAdvice(t *testing.T) {
 	for _, o := range authReasonOptions {
 		offered[o.Key] = true
 	}
-	for _, reason := range []string{
-		radius.RejectUnknownUser, radius.RejectBadPassword, radius.RejectNotAuthorised,
-		radius.RejectLockedOut, radius.RejectNoMABDevice, radius.RejectEAPFailed,
-		radius.RejectInternalError,
-	} {
+	for _, reason := range radius.RejectReasons() {
 		if !offered[reason] {
 			t.Errorf("reject reason %q cannot be filtered for", reason)
 		}

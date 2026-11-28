@@ -238,10 +238,29 @@ func (s *FUPStore) GetSubscriberNASSession(ctx context.Context, subscriberID int
 	return nasIP, sessionID, rateLimit, planID, nil
 }
 
-// The CoA and disconnect handlers find the lister by type assertion and fall
-// back to the newest session without it, so a signature drift here would
-// not fail anything at run time. It fails the build instead.
-var _ fup.SessionLister = (*FUPStore)(nil)
+// The CoA and disconnect handlers find the lister and the closer by type
+// assertion and carry on without them, so a signature drift here would not
+// fail anything at run time. It fails the build instead.
+var (
+	_ fup.SessionLister     = (*FUPStore)(nil)
+	_ fup.GoneSessionCloser = (*FUPStore)(nil)
+)
+
+// CloseGoneSession closes the open row for a session the NAS has answered a
+// CoA or Disconnect-Request for with "no such session" (RFC 5176
+// Error-Cause 503). See fup.GoneSessionCloser for why that matters. The
+// terminate cause says how it was closed, so nobody mistakes it for an
+// Accounting-Stop. Only an open row: one an Accounting-Stop already closed
+// keeps the time and cause the NAS reported.
+func (s *FUPStore) CloseGoneSession(ctx context.Context, sessionID string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE subscriber_session_history
+		   SET stop_time = NOW(), terminate_cause = 'nas-reports-no-session'
+		 WHERE session_id = $1 AND stop_time IS NULL`, sessionID); err != nil {
+		return fmt.Errorf("db: close gone session %s: %w", sessionID, err)
+	}
+	return nil
+}
 
 // ListSubscriberNASSessions returns every session the subscriber has open,
 // newest first, so a CoA or a disconnect reaches all of them
@@ -287,23 +306,35 @@ func (s *FUPStore) ListSubscriberNASSessions(ctx context.Context, subscriberID i
 // against assigned_ipv4 at all. The column has existed since migration
 // 010; until now nothing wrote it (FR-NET-003, DBD §6.2).
 func (s *FUPStore) StartSession(ctx context.Context, subscriberID int, sessionID, nasIP, assignedIP, ipv6Prefix string) error {
+	return s.OpenSession(ctx, radius.SessionStart{
+		SubscriberID: subscriberID, SessionID: sessionID, NASIP: nasIP,
+		AssignedIP: assignedIP, IPv6Prefix: ipv6Prefix,
+	})
+}
+
+// OpenSession is StartSession with the device behind the session
+// (radius.SessionStart): its MAC, and whether it authenticated by MAC
+// (migration 077). The radius daemon calls this one.
+func (s *FUPStore) OpenSession(ctx context.Context, in radius.SessionStart) error {
 	const q = `
 		INSERT INTO subscriber_session_history (
 			subscriber_id, session_id, nas_ip_address, assigned_ipv4,
-			assigned_ipv6_prefix, start_time
+			assigned_ipv6_prefix, start_time, device_mac, mab
 		)
 		-- $2 is cast explicitly because it appears both in the SELECT list, where
 		-- nothing constrains its type, and in the comparison below against a
 		-- VARCHAR column. Without the cast PostgreSQL deduces two different types
 		-- for one parameter and rejects the statement (SQLSTATE 42P08).
-		SELECT $1, $2::varchar, $3::inet, NULLIF($4,'')::inet, NULLIF($5,'')::cidr, NOW()
+		SELECT $1, $2::varchar, $3::inet, NULLIF($4,'')::inet, NULLIF($5,'')::cidr, NOW(),
+		       NULLIF($6,''), $7
 		WHERE NOT EXISTS (
 			SELECT 1 FROM subscriber_session_history
 			 WHERE session_id = $2::varchar AND stop_time IS NULL
 		)`
 
-	if _, err := s.pool.Exec(ctx, q, subscriberID, sessionID, nasIP, assignedIP, ipv6Prefix); err != nil {
-		return fmt.Errorf("db: start session for subscriber %d: %w", subscriberID, err)
+	if _, err := s.pool.Exec(ctx, q, in.SubscriberID, in.SessionID, in.NASIP, in.AssignedIP,
+		in.IPv6Prefix, in.DeviceMAC, in.MAB); err != nil {
+		return fmt.Errorf("db: start session for subscriber %d: %w", in.SubscriberID, err)
 	}
 	return nil
 }

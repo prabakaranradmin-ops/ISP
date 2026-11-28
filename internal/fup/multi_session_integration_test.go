@@ -33,6 +33,24 @@ import (
 type multiDB struct {
 	sessions []NASSession
 	listErr  error
+
+	mu     sync.Mutex
+	closed []string
+}
+
+func (d *multiDB) CloseGoneSession(_ context.Context, sessionID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.closed = append(d.closed, sessionID)
+	return nil
+}
+
+func (d *multiDB) closedSessions() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := append([]string(nil), d.closed...)
+	sort.Strings(out)
+	return out
 }
 
 func (d *multiDB) GetSubscriberNASSession(context.Context, int) (string, string, string, int, error) {
@@ -169,6 +187,47 @@ func TestFR_NET_002_ASessionAlreadyGoneIsNotRetriedForever(t *testing.T) {
 	err = h.ProcessTask(context.Background(), podTask(t, 43))
 	if err == nil || errorIsSkipRetry(err) || errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("a refused disconnect: %v, want a retried failure", err)
+	}
+}
+
+// A session the NAS says does not exist is closed in session history, not
+// left open: an open row shows the subscriber online, sums into their usage
+// and counts against their connection limit, and one whose Accounting-Stop
+// was lost would do that for good. Only that answer closes it; a refusal or
+// an acknowledgement leaves the row to accounting.
+func TestFR_AAA_003_ASessionTheNASDisownsIsClosed(t *testing.T) {
+	secret := []byte("pod-secret")
+	for name, tc := range map[string]struct {
+		code   radius.Code
+		cause  rfc3576.ErrorCause
+		closed bool
+	}{
+		"gone":    {radius.CodeDisconnectNAK, rfc3576.ErrorCause_Value_SessionContextNotFound, true},
+		"refused": {radius.CodeDisconnectNAK, rfc3576.ErrorCause_Value_AdministrativelyProhibited, false},
+		"ended":   {radius.CodeDisconnectACK, 0, false},
+	} {
+		p, _ := startRecordingNAS(t, secret, tc.code, tc.cause)
+		db := &multiDB{sessions: sessionsOn(2)}
+		h := NewPoDHandler(db, secret)
+		h.SetPort(p)
+		_ = h.ProcessTask(context.Background(), podTask(t, 46))
+		got := db.closedSessions()
+		if tc.closed && (len(got) != 2 || got[0] != "sess-1" || got[1] != "sess-2") {
+			t.Errorf("%s: closed %v, want both sessions", name, got)
+		}
+		if !tc.closed && len(got) != 0 {
+			t.Errorf("%s: closed %v; only a NAS saying the session does not exist closes the row", name, got)
+		}
+	}
+
+	// A CoA the NAS disowns closes the row the same way.
+	p, _ := startRecordingNAS(t, secret, radius.CodeCoANAK, rfc3576.ErrorCause_Value_SessionContextNotFound)
+	db := &multiDB{sessions: sessionsOn(1)}
+	c := NewCoAHandler(db, secret)
+	c.SetPort(p)
+	_ = c.ProcessTask(context.Background(), coaTask(t, 47))
+	if got := db.closedSessions(); len(got) != 1 {
+		t.Errorf("a CoA to a gone session closed %v", got)
 	}
 }
 

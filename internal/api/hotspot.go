@@ -8,9 +8,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 
+	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	"github.com/maaransoft/isp-bss-oss/internal/hotspot"
+	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/maaransoft/isp-bss-oss/internal/radius"
 )
@@ -30,6 +33,9 @@ type HotspotQuerier interface {
 	VoidVoucher(ctx context.Context, voucherID int) (bool, error)
 	RegisterDevice(ctx context.Context, mac string, subscriberID int, label string, nasID *int) (int, error)
 	DeactivateDevice(ctx context.Context, mac string) (bool, error)
+	// LiveDeviceSessions lists the sessions a device holds right now that it
+	// signed in to by MAC, so deactivating it can end them.
+	LiveDeviceSessions(ctx context.Context, mac string) ([]fup.NASSession, error)
 	// GetVoucherCommissionSummary backs CRD-EXP-010's settlement reporting —
 	// see internal/db/hotspot.go's own doc comment on why this lives
 	// alongside vouchers rather than in the franchise P&L query.
@@ -284,8 +290,50 @@ func (h *Handler) DeactivateHotspotDevice(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	middleware.Audit(r.Context(), "hotspot.device_deactivated", mac, nil)
-	writeJSON(w, http.StatusOK, map[string]any{"deactivated": true, "mac_address": mac})
+	ended, lookupErr := h.endDeviceSessions(r.Context(), mac)
+	middleware.Audit(r.Context(), "hotspot.device_deactivated", mac, map[string]any{
+		"sessions_disconnected": ended,
+	})
+	out := map[string]any{"deactivated": true, "mac_address": mac, "sessions_disconnected": ended}
+	if lookupErr != nil {
+		// The deactivation stands; only the follow-through is in doubt, and
+		// the caller is told rather than left believing the phone is off.
+		out["sessions_unknown"] = true
+		out["warning"] = "the device's live session could not be looked up, so it stays online until it disconnects"
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// endDeviceSessions disconnects the sessions a just-deactivated device holds
+// (FR-HSP-002), and reports how many disconnects it queued.
+//
+// "A lost or stolen phone that must stop authenticating" was only half true:
+// it stopped the next login and left the session the phone already had,
+// which on a hotspot can last as long as the phone stays in range. Each
+// disconnect names its session outright: the subscriber may also be online
+// on their PPPoE line and other devices, and those stay up.
+func (h *Handler) endDeviceSessions(ctx context.Context, mac string) (int, error) {
+	if h.tasks == nil {
+		return 0, nil
+	}
+	sessions, err := h.hotspot.LiveDeviceSessions(ctx, mac)
+	if err != nil {
+		log.Error().Err(err).Str("mac", mac).Msg("api: live sessions for a deactivated device")
+		return 0, err
+	}
+	queued := 0
+	for _, s := range sessions {
+		payload, _ := json.Marshal(fup.PoDPayload{NasIP: s.NasIP, SessionID: s.SessionID}) //nolint:errcheck // static struct
+		task := jobqueue.NewTask(fup.TaskTypePoD, payload,
+			jobqueue.Queue(fup.QueueNetCommands), jobqueue.MaxRetry(5), jobqueue.Retention(sessionTaskRetention))
+		if _, err := h.tasks.Enqueue(task); err != nil {
+			log.Error().Err(err).Str("mac", mac).Str("session_id", s.SessionID).
+				Msg("api: could not queue the disconnect for a deactivated device")
+			continue
+		}
+		queued++
+	}
+	return queued, nil
 }
 
 // GetVoucherCommissions handles GET /api/v1/hotspot/vouchers/commissions?franchise_id=.

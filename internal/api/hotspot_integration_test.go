@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/maaransoft/isp-bss-oss/internal/api"
+	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	"github.com/maaransoft/isp-bss-oss/internal/hotspot"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 )
@@ -39,6 +41,15 @@ type stubHotspot struct {
 	voidable bool
 
 	createErr error
+	// live is what LiveDeviceSessions answers; liveErr fails it.
+	live    []fup.NASSession
+	liveErr error
+}
+
+func (s *stubHotspot) LiveDeviceSessions(_ context.Context, _ string) ([]fup.NASSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.live, s.liveErr
 }
 
 type stubDeviceReg struct {
@@ -429,6 +440,55 @@ func TestFR_HSP_002_DeviceDeactivationReportsHonestly(t *testing.T) {
 	if rec := hotspotCall(t, mux, http.MethodDelete,
 		"/api/v1/hotspot/devices/not-a-mac", "technician", ""); rec.Code != http.StatusBadRequest {
 		t.Errorf("deactivating a junk MAC: want 400, got %d", rec.Code)
+	}
+}
+
+// A lost or stolen phone is deactivated so it stops getting online. That
+// used to stop its next login and leave the session it had. Its live
+// sessions are now disconnected, each by name, so the subscriber's PPPoE
+// line and other devices stay up.
+func TestFR_HSP_002_DeactivatingADeviceEndsItsLiveSession(t *testing.T) {
+	store := &stubHotspot{live: []fup.NASSession{
+		{NasIP: "10.0.0.5", SessionID: "phone-1"},
+		{NasIP: "10.0.0.6", SessionID: "phone-2"},
+	}}
+	tasks := &stubTaskEnqueuer{}
+	h := api.NewHandler(api.HandlerDeps{DB: &stubDB{}, KYC: &stubKYC{}, Hotspot: store, Tasks: tasks})
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, itJWTSecret)
+
+	rec := hotspotCall(t, mux, http.MethodDelete, "/api/v1/hotspot/devices/aa-bb-cc-dd-ee-ff", "technician", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deactivate: %d %s", rec.Code, rec.Body.String())
+	}
+	var got []fup.PoDPayload
+	for _, task := range tasks.snapshot() {
+		var p fup.PoDPayload
+		if err := json.Unmarshal(task.Payload(), &p); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, p)
+	}
+	if len(got) != 2 || got[0].SessionID != "phone-1" || got[0].NasIP != "10.0.0.5" || got[1].SessionID != "phone-2" {
+		t.Fatalf("disconnects %+v; want both of the phone's sessions, by name", got)
+	}
+	for _, p := range got {
+		if p.SubscriberID != 0 {
+			t.Errorf("%+v names the subscriber; that would end their PPPoE line and other devices too", p)
+		}
+	}
+	if !strings.Contains(rec.Body.String(), `"sessions_disconnected":2`) {
+		t.Errorf("response %s does not say how many sessions it ended", rec.Body.String())
+	}
+
+	// The lookup failing leaves the deactivation in place and says so.
+	store = &stubHotspot{liveErr: errors.New("db: timeout")}
+	mux = http.NewServeMux()
+	api.NewHandler(api.HandlerDeps{DB: &stubDB{}, KYC: &stubKYC{}, Hotspot: store, Tasks: &stubTaskEnqueuer{}}).
+		RegisterRoutes(mux, itJWTSecret)
+	rec = hotspotCall(t, mux, http.MethodDelete, "/api/v1/hotspot/devices/aa-bb-cc-dd-ee-ff", "technician", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"sessions_unknown":true`) {
+		t.Errorf("a failed session lookup: %d %s; the caller must be told the phone may still be online", rec.Code, rec.Body.String())
 	}
 }
 

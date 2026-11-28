@@ -42,13 +42,8 @@ type acctRecorder struct {
 	err     error
 }
 
-type acctStartCall struct {
-	SubscriberID int
-	SessionID    string
-	NASIP        string
-	AssignedIP   string
-	IPv6Prefix   string
-}
+// acctStartCall is what an Accounting-Start asked the store to record.
+type acctStartCall = SessionStart
 
 type acctOctetCall struct {
 	SessionID string
@@ -61,13 +56,13 @@ type acctStopCall struct {
 	Cause     string
 }
 
-func (s *acctRecorder) StartSession(_ context.Context, subscriberID int, sessionID, nasIP, assignedIP, ipv6Prefix string) error {
+func (s *acctRecorder) OpenSession(_ context.Context, in SessionStart) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.err != nil {
 		return s.err
 	}
-	s.starts = append(s.starts, acctStartCall{subscriberID, sessionID, nasIP, assignedIP, ipv6Prefix})
+	s.starts = append(s.starts, in)
 	return nil
 }
 
@@ -180,6 +175,7 @@ type acctOpts struct {
 	FramedIPv6      string
 	Cause           rfc2866.AcctTerminateCause
 	OmitSessionID   bool
+	CallingStation  string
 }
 
 func acctRequest(t *testing.T, o acctOpts) *radius.Request {
@@ -246,6 +242,11 @@ func acctRequest(t *testing.T, o acctOpts) *radius.Request {
 	if o.Cause != 0 {
 		if err := rfc2866.AcctTerminateCause_Set(pkt, o.Cause); err != nil {
 			t.Fatalf("set Acct-Terminate-Cause: %v", err)
+		}
+	}
+	if o.CallingStation != "" {
+		if err := rfc2865.CallingStationID_SetString(pkt, o.CallingStation); err != nil {
+			t.Fatalf("set Calling-Station-Id: %v", err)
 		}
 	}
 
@@ -392,6 +393,47 @@ func TestFR_AAA_003_HotspotSessionIsAttributedViaMAC(t *testing.T) {
 	}
 	if starts[0].SubscriberID != 77 {
 		t.Errorf("subscriber: want 77 (resolved through the hotspot MAC lookup), got %d", starts[0].SubscriberID)
+	}
+}
+
+// The device behind each session is recorded (migration 077): the router's
+// Calling-Station-Id for a PPPoE login, the authenticating MAC for MAB, and
+// nothing when the NAS sent nothing MAC-shaped. Deactivating a hotspot
+// device finds its session by this, and the connection limit tells a
+// router redialling from a second connection by it.
+func TestFR_HSP_002_EachSessionRecordsItsDevice(t *testing.T) {
+	store := &acctRecorder{matched: true}
+	d := acctDaemon(t, store)
+	ctx := context.Background()
+	for _, o := range []acctOpts{
+		{SessionID: "pppoe", Username: "pppoe@isp", CallingStation: "d4-ca-6d-01-02-03"},
+		{SessionID: "phone", Username: "aa:bb:cc:dd:ee:ff", CallingStation: "AA:BB:CC:DD:EE:FF"},
+		{SessionID: "phone-odd", Username: "AA-BB-CC-DD-EE-FF", CallingStation: "something-else"},
+		{SessionID: "no-mac", Username: "pppoe@isp", CallingStation: "port 7 vlan 120"},
+		{SessionID: "none", Username: "pppoe@isp"},
+	} {
+		o.Status = rfc2866.AcctStatusType_Value_Start
+		d.handleAccounting(ctx, &acctWriter{}, acctRequest(t, o))
+	}
+	starts, _, _ := store.snapshot()
+	want := map[string]struct {
+		mac string
+		mab bool
+	}{
+		"pppoe":     {"D4:CA:6D:01:02:03", false},
+		"phone":     {"AA:BB:CC:DD:EE:FF", true},
+		"phone-odd": {"AA:BB:CC:DD:EE:FF", true}, // the MAC that authenticated wins
+		"no-mac":    {"", false},
+		"none":      {"", false},
+	}
+	if len(starts) != len(want) {
+		t.Fatalf("%d starts", len(starts))
+	}
+	for _, s := range starts {
+		w := want[s.SessionID]
+		if s.DeviceMAC != w.mac || s.MAB != w.mab {
+			t.Errorf("%s recorded device %q mab=%v, want %q mab=%v", s.SessionID, s.DeviceMAC, s.MAB, w.mac, w.mab)
+		}
 	}
 }
 

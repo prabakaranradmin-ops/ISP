@@ -3,7 +3,11 @@ package radius
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +15,39 @@ import (
 )
 
 // Authentication attempt logging — FR-NET-004.
+
+// storedRejectVocabulary reads chk_auth_log_reason_vocab from the
+// migrations, taking the definition in the highest-numbered file that
+// (re)defines it in its Up section.
+func storedRejectVocabulary(t *testing.T) map[string]bool {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join("..", "..", "migrations", "*.sql"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("migrations not found: %v", err)
+	}
+	sort.Strings(files)
+	def := regexp.MustCompile(`(?s)chk_auth_log_reason_vocab CHECK \(reject_reason IN \((.*?)\)\)`)
+	quoted := regexp.MustCompile(`'([a-z_]*)'`)
+	var latest string
+	for _, f := range files {
+		body, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		up, _, _ := strings.Cut(string(body), "-- +goose Down")
+		if m := def.FindAllStringSubmatch(up, -1); len(m) > 0 {
+			latest = m[len(m)-1][1]
+		}
+	}
+	if latest == "" {
+		t.Fatal("no migration defines chk_auth_log_reason_vocab")
+	}
+	vocab := map[string]bool{}
+	for _, m := range quoted.FindAllStringSubmatch(latest, -1) {
+		vocab[m[1]] = true
+	}
+	return vocab
+}
 
 type fakeAuthLogStore struct {
 	mu      sync.Mutex
@@ -225,23 +262,19 @@ func TestFR_NET_004_ANilLoggerIsSafe(t *testing.T) {
 	d.logAuthAttempt(AuthAttempt{Username: "x", Result: ResultAccept})
 }
 
-// Every reject reason the daemon can produce is in migration 063's
-// vocabulary. A reason outside it is refused by the CHECK, which would
-// lose the whole batch — and nothing in Go would catch it, because the
-// reason is a string either side of the wire.
+// Every reject reason the daemon can produce is in the stored vocabulary. A
+// reason outside it is refused by the CHECK, which would lose the whole
+// batch — and nothing in Go would catch it, because the reason is a string
+// either side of the wire.
+//
+// The vocabulary is read from the migrations, the latest definition of
+// chk_auth_log_reason_vocab winning, rather than copied here: a hand-kept
+// copy is exactly what a new reason gets added to and the CHECK does not.
 func TestFR_NET_004_EveryRejectReasonIsInTheStoredVocabulary(t *testing.T) {
-	// This list mirrors chk_auth_log_reason_vocab in migration 063.
-	vocab := map[string]bool{
-		"unknown_user": true, "bad_password": true, "not_authorised": true,
-		"locked_out": true, "no_mab_device": true, "eap_failed": true,
-		"internal_error": true,
-	}
-	for _, reason := range []string{
-		RejectUnknownUser, RejectBadPassword, RejectNotAuthorised, RejectLockedOut,
-		RejectNoMABDevice, RejectEAPFailed, RejectInternalError,
-	} {
+	vocab := storedRejectVocabulary(t)
+	for _, reason := range RejectReasons() {
 		if !vocab[reason] {
-			t.Errorf("reject reason %q is not in migration 063's vocabulary; the CHECK would refuse the batch", reason)
+			t.Errorf("reject reason %q is not in chk_auth_log_reason_vocab; the CHECK would refuse the batch", reason)
 		}
 	}
 	for _, method := range []string{MethodPAP, MethodEAP, MethodMAB} {

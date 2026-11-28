@@ -46,12 +46,43 @@ var (
 
 // AccountingStore persists the session lifecycle. Satisfied by *db.FUPStore.
 type AccountingStore interface {
-	// StartSession must be idempotent on sessionID: a NAS retransmits an
+	// OpenSession must be idempotent on the session id: a NAS retransmits an
 	// unacknowledged Start, and a duplicate open row would be double-counted by
 	// the FUP scanner's SUM over open sessions.
-	StartSession(ctx context.Context, subscriberID int, sessionID, nasIP, assignedIP, ipv6Prefix string) error
+	OpenSession(ctx context.Context, s SessionStart) error
 	UpdateSessionOctets(ctx context.Context, sessionID string, inputOctets, outputOctets int64) (bool, error)
 	StopSession(ctx context.Context, sessionID string, inputOctets, outputOctets int64, cause string) (bool, error)
+}
+
+// SessionStart is what an Accounting-Start records about a session.
+type SessionStart struct {
+	SubscriberID int
+	SessionID    string
+	NASIP        string
+	AssignedIP   string
+	IPv6Prefix   string
+	// DeviceMAC is the device behind the session, normalised
+	// (NormaliseMAC): the MAC that authenticated, for MAC Auth Bypass, and
+	// the Calling-Station-Id otherwise, which on PPPoE is the subscriber's
+	// router. Empty when the NAS sent nothing MAC-shaped. It is what lets a
+	// deactivated hotspot device's session be found and ended, and a router
+	// redialling its own dropped session be told apart from a second
+	// connection (migration 077).
+	DeviceMAC string
+	// MAB marks a session authenticated by MAC rather than by password.
+	// Those are a subscriber's registered hotspot devices and do not count
+	// towards their connection limit.
+	MAB bool
+}
+
+// requestDeviceMAC is the Calling-Station-Id of a request, normalised, or
+// "" when it is absent or not a MAC.
+func requestDeviceMAC(r *radius.Request) string {
+	mac, ok := NormaliseMAC(rfc2865.CallingStationID_GetString(r.Packet))
+	if !ok {
+		return ""
+	}
+	return mac
 }
 
 // GrantUsageDB meters a voucher-backed hotspot session.
@@ -229,14 +260,24 @@ func (d *RadiusDaemon) meterVoucherSession(ctx context.Context, r *radius.Reques
 }
 
 func (d *RadiusDaemon) acctStart(ctx context.Context, r *radius.Request, sessionID, status string) {
-	sub, ok := d.resolveAccountingSubscriber(ctx, r)
+	sub, mabMAC, ok := d.resolveAccountingSubscriber(ctx, r)
 	if !ok {
 		radiusAcctProcessed.WithLabelValues(status, "unresolved_subscriber").Inc()
 		return
 	}
 
 	nasIP, assignedIP := accountingNASIP(r), framedIP(r.Packet)
-	if err := d.acctDB.StartSession(ctx, sub.ID, sessionID, nasIP, assignedIP, framedIPv6Prefix(r.Packet)); err != nil {
+	start := SessionStart{
+		SubscriberID: sub.ID, SessionID: sessionID, NASIP: nasIP,
+		AssignedIP: assignedIP, IPv6Prefix: framedIPv6Prefix(r.Packet),
+		DeviceMAC: requestDeviceMAC(r),
+	}
+	if mabMAC != "" {
+		// The MAC that authenticated is the device, whatever else the NAS
+		// put in Calling-Station-Id.
+		start.DeviceMAC, start.MAB = mabMAC, true
+	}
+	if err := d.acctDB.OpenSession(ctx, start); err != nil {
 		radiusAcctProcessed.WithLabelValues(status, "error").Inc()
 		log.Error().Err(err).Str("session_id", sessionID).Int("subscriber_id", sub.ID).
 			Msg("radius: accounting start persist failed")
@@ -320,11 +361,12 @@ func (d *RadiusDaemon) acctStop(ctx context.Context, r *radius.Request, sessionI
 // Returns the full Subscriber, not just its id: acctStart's live-session
 // write needs RateLimitStr/FUPActive, and this lookup already has them in
 // hand — a second query just to re-fetch fields already read here would be
-// wasted work on every Accounting-Start.
-func (d *RadiusDaemon) resolveAccountingSubscriber(ctx context.Context, r *radius.Request) (*Subscriber, bool) {
+// wasted work on every Accounting-Start. Also returns the MAC when the
+// session was authorised through MAC Auth Bypass, and "" otherwise.
+func (d *RadiusDaemon) resolveAccountingSubscriber(ctx context.Context, r *radius.Request) (*Subscriber, string, bool) {
 	username := rfc2865.UserName_GetString(r.Packet)
 	if username == "" {
-		return nil, false
+		return nil, "", false
 	}
 
 	if mac, isMAC := NormaliseMAC(username); isMAC && d.mabDB != nil {
@@ -335,7 +377,7 @@ func (d *RadiusDaemon) resolveAccountingSubscriber(ctx context.Context, r *radiu
 		sub, err := d.mabDB.AuthorizeMAC(ctx, mac, nasID)
 		if err != nil {
 			log.Error().Err(err).Str("mac", mac).Msg("radius: accounting MAC lookup failed")
-			return nil, false
+			return nil, "", false
 		}
 		// A voucher-backed grant resolves to id 0 by construction: it has no
 		// subscriber row (chk_grant_has_exactly_one_source, migration 034), so
@@ -343,9 +385,9 @@ func (d *RadiusDaemon) resolveAccountingSubscriber(ctx context.Context, r *radiu
 		// sessions are unrecorded, which is also why a voucher's data cap cannot
 		// be enforced yet.
 		if sub == nil || sub.ID == 0 {
-			return nil, false
+			return nil, "", false
 		}
-		return sub, true
+		return sub, mac, true
 	}
 
 	sub, err := d.db.GetSubscriberByUsername(ctx, username)
@@ -353,9 +395,9 @@ func (d *RadiusDaemon) resolveAccountingSubscriber(ctx context.Context, r *radiu
 		if err != nil {
 			log.Error().Err(err).Str("username", username).Msg("radius: accounting subscriber lookup failed")
 		}
-		return nil, false
+		return nil, "", false
 	}
-	return sub, true
+	return sub, "", true
 }
 
 // acctDedupSize reports how many live accounting-dedup entries are held.

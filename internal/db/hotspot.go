@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	"github.com/maaransoft/isp-bss-oss/internal/hotspot"
 	"github.com/maaransoft/isp-bss-oss/internal/radius"
 )
@@ -134,6 +135,34 @@ func (s *HotspotStore) DeactivateDevice(ctx context.Context, mac string) (bool, 
 		return false, fmt.Errorf("db: deactivate hotspot device %s: %w", mac, err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// LiveDeviceSessions returns the sessions a device holds right now that it
+// signed in to by MAC (FR-HSP-002), newest first, so deactivating it can end
+// them. Only MAC-authenticated ones: the same MAC behind a PPPoE login is the
+// subscriber's router, which deactivating a hotspot registration says
+// nothing about. Relies on the device recorded at Accounting-Start
+// (migration 077); sessions opened before that carry none and are not found.
+func (s *HotspotStore) LiveDeviceSessions(ctx context.Context, mac string) ([]fup.NASSession, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT host(nas_ip_address), session_id
+		  FROM subscriber_session_history
+		 WHERE device_mac = $1 AND mab AND stop_time IS NULL
+		 ORDER BY start_time DESC
+		 LIMIT 16`, mac)
+	if err != nil {
+		return nil, fmt.Errorf("db: live sessions for device %s: %w", mac, err)
+	}
+	defer rows.Close()
+	var out []fup.NASSession
+	for rows.Next() {
+		var sess fup.NASSession
+		if err := rows.Scan(&sess.NasIP, &sess.SessionID); err != nil {
+			return nil, fmt.Errorf("db: scan live session for device %s: %w", mac, err)
+		}
+		out = append(out, sess)
+	}
+	return out, rows.Err()
 }
 
 // ── Vouchers ────────────────────────────────────────────────────────────────

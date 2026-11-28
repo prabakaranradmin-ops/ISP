@@ -64,6 +64,34 @@ type SessionLister interface {
 // would spend the task's lease on timeouts.
 const maxSessionsPerControl = 16
 
+// GoneSessionCloser closes the session-history row of a session the NAS has
+// just said does not exist. Satisfied by *db.FUPStore; optional.
+//
+// A row whose Accounting-Stop never arrived (a NAS reboot, a power cut, one
+// lost datagram) otherwise stays open for good. Every open row is a
+// connection the subscriber appears to hold, so it shows them online on the
+// Sessions screen, sums into their fair-use usage, and counts against their
+// connection limit: a stale row can lock a paying subscriber out of their
+// own line. The NAS answering "no such session" is the authoritative word
+// that it is over.
+type GoneSessionCloser interface {
+	CloseGoneSession(ctx context.Context, sessionID string) error
+}
+
+// closeIfGone closes the row for a session the NAS reported gone.
+func closeIfGone(ctx context.Context, db any, s NASSession, err error) {
+	if !errors.Is(err, ErrSessionNotFound) {
+		return
+	}
+	closer, ok := db.(GoneSessionCloser)
+	if !ok {
+		return
+	}
+	if cerr := closer.CloseGoneSession(ctx, s.SessionID); cerr != nil {
+		log.Warn().Err(cerr).Str("session_id", s.SessionID).Msg("fup: could not close a session the NAS reports gone")
+	}
+}
+
 // ErrSessionNotFound reports a NAS answering that it has no such session
 // (RFC 5176 Error-Cause 503, Session-Context-Not-Found). The session has
 // already ended, so retrying cannot help, and for a disconnect it is the
@@ -170,6 +198,7 @@ func (h *CoAHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	gone := 0
 	for _, s := range sessions {
 		err := h.sendTo(ctx, s, rateLimit, planID, p.SubscriberID)
+		closeIfGone(ctx, h.db, s, err)
 		switch {
 		case errors.Is(err, ErrSessionNotFound):
 			gone++ // ended since the lookup; nothing to re-rate

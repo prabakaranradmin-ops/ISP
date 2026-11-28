@@ -22,13 +22,14 @@ type AuthLogReader interface {
 // operator can act on. The stored value stays short and groupable; this
 // is only for display.
 var rejectReasonLabels = map[string]string{
-	radius.RejectUnknownUser:   "No such username",
-	radius.RejectBadPassword:   "Wrong password",
-	radius.RejectNotAuthorised: "Account not in a state that grants service",
-	radius.RejectLockedOut:     "Locked out after repeated failures",
-	radius.RejectNoMABDevice:   "MAC not registered, or MAB off for this router",
-	radius.RejectEAPFailed:     "EAP exchange failed",
-	radius.RejectInternalError: "Internal error",
+	radius.RejectUnknownUser:     "No such username",
+	radius.RejectBadPassword:     "Wrong password",
+	radius.RejectNotAuthorised:   "Account not in a state that grants service",
+	radius.RejectLockedOut:       "Locked out after repeated failures",
+	radius.RejectNoMABDevice:     "MAC not registered, or MAB off for this router",
+	radius.RejectEAPFailed:       "EAP exchange failed",
+	radius.RejectInternalError:   "Internal error",
+	radius.RejectConnectionLimit: "Over their connection limit",
 }
 
 // rejectReasonAdvice says what each failure usually means, because the
@@ -41,6 +42,8 @@ var rejectReasonAdvice = map[string]string{
 	radius.RejectNoMABDevice:   "The MAC is not registered to this router, or the router has MAB turned off.",
 	radius.RejectEAPFailed:     "The supplicant and the server could not agree. Usually a client configured for the wrong EAP method.",
 	radius.RejectInternalError: "Something on this side failed rather than the subscriber. Check the daemon's log around this time.",
+	radius.RejectConnectionLimit: "The password was right, but they already have as many connections online as they pay for. " +
+		"Sell them an extra connection, or end one of their sessions on the Connections screen.",
 }
 
 type authLogRow struct {
@@ -80,6 +83,7 @@ var authReasonOptions = []authReasonOption{
 	{radius.RejectLockedOut, rejectReasonLabels[radius.RejectLockedOut]},
 	{radius.RejectNoMABDevice, rejectReasonLabels[radius.RejectNoMABDevice]},
 	{radius.RejectEAPFailed, rejectReasonLabels[radius.RejectEAPFailed]},
+	{radius.RejectConnectionLimit, rejectReasonLabels[radius.RejectConnectionLimit]},
 	{radius.RejectInternalError, rejectReasonLabels[radius.RejectInternalError]},
 }
 
