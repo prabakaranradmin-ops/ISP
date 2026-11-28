@@ -4,14 +4,15 @@
 // FR-NET-005.
 //
 // That file covers the role gates, creation and the JSON shape. What it left
-// (ippools.go at 67%): the cache invalidation that makes an allocated or
-// released address reach the NAS, the list filters, exclusions, deleting a
-// pool in use, and every error mapping in writeIPPoolError.
+// (ippools.go at 67%): how an allocated or released address reaches the
+// subscriber's live session, the list filters, exclusions, deleting a pool
+// in use, and every error mapping in writeIPPoolError.
 //
-// The invalidation is the part worth defending. A released static address
-// that stays in the auth cache keeps being handed to its former holder, and
-// the release path has to find who that was before it releases, because
-// there is no by-id getter: it walks the static pools' assignments.
+// The live session is the part worth defending. Its address is fixed when it
+// starts, so an address change reaches it only by ending it. A released
+// address whose former holder stays online is back in the pool as free while
+// still in use on the NAS, and the next allocation can give it to somebody
+// else.
 package api_test
 
 import (
@@ -25,6 +26,8 @@ import (
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
+	"github.com/maaransoft/isp-bss-oss/internal/fup"
+	"github.com/maaransoft/isp-bss-oss/internal/health"
 	"github.com/maaransoft/isp-bss-oss/internal/nas"
 )
 
@@ -87,9 +90,9 @@ func (r *recIPPools) AllocateStaticIP(ctx context.Context, req nas.AllocateReque
 	return r.stubIPPools.AllocateStaticIP(ctx, req, by)
 }
 
-func (r *recIPPools) ReleaseStaticIP(ctx context.Context, id int, reason, by string) error {
+func (r *recIPPools) ReleaseStaticIP(ctx context.Context, id int, reason, by string) (*nas.StaticAssignment, error) {
 	if r.releaseErr != nil {
-		return r.releaseErr
+		return nil, r.releaseErr
 	}
 	return r.stubIPPools.ReleaseStaticIP(ctx, id, reason, by)
 }
@@ -121,61 +124,101 @@ func nocJSON(t *testing.T, mux *http.ServeMux, method, path, body string) (int, 
 	return rec.Code, rec.Body.String()
 }
 
-// Allocating and releasing both reach the auth cache, for the right person.
-func TestFR_NET_005_AnAddressChangeReachesTheAuthCache(t *testing.T) {
-	cache := &stubSubCache{}
+// onlineMux wires a live session (or none) and a queue, so a test can see
+// the disconnects an address change queues.
+func onlineMux(t *testing.T, store api.IPPoolStore, online bool) (*http.ServeMux, *stubTaskEnqueuer, *stubSubCache) {
+	t.Helper()
+	sessions := &stubSessionReader{}
+	if online {
+		sessions.session = &health.SessionSummary{SessionID: "sess-biz"}
+	}
+	tasks, cache := &stubTaskEnqueuer{}, &stubSubCache{}
+	h := api.NewHandler(api.HandlerDeps{DB: &stubDB{}, KYC: &stubKYC{},
+		Wallet: billing.NewWalletService(&stubWallet{}), IPPools: store,
+		Sessions: sessions, Tasks: tasks, SubCache: cache})
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, itJWTSecret)
+	return mux, tasks, cache
+}
+
+func podsFor(t *testing.T, tasks *stubTaskEnqueuer) []fup.PoDPayload {
+	t.Helper()
+	var out []fup.PoDPayload
+	for _, task := range tasks.snapshot() {
+		if task.Type() != fup.TaskTypePoD {
+			continue
+		}
+		var p fup.PoDPayload
+		if err := json.Unmarshal(task.Payload(), &p); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// Allocating and releasing both reconnect a subscriber who is online, so
+// the change reaches the session instead of waiting for the line to drop,
+// and both clear the auth cache for the right person.
+func TestFR_NET_005_AnAddressChangeReachesTheLiveSession(t *testing.T) {
 	store := newRecIPPools()
-	mux := poolMux(t, store, cache)
+	mux, tasks, cache := onlineMux(t, store, true)
 
 	if code, body := nocJSON(t, mux, http.MethodPost, "/api/v1/subscribers/1/static-ip", `{"pool_id":1}`); code != http.StatusCreated {
 		t.Fatalf("allocate: %d %s", code, body)
 	}
-	// The release finds the holder (assignment 9, "biz") before releasing.
+	if got := podsFor(t, tasks); len(got) != 1 || got[0].SubscriberID != 1 || got[0].Username != "biz" {
+		t.Errorf("allocation queued %+v; the subscriber's session must restart to get the address", got)
+	}
+
+	// The released row names its holder, so the release reconnects them
+	// without a second lookup that could fail.
 	if code, body := nocJSON(t, mux, http.MethodPost, "/api/v1/static-ips/9/release", `{"reason":"moved office"}`); code != http.StatusNoContent {
 		t.Fatalf("release: %d %s", code, body)
 	}
-	if len(cache.invalidated) != 2 || cache.invalidated[0] != "biz" || cache.invalidated[1] != "biz" {
-		t.Errorf("invalidated %v; want the holder on both the allocation and the release", cache.invalidated)
+	if got := podsFor(t, tasks); len(got) != 2 || got[1].SubscriberID != 1 || got[1].Username != "biz" {
+		t.Errorf("release queued %+v; a holder left online keeps using an address the pool now calls free", got)
 	}
 	if store.released != 9 || store.reason != "moved office" {
 		t.Errorf("released %d with %q", store.released, store.reason)
 	}
-	// The walk only looks at static pools: dhcp and cgnat hand out nothing
-	// that could be released here.
-	if store.gotFilter.Purpose != nas.PoolStatic {
-		t.Errorf("the holder lookup walked %q pools", store.gotFilter.Purpose)
-	}
-
-	// An id nobody holds still releases (the store decides), and
-	// invalidates nobody.
-	cache.invalidated = nil
-	if code, _ := nocJSON(t, mux, http.MethodPost, "/api/v1/static-ips/77/release", `{"reason":"x"}`); code != http.StatusNoContent {
-		t.Errorf("release of an unlisted id: %d", code)
-	}
-	if len(cache.invalidated) != 0 {
-		t.Errorf("an unlisted id invalidated %v", cache.invalidated)
+	if len(cache.invalidated) != 2 || cache.invalidated[0] != "biz" || cache.invalidated[1] != "biz" {
+		t.Errorf("invalidated %v; want the holder on both the allocation and the release", cache.invalidated)
 	}
 }
 
-// A cache that cannot be reached does not undo the address change, and the
-// lookup failing does not block the release.
+// Nobody online, nobody disconnected; and a refused change disconnects
+// nobody either.
+func TestFR_NET_005_OnlyARealChangeToAnOnlineSubscriberReconnects(t *testing.T) {
+	mux, tasks, _ := onlineMux(t, newRecIPPools(), false)
+	nocJSON(t, mux, http.MethodPost, "/api/v1/subscribers/1/static-ip", `{"pool_id":1}`)
+	nocJSON(t, mux, http.MethodPost, "/api/v1/static-ips/9/release", `{"reason":"x"}`)
+	if got := podsFor(t, tasks); len(got) != 0 {
+		t.Errorf("an offline subscriber was sent %d disconnects", len(got))
+	}
+
+	store := newRecIPPools()
+	store.allocErr, store.releaseErr = nas.ErrPoolExhausted, nas.ErrAssignmentNotActive
+	mux, tasks, _ = onlineMux(t, store, true)
+	nocJSON(t, mux, http.MethodPost, "/api/v1/subscribers/1/static-ip", `{"pool_id":1}`)
+	nocJSON(t, mux, http.MethodPost, "/api/v1/static-ips/9/release", `{"reason":"x"}`)
+	if got := podsFor(t, tasks); len(got) != 0 {
+		t.Errorf("a refused change sent %d disconnects", len(got))
+	}
+}
+
+// A cache that cannot be reached does not undo the address change.
 func TestFR_NET_005_ACacheFailureDoesNotFailTheChange(t *testing.T) {
 	cache := &failingSubCache{}
 	mux := poolMux(t, newRecIPPools(), cache)
 	if code, _ := nocJSON(t, mux, http.MethodPost, "/api/v1/subscribers/1/static-ip", `{"pool_id":1}`); code != http.StatusCreated {
 		t.Errorf("allocate with the cache down: %d", code)
 	}
-	if cache.calls != 1 {
-		t.Errorf("the invalidation was not attempted")
+	if code, _ := nocJSON(t, mux, http.MethodPost, "/api/v1/static-ips/9/release", `{"reason":"x"}`); code != http.StatusNoContent {
+		t.Errorf("release with the cache down: %d", code)
 	}
-
-	store := newRecIPPools()
-	store.assignmentErr = errPoolStore
-	if code, _ := nocJSON(t, poolMux(t, store, &stubSubCache{}), http.MethodPost, "/api/v1/static-ips/9/release", `{"reason":"x"}`); code != http.StatusNoContent {
-		t.Errorf("release with the holder lookup failing: %d", code)
-	}
-	if store.released != 9 {
-		t.Error("the lookup failing stopped the release")
+	if cache.calls != 2 {
+		t.Errorf("%d invalidations attempted, want 2", cache.calls)
 	}
 }
 

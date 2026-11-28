@@ -85,12 +85,15 @@ func (s *stubIPPools) AllocateStaticIP(_ context.Context, req nas.AllocateReques
 		Status: nas.AssignmentActive, AssignedBy: "meena", AssignedAt: time.Now()}, nil
 }
 
-func (s *stubIPPools) ReleaseStaticIP(_ context.Context, id int, reason, _ string) error {
+// ReleaseStaticIP returns the released row, as the store does: subscriber 1,
+// "biz", who held 203.0.113.4.
+func (s *stubIPPools) ReleaseStaticIP(_ context.Context, id int, reason, _ string) (*nas.StaticAssignment, error) {
 	if s.err != nil {
-		return s.err
+		return nil, s.err
 	}
 	s.released, s.reason = id, reason
-	return nil
+	return &nas.StaticAssignment{ID: id, PoolName: "Customer statics", SubscriberID: 1, Username: "biz",
+		Address: netip.MustParseAddr("203.0.113.4"), Status: "released", ReleaseReason: reason}, nil
 }
 
 func (s *stubIPPools) GetSubscriberStaticIP(context.Context, int) (*nas.StaticAssignment, error) {

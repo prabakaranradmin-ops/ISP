@@ -443,8 +443,16 @@ func TestFR_NET_005_StaticAddressIsBilledThroughTheProductCatalogue(t *testing.T
 	}
 
 	t.Run("releasing the address ends the charge", func(t *testing.T) {
-		if err := store.ReleaseStaticIP(ctx, got.ID, "customer downgraded", "ravi"); err != nil {
+		released, err := store.ReleaseStaticIP(ctx, got.ID, "customer downgraded", "ravi")
+		if err != nil {
 			t.Fatalf("release: %v", err)
+		}
+		// The released row names whose session still holds the address,
+		// so the caller can end it before the address goes to anyone else.
+		if released.ID != got.ID || released.SubscriberID != 1 || released.Username != "biz" ||
+			released.Address != got.Address || released.Status != nas.AssignmentReleased ||
+			released.ReleaseReason != "customer downgraded" || released.ReleasedBy != "ravi" {
+			t.Errorf("released row %+v", released)
 		}
 		after, err := billingStore.ListBillableProducts(ctx, 1)
 		if err != nil {
@@ -480,11 +488,14 @@ func TestFR_NET_005_StaticAddressIsBilledThroughTheProductCatalogue(t *testing.T
 	})
 
 	t.Run("releasing twice is refused, and needs a reason", func(t *testing.T) {
-		if err := store.ReleaseStaticIP(ctx, got.ID, "again", "ravi"); !errors.Is(err, nas.ErrAssignmentNotActive) {
+		if _, err := store.ReleaseStaticIP(ctx, got.ID, "again", "ravi"); !errors.Is(err, nas.ErrAssignmentNotActive) {
 			t.Fatalf("want ErrAssignmentNotActive, got %v", err)
 		}
-		if err := store.ReleaseStaticIP(ctx, 999999, "x", "ravi"); !errors.Is(err, nas.ErrAssignmentNotFound) {
+		if _, err := store.ReleaseStaticIP(ctx, 999999, "x", "ravi"); !errors.Is(err, nas.ErrAssignmentNotFound) {
 			t.Fatalf("want ErrAssignmentNotFound, got %v", err)
+		}
+		if _, err := store.ReleaseStaticIP(ctx, got.ID, "  ", "ravi"); !errors.Is(err, nas.ErrPoolInvalid) {
+			t.Fatalf("a release with no reason: want ErrPoolInvalid, got %v", err)
 		}
 	})
 
@@ -494,8 +505,8 @@ func TestFR_NET_005_StaticAddressIsBilledThroughTheProductCatalogue(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.ReleaseStaticIP(ctx, a.ID, "no longer needed", "ravi"); err != nil {
-			t.Errorf("releasing an unbilled address: %v", err)
+		if r, err := store.ReleaseStaticIP(ctx, a.ID, "no longer needed", "ravi"); err != nil || r.Username != "nobill" {
+			t.Errorf("releasing an unbilled address: %+v %v", r, err)
 		}
 	})
 }
@@ -538,7 +549,7 @@ func TestFR_NET_005_StaticAddressReachesTheAuthLookup(t *testing.T) {
 	}
 
 	t.Run("a released address stops being returned", func(t *testing.T) {
-		if err := store.ReleaseStaticIP(ctx, assigned.ID, "released", "ravi"); err != nil {
+		if _, err := store.ReleaseStaticIP(ctx, assigned.ID, "released", "ravi"); err != nil {
 			t.Fatal(err)
 		}
 		got, err := radiusStore.GetSubscriberByUsername(ctx, "biz")
@@ -577,7 +588,7 @@ func TestFR_NET_005_SubscriberAndPoolListings(t *testing.T) {
 		t.Errorf("a subscriber with no address gave %+v", none)
 	}
 
-	if err := store.ReleaseStaticIP(ctx, a.ID, "moved house", "ravi"); err != nil {
+	if _, err := store.ReleaseStaticIP(ctx, a.ID, "moved house", "ravi"); err != nil {
 		t.Fatal(err)
 	}
 	history, err := store.ListSubscriberStaticIPs(ctx, 1)

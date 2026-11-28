@@ -38,8 +38,8 @@ var ipPoolMessages = map[string]string{
 	"deleted":   "IP pool deleted.",
 	"excluded":  "Those addresses are now excluded and will not be handed out.",
 	"included":  "Exclusion removed. Those addresses can be handed out again.",
-	"allocated": "Static address assigned. The subscriber gets it on their next authentication.",
-	"released":  "Static address released, and any charge for it ended.",
+	"allocated": "Static address assigned. If the subscriber was online, they are reconnected now to pick it up.",
+	"released":  "Static address released, and any charge for it ended. If the subscriber was online, they are reconnected now so the address is free for someone else.",
 
 	"duplicate": "Not added: this router already has a pool with that name.",
 	"inuse":     "Not deleted: addresses from this pool have been assigned. Release them and keep the pool — its history explains the addresses on past invoices.",

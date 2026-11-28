@@ -26,7 +26,9 @@ type IPPoolStore interface {
 	AddExclusion(ctx context.Context, poolID int, r nas.AddrRange, reason, by string) (*nas.PoolExclusion, error)
 	RemoveExclusion(ctx context.Context, id int) error
 	AllocateStaticIP(ctx context.Context, req nas.AllocateRequest, by string) (*nas.StaticAssignment, error)
-	ReleaseStaticIP(ctx context.Context, id int, reason, by string) error
+	// ReleaseStaticIP returns the assignment it released, so the caller
+	// knows whose session still holds the address.
+	ReleaseStaticIP(ctx context.Context, id int, reason, by string) (*nas.StaticAssignment, error)
 	GetSubscriberStaticIP(ctx context.Context, subscriberID int) (*nas.StaticAssignment, error)
 	ListSubscriberStaticIPs(ctx context.Context, subscriberID int) ([]nas.StaticAssignment, error)
 	ListPoolAssignments(ctx context.Context, poolID int) ([]nas.StaticAssignment, error)
@@ -120,17 +122,7 @@ func (h *Handler) AllocateStaticIP(ctx context.Context, req nas.AllocateRequest)
 	middleware.Audit(ctx, "static_ip.allocated", a.Address.String(), map[string]any{
 		"subscriber_id": a.SubscriberID, "pool_id": a.PoolID, "billed": a.Billed(),
 	})
-	// Clears the shared fast-verifier tier, as every lifecycle action
-	// here does.
-	//
-	// It does NOT reach radiusd's subscriber auth cache, which is
-	// process-local with a 60-second TTL (see subCacheInvalidator in
-	// cmd/api and cache.SubscriberCache's own doc) — so a new address
-	// reaches the NAS within that minute rather than on the next
-	// authentication. Bounded and already accounted for, and the same
-	// delay a plan change made from the API has always had; worth stating
-	// plainly rather than implying this call is exact.
-	h.invalidateSubscriberCache(ctx, a.Username)
+	h.reconnectForNewAddress(ctx, a)
 	return a, nil
 }
 
@@ -139,45 +131,45 @@ func (h *Handler) ReleaseStaticIP(ctx context.Context, id int, reason string) er
 	if h.ipPools == nil {
 		return ErrIPPoolsUnwired
 	}
-	// Read first, for the audit entry and the cache key: after the release
-	// the row still exists, but reading it before keeps the two steps
-	// independent of each other's failure.
-	var username, address string
-	if a, err := h.lookupAssignment(ctx, id); err == nil && a != nil {
-		username, address = a.Username, a.Address.String()
-	}
-	if err := h.ipPools.ReleaseStaticIP(ctx, id, reason, middleware.SubjectFromContext(ctx)); err != nil {
+	released, err := h.ipPools.ReleaseStaticIP(ctx, id, reason, middleware.SubjectFromContext(ctx))
+	if err != nil {
 		return err
+	}
+	address := ""
+	if released != nil {
+		address = released.Address.String()
 	}
 	middleware.Audit(ctx, "static_ip.released", address, map[string]any{
 		"assignment_id": id, "reason": strings.TrimSpace(reason),
 	})
-	if username != "" {
-		h.invalidateSubscriberCache(ctx, username)
-	}
+	h.reconnectForNewAddress(ctx, released)
 	return nil
 }
 
-// lookupAssignment finds an assignment by id, for the release path's audit
-// entry. There is no by-id getter on the store, so this walks the pool's
-// own list — cheap, and only on a release.
-func (h *Handler) lookupAssignment(ctx context.Context, id int) (*nas.StaticAssignment, error) {
-	pools, err := h.ipPools.ListPools(ctx, nas.PoolFilter{Purpose: nas.PoolStatic})
-	if err != nil {
-		return nil, err
+// reconnectForNewAddress ends the live session of a subscriber whose static
+// address has just been given or taken away (FR-NET-005), so the redial
+// picks up the change.
+//
+// A session's address is fixed when it starts: the NAS applies the Accept's
+// Framed-IP-Address then and does not ask again. Until 2026-11-28 nothing
+// ended the session, and the console said the subscriber would get the
+// address "on their next authentication", which on always-on PPPoE can be
+// weeks away:
+//
+//   - an allocation billed the subscriber for an address they did not have;
+//   - a release worse: the address went straight back into the pool as free
+//     while its former holder was still using it on the NAS, so the next
+//     allocation could hand it to somebody else, and two sessions would
+//     claim one address.
+//
+// The username rides on the disconnect, so radiusd clears its own auth
+// cache before the redial; the invalidation here reaches only this process.
+func (h *Handler) reconnectForNewAddress(ctx context.Context, a *nas.StaticAssignment) {
+	if a == nil {
+		return
 	}
-	for _, p := range pools {
-		list, err := h.ipPools.ListPoolAssignments(ctx, p.ID)
-		if err != nil {
-			return nil, err
-		}
-		for i := range list {
-			if list[i].ID == id {
-				return &list[i], nil
-			}
-		}
-	}
-	return nil, nil
+	h.invalidateSubscriberCache(ctx, a.Username)
+	enqueuePoDIfSessionActive(ctx, h, a.SubscriberID, a.Username)
 }
 
 // invalidateSubscriberCache drops a cached auth record, logging a failure

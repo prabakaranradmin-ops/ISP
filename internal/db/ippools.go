@@ -444,18 +444,23 @@ func takenAddressesTx(ctx context.Context, tx pgx.Tx) (map[netip.Addr]bool, erro
 }
 
 // ReleaseStaticIP takes an address back, ending its catalogue charge in the
-// same transaction when it had one.
+// same transaction when it had one, and returns the released assignment.
 //
 // Ending the charge together with the address is the whole point of
 // recording the link: an address released while its monthly rental went on
 // being billed is the kind of error a customer finds before the operator
 // does.
-func (s *NASStore) ReleaseStaticIP(ctx context.Context, id int, reason, by string) error {
+//
+// The row comes back so the caller knows, without a second lookup that can
+// fail, whose session still holds the address on the NAS. That session has
+// to end before the address can safely go to anybody else.
+func (s *NASStore) ReleaseStaticIP(ctx context.Context, id int, reason, by string) (*nas.StaticAssignment, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
-		return fmt.Errorf("%w: give a reason for releasing the address", nas.ErrPoolInvalid)
+		return nil, fmt.Errorf("%w: give a reason for releasing the address", nas.ErrPoolInvalid)
 	}
-	return inTx(ctx, s.pool, func(tx pgx.Tx) error {
+	var out nas.StaticAssignment
+	err := inTx(ctx, s.pool, func(tx pgx.Tx) error {
 		var productID *int
 		err := tx.QueryRow(ctx, `
 			UPDATE static_ip_assignments
@@ -477,20 +482,28 @@ func (s *NASStore) ReleaseStaticIP(ctx context.Context, id int, reason, by strin
 			return fmt.Errorf("db: release address %d: %w", id, err)
 		}
 
-		if productID == nil {
-			return nil
+		if productID != nil {
+			// Only if it is still active: staff may have ended the charge
+			// from the subscriber's Billing tab already, which is not an
+			// error.
+			if _, err := tx.Exec(ctx, `
+				UPDATE subscriber_products
+				   SET status = 'ended', ended_at = now(), ended_by = $2,
+				       end_reason = 'static IP released: ' || $3
+				 WHERE id = $1 AND status = 'active'`, *productID, by, reason); err != nil {
+				return fmt.Errorf("db: end the charge for released address %d: %w", id, err)
+			}
 		}
-		// Only if it is still active: staff may have ended the charge from
-		// the subscriber's Billing tab already, which is not an error.
-		if _, err := tx.Exec(ctx, `
-			UPDATE subscriber_products
-			   SET status = 'ended', ended_at = now(), ended_by = $2,
-			       end_reason = 'static IP released: ' || $3
-			 WHERE id = $1 AND status = 'active'`, *productID, by, reason); err != nil {
-			return fmt.Errorf("db: end the charge for released address %d: %w", id, err)
+		if err := scanAssignment(tx.QueryRow(ctx,
+			`SELECT `+assignmentColumns+assignmentFrom+` WHERE a.id = $1`, id), &out); err != nil {
+			return fmt.Errorf("db: read released address %d: %w", id, err)
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // GetSubscriberStaticIP returns the address a subscriber holds, or
