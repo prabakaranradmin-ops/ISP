@@ -2,6 +2,8 @@ package staffui
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -17,6 +19,8 @@ type fakeBandwidth struct {
 	gotID    int
 	gotActiv bool
 	err      error
+	listErr  error
+	retired  bool // the includeRetired the list was asked with
 }
 
 func (f *fakeBandwidth) CreateBandwidthProfile(_ context.Context, in nas.BandwidthProfile) (*nas.BandwidthProfile, error) {
@@ -47,8 +51,9 @@ func (f *fakeBandwidth) DeleteBandwidthProfile(_ context.Context, id int) error 
 	return f.err
 }
 
-func (f *fakeBandwidth) ListBandwidthProfiles(_ context.Context, _ bool) ([]nas.BandwidthProfile, error) {
-	return f.profiles, nil
+func (f *fakeBandwidth) ListBandwidthProfiles(_ context.Context, includeRetired bool) ([]nas.BandwidthProfile, error) {
+	f.retired = includeRetired
+	return f.profiles, f.listErr
 }
 
 func burstProfile() nas.BandwidthProfile {
@@ -265,6 +270,95 @@ func TestFR_CAT_002_BandwidthProfilesReach(t *testing.T) {
 		if has(role) {
 			t.Errorf("%s can reach bandwidth profiles", role)
 		}
+	}
+}
+
+// Editing a profile reaches the store under the right id with the form's
+// values converted, and deleting one reports what happened.
+func TestFR_CAT_002_EditAndDeleteReachTheStore(t *testing.T) {
+	f := &fakeBandwidth{}
+	h := &Handler{bandwidth: f}
+	w := servePR(h, "isp_owner", "POST", "/staff/bandwidth/7", url.Values{
+		"name": {"Retail 100"}, "max_down": {"100"}, "max_up": {"50"},
+	}, h.UpdateBandwidthForm)
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "m=updated") {
+		t.Errorf("update redirected to %q", loc)
+	}
+	if f.gotID != 7 || f.created.MaxDownBPS != 100_000_000 || f.created.MaxUpBPS != 50_000_000 {
+		t.Errorf("update reached the store as id=%d %+v", f.gotID, f.created.Shaping)
+	}
+
+	f = &fakeBandwidth{}
+	h = &Handler{bandwidth: f}
+	w = servePR(h, "isp_owner", "POST", "/staff/bandwidth/8/delete", url.Values{}, h.DeleteBandwidthForm)
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "m=deleted") || f.gotID != 8 {
+		t.Errorf("delete: %q id=%d", loc, f.gotID)
+	}
+
+	// A profile plans still use cannot be deleted, and says to retire it.
+	f = &fakeBandwidth{err: nas.ErrProfileInUse}
+	h = &Handler{bandwidth: f}
+	w = servePR(h, "isp_owner", "POST", "/staff/bandwidth/8/delete", url.Values{}, h.DeleteBandwidthForm)
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "m=inuse") {
+		t.Errorf("delete in use: %q", loc)
+	}
+	// A name clash on edit is named.
+	f = &fakeBandwidth{err: nas.ErrProfileNameTaken}
+	h = &Handler{bandwidth: f}
+	w = servePR(h, "isp_owner", "POST", "/staff/bandwidth/7", url.Values{
+		"name": {"Retail 100"}, "max_down": {"100"}, "max_up": {"50"},
+	}, h.UpdateBandwidthForm)
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "m=duplicate") {
+		t.Errorf("update, name taken: %q", loc)
+	}
+	// An incoherent edit is refused with the reason, before the store.
+	f = &fakeBandwidth{}
+	h = &Handler{bandwidth: f}
+	w = servePR(h, "isp_owner", "POST", "/staff/bandwidth/7", url.Values{"name": {""}}, h.UpdateBandwidthForm)
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "err=") || f.gotID != 0 {
+		t.Errorf("an empty edit: %q, reached store id=%d", loc, f.gotID)
+	}
+}
+
+func TestFR_CAT_002_BandwidthRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		target string
+		fn     func(*Handler) func(http.ResponseWriter, *http.Request)
+	}{
+		{"/staff/bandwidth/x", func(h *Handler) func(http.ResponseWriter, *http.Request) { return h.UpdateBandwidthForm }},
+		{"/staff/bandwidth/x/active", func(h *Handler) func(http.ResponseWriter, *http.Request) { return h.SetBandwidthActiveForm }},
+		{"/staff/bandwidth/x/delete", func(h *Handler) func(http.ResponseWriter, *http.Request) { return h.DeleteBandwidthForm }},
+	} {
+		h := &Handler{bandwidth: &fakeBandwidth{}}
+		if w := servePR(h, "isp_owner", "POST", tc.target, url.Values{}, tc.fn(h)); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d", tc.target, w.Code)
+		}
+		// A CSR reads profiles but cannot change them.
+		h = &Handler{bandwidth: &fakeBandwidth{}}
+		if w := servePR(h, "csr", "POST", strings.Replace(tc.target, "/x", "/7", 1), url.Values{}, tc.fn(h)); w.Code != http.StatusForbidden {
+			t.Errorf("csr on %s: %d", tc.target, w.Code)
+		}
+	}
+
+	f := &fakeBandwidth{listErr: errors.New("db down")}
+	h := &Handler{bandwidth: f}
+	if w := servePR(h, "isp_owner", "GET", "/staff/bandwidth", nil, h.Bandwidth); w.Code != http.StatusInternalServerError || strings.Contains(w.Body.String(), "db down") {
+		t.Errorf("a failing list: %d", w.Code)
+	}
+
+	// The retired filter reaches the store, and outcome codes show their
+	// sentence — a failure as an error, a success as a message.
+	f = &fakeBandwidth{profiles: []nas.BandwidthProfile{burstProfile()}}
+	h = &Handler{bandwidth: f}
+	servePR(h, "isp_owner", "GET", "/staff/bandwidth?retired=true", nil, h.Bandwidth)
+	if !f.retired {
+		t.Error("retired=true did not reach the store")
+	}
+	if body := servePR(h, "isp_owner", "GET", "/staff/bandwidth?m=inuse", nil, h.Bandwidth).Body.String(); !strings.Contains(pageText(body), "Retire it instead") {
+		t.Error("the in-use outcome has no sentence on the page")
+	}
+	if body := servePR(h, "isp_owner", "GET", "/staff/bandwidth?err=Name+is+required", nil, h.Bandwidth).Body.String(); !strings.Contains(body, "Name is required") {
+		t.Error("a validation sentence is not shown")
 	}
 }
 

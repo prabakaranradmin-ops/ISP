@@ -2,6 +2,7 @@ package staffui
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -290,6 +291,66 @@ func TestFR_CAT_003_FairUseReach(t *testing.T) {
 		if has(role) {
 			t.Errorf("%s can reach fair-use policies", role)
 		}
+	}
+}
+
+// Deleting a policy reports what happened, and the policy and plan ids are
+// checked before anything reaches the store.
+func TestFR_CAT_003_DeleteAndRefusals(t *testing.T) {
+	f := &fakeFUPPolicies{}
+	h := &Handler{fupPolicies: f}
+	w := servePR(h, "isp_owner", "POST", "/staff/fair-use/4/delete", url.Values{}, h.DeleteFUPPolicyForm)
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "m=deleted") || f.deleted != 4 {
+		t.Errorf("delete: %q id=%d", loc, f.deleted)
+	}
+
+	f = &fakeFUPPolicies{err: fup.ErrPolicyInUse}
+	h = &Handler{fupPolicies: f}
+	w = servePR(h, "isp_owner", "POST", "/staff/fair-use/4/delete", url.Values{}, h.DeleteFUPPolicyForm)
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "m=inuse") {
+		t.Errorf("delete in use: %q", loc)
+	}
+	f = &fakeFUPPolicies{err: fup.ErrPolicyNameTaken}
+	h = &Handler{fupPolicies: f}
+	w = servePR(h, "isp_owner", "POST", "/staff/fair-use/4/active", url.Values{"active": {"true"}}, h.SetFUPPolicyActiveForm)
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "m=duplicate") {
+		t.Errorf("restoring onto a taken name: %q", loc)
+	}
+
+	for _, tc := range []struct {
+		target string
+		form   url.Values
+		fn     func(*Handler) func(http.ResponseWriter, *http.Request)
+	}{
+		{"/staff/fair-use/x/delete", url.Values{}, func(h *Handler) func(http.ResponseWriter, *http.Request) { return h.DeleteFUPPolicyForm }},
+		{"/staff/fair-use/x/active", url.Values{}, func(h *Handler) func(http.ResponseWriter, *http.Request) { return h.SetFUPPolicyActiveForm }},
+		{"/staff/fair-use/attach", url.Values{"plan_id": {"basic"}}, func(h *Handler) func(http.ResponseWriter, *http.Request) { return h.AttachFUPPolicyForm }},
+	} {
+		f := &fakeFUPPolicies{}
+		h := &Handler{fupPolicies: f}
+		if w := servePR(h, "isp_owner", "POST", tc.target, tc.form, tc.fn(h)); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d", tc.target, w.Code)
+		}
+		if f.deleted != 0 || f.attached || f.gotID != 0 {
+			t.Errorf("%s reached the store", tc.target)
+		}
+	}
+
+	// A garbled policy id on attach is refused, not read as "detach".
+	f = &fakeFUPPolicies{}
+	h = &Handler{fupPolicies: f}
+	w = servePR(h, "isp_owner", "POST", "/staff/fair-use/attach", url.Values{"plan_id": {"3"}, "policy_id": {"tiered"}}, h.AttachFUPPolicyForm)
+	if f.attached {
+		t.Errorf("a garbled policy id reached the store as %v", f.policyID)
+	}
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "m=failed") {
+		t.Errorf("garbled policy id: %q", loc)
+	}
+
+	// A CSR cannot change fair-use policies.
+	h = &Handler{fupPolicies: &fakeFUPPolicies{}}
+	if w := servePR(h, "csr", "POST", "/staff/fair-use/4/delete", url.Values{}, h.DeleteFUPPolicyForm); w.Code != http.StatusForbidden {
+		t.Errorf("csr delete: %d", w.Code)
 	}
 }
 
