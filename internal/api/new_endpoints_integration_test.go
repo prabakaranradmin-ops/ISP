@@ -29,6 +29,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
+	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	"github.com/maaransoft/isp-bss-oss/internal/health"
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
@@ -347,6 +348,16 @@ func TestDisconnectSession_EnqueuesPoD(t *testing.T) {
 	}
 	if got[0].Type() != "network:pod_send" {
 		t.Errorf("task type: got %q", got[0].Type())
+	}
+	// The session clicked on, by name, and nothing else: a payload naming
+	// only the subscriber is resolved to every session they hold, which
+	// would take down their other connections too.
+	var p fup.PoDPayload
+	if err := json.Unmarshal(got[0].Payload(), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.SessionID != "sess-1" || p.NasIP != "10.10.0.1" || p.SubscriberID != 0 {
+		t.Errorf("disconnect payload %+v; want the one session sess-1 on 10.10.0.1, not the subscriber", p)
 	}
 }
 

@@ -97,7 +97,13 @@ func (h *Handler) RequestDisconnect(ctx context.Context, sessionID string) (int,
 		return 0, fmt.Errorf("%w: %v", ErrSessionNotFound, err)
 	}
 
-	payload, _ := json.Marshal(fup.PoDPayload{SubscriberID: subscriberID}) //nolint:errcheck // static struct, cannot fail
+	// The session the operator chose, named outright. A payload naming only
+	// the subscriber is resolved by the handler to whatever sessions they
+	// hold. That used to mean the newest one, which need not be the session
+	// clicked on; since disconnects reach every session it would mean all
+	// of them, taking down a subscriber's other connections along with the
+	// one meant.
+	payload, _ := json.Marshal(fup.PoDPayload{NasIP: nasIP, SessionID: sessionID}) //nolint:errcheck // static struct, cannot fail
 	task := jobqueue.NewTask(fup.TaskTypePoD, payload,
 		jobqueue.Queue(fup.QueueNetCommands), jobqueue.MaxRetry(5), jobqueue.Retention(sessionTaskRetention))
 	if _, err := h.tasks.Enqueue(task); err != nil {
