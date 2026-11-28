@@ -124,17 +124,14 @@ func TestPortal_AnUnreachableStoreIsReportedAsJSON(t *testing.T) {
 		path string
 		want int
 	}{
-		// Me and Dashboard both report 404 rather than 500: each collapses
-		// `err != nil || profile == nil` into one answer, because it cannot
-		// tell "no such subscriber" from "could not read the subscriber".
-		//
-		// Asserted as it behaves, not as it arguably should. The operational
-		// cost is worth knowing: during a database outage every subscriber is
-		// told their account does not exist, and the portal returns a 404 that
-		// no alert treats as an incident. Changing it is a behaviour change
-		// for a separate decision, not something to slip into a coverage pass.
-		{"/portal/me", http.StatusNotFound},
-		{"/portal/dashboard", http.StatusNotFound},
+		// Me and Dashboard used to report 404 here: each collapsed
+		// `err != nil || profile == nil` into one answer, so during a
+		// database outage every subscriber was told their account did not
+		// exist, with a status no alert treats as an incident. This test
+		// asserted that, with a note that it was wrong; it is now a 500, as
+		// the browser portal and the console answer the same failure.
+		{"/portal/me", http.StatusInternalServerError},
+		{"/portal/dashboard", http.StatusInternalServerError},
 		{"/portal/notifications", http.StatusInternalServerError},
 		{"/portal/tickets", http.StatusInternalServerError},
 	} {
@@ -153,6 +150,37 @@ func TestPortal_AnUnreachableStoreIsReportedAsJSON(t *testing.T) {
 				t.Errorf("the internal error leaked to the subscriber: %s", rec.Body.String())
 			}
 		})
+	}
+}
+
+// sessionlessStore reads the subscriber fine and fails only the live session,
+// the case where the dashboard can still answer.
+type sessionlessStore struct{ brokenStore }
+
+func (sessionlessStore) GetSubscriberByID(_ context.Context, id int) (*portal.SubscriberProfile, error) {
+	return &portal.SubscriberProfile{ID: id, Username: "ravi", PlanName: "TN_Super_100M", Status: "active"}, nil
+}
+
+// A live session that could not be read is reported as unavailable, not left
+// out: a missing active_session is how a client renders "offline", and a
+// customer told their line is down because a read failed calls support about
+// a line that may be fine.
+func TestPortal_ASessionReadThatFailedIsNotOffline(t *testing.T) {
+	s := &sessionlessStore{brokenStore{err: errors.New("redis: connection refused")}}
+	h := portal.NewHandler(s, s, s, s, nil, itPortalSecret)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	rec := call(t, mux, http.MethodGet, "/portal/dashboard", tokenFor(t, 42))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a failed session read should not fail the dashboard: %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"session_unavailable":true`) {
+		t.Errorf("the dashboard does not say the session is unavailable: %s", body)
+	}
+	if strings.Contains(body, "active_session") || strings.Contains(body, "redis") {
+		t.Errorf("want no session and no store error: %s", body)
 	}
 }
 

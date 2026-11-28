@@ -216,6 +216,10 @@ type DashboardResponse struct {
 	PlanExpiry    *time.Time      `json:"plan_expiry,omitempty"`
 	Status        string          `json:"status"`
 	ActiveSession *ActiveSession  `json:"active_session,omitempty"`
+	// SessionUnavailable is true when the live session could not be read,
+	// so a client can say "could not load" instead of "offline". Omitted
+	// otherwise, so existing clients see no change on the normal path.
+	SessionUnavailable bool `json:"session_unavailable,omitempty"`
 }
 
 // â”€â”€ Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -340,12 +344,33 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errBody("ERR_UNAUTHORIZED", "missing subscriber context"))
 		return
 	}
-	profile, err := h.subscribers.GetSubscriberByID(r.Context(), subID)
-	if err != nil || profile == nil {
-		writeJSON(w, http.StatusNotFound, errBody("ERR_NOT_FOUND", "subscriber not found"))
+	profile, ok := h.loadProfile(w, r, subID)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, profile)
+}
+
+// loadProfile reads the signed-in subscriber's profile, answering for them
+// when it cannot.
+//
+// A store failure is a 500, not "subscriber not found". Both used to be 404,
+// so during a database outage every subscriber was told their account did
+// not exist, and the portal answered with a status no alert treats as an
+// incident. The browser portal and the console make the same distinction.
+func (h *Handler) loadProfile(w http.ResponseWriter, r *http.Request, subID int) (*SubscriberProfile, bool) {
+	profile, err := h.subscribers.GetSubscriberByID(r.Context(), subID)
+	if err != nil {
+		log.Error().Err(err).Int("subscriber_id", subID).Msg("portal: profile lookup failed")
+		writeJSON(w, http.StatusInternalServerError,
+			errBody("ERR_INTERNAL", "could not load your account just now; try again"))
+		return nil, false
+	}
+	if profile == nil {
+		writeJSON(w, http.StatusNotFound, errBody("ERR_NOT_FOUND", "subscriber not found"))
+		return nil, false
+	}
+	return profile, true
 }
 
 // â”€â”€ POR-002: Dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -359,9 +384,8 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	profile, err := h.subscribers.GetSubscriberByID(r.Context(), subID)
-	if err != nil || profile == nil {
-		writeJSON(w, http.StatusNotFound, errBody("ERR_NOT_FOUND", "subscriber not found"))
+	profile, ok := h.loadProfile(w, r, subID)
+	if !ok {
 		return
 	}
 
@@ -372,11 +396,17 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		Status:        profile.Status,
 	}
 
-	if h.sessions != nil {
-		sess, err := h.sessions.GetActiveSession(r.Context(), subID)
-		if err == nil && sess != nil {
-			resp.ActiveSession = sess
-		}
+	// A session read that failed is reported as such, not as an absent
+	// session: a missing active_session is how a client renders "offline",
+	// and telling a customer their line is down because a read failed sends
+	// them to support about a line that may be fine.
+	if h.sessions == nil {
+		resp.SessionUnavailable = true
+	} else if sess, err := h.sessions.GetActiveSession(r.Context(), subID); err != nil {
+		log.Warn().Err(err).Int("subscriber_id", subID).Msg("portal: live session unavailable")
+		resp.SessionUnavailable = true
+	} else {
+		resp.ActiveSession = sess
 	}
 
 	writeJSON(w, http.StatusOK, resp)

@@ -164,6 +164,9 @@ var dashboardSchema = []field{
 	{name: "plan_expiry", typ: jsonString, optional: true},
 	{name: "status", typ: jsonString},
 	{name: "active_session", typ: jsonObject, optional: true},
+	// Present (and true) only when the live session could not be read, so
+	// a client can say "could not load" rather than "offline".
+	{name: "session_unavailable", typ: jsonBool, optional: true},
 }
 
 var activeSessionSchema = []field{
