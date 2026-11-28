@@ -7,7 +7,6 @@ import (
 	"strconv"
 
 	"github.com/maaransoft/isp-bss-oss/internal/crm"
-	"github.com/maaransoft/isp-bss-oss/internal/inventory"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/maaransoft/isp-bss-oss/pkg/validate"
 	"github.com/rs/zerolog/log"
@@ -243,7 +242,7 @@ func (h *Handler) issueCPEForConversion(ctx context.Context, serial string, subs
 	if device == nil {
 		return "", "device " + serial + " is not in stock; the subscriber was created and a device can be issued separately"
 	}
-	inventory.IssuedTotal.Inc()
+	// Counted by inventory.Metered, which wraps the store.
 	return device.SerialNumber, ""
 }
 

@@ -34,6 +34,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/db"
 	"github.com/maaransoft/isp-bss-oss/internal/health"
 	"github.com/maaransoft/isp-bss-oss/internal/hotspot"
+	"github.com/maaransoft/isp-bss-oss/internal/inventory"
 	"github.com/maaransoft/isp-bss-oss/internal/notifications"
 	"github.com/maaransoft/isp-bss-oss/internal/partner"
 	"github.com/maaransoft/isp-bss-oss/internal/portal"
@@ -240,6 +241,13 @@ func run(ctx context.Context) error {
 	// from the other.
 	portalBranding := hotspot.NewBrandingCache(database.Hotspot())
 
+	// One inventory store for the API and the console, metered so the CPE
+	// metrics follow every write whichever screen made it (FR-INV-003), and
+	// refreshed now so the low-stock gauge is right before the first write
+	// rather than reading 0 until somebody issues a device.
+	inventoryStore := inventory.NewMetered(database.Inventory())
+	inventoryStore.Refresh(ctx)
+
 	apiHandler := api.NewHandler(api.HandlerDeps{
 		DB:       database.API(),
 		KYC:      database.API(),
@@ -334,7 +342,7 @@ func run(ctx context.Context) error {
 		// stores: they share a migration and the conversion moment, nothing
 		// else.
 		Leads:     database.CRM(),
-		Inventory: database.Inventory(),
+		Inventory: inventoryStore,
 		// Announcements and push-token registration (FR-ANN, FR-NOTIF-013).
 		Announcements: database.Announcements(),
 		PushTokens:    database.Notifications(),
@@ -466,8 +474,9 @@ func run(ctx context.Context) error {
 		// implements FranchiseStore, so the Franchises screen needs no
 		// store of its own.
 		Franchises: database.Revenue(),
-		// Same *db.InventoryStore instance already wired for internal/api.
-		Inventory: database.Inventory(),
+		// The same metered store the API uses: a console issuance moves the
+		// same metrics an API one does.
+		Inventory: inventoryStore,
 		// Same *db.ReportingStore instance already wired for internal/api.
 		Reporting: database.Reporting(),
 		// Same *db.WorkflowStore instance already wired for internal/api.

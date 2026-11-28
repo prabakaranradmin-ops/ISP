@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 
 	"github.com/maaransoft/isp-bss-oss/internal/inventory"
@@ -242,8 +241,8 @@ func (h *Handler) IssueDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inventory.IssuedTotal.Inc()
-	h.refreshLowStockGauge(r.Context())
+	// inventory_cpe_issued_total and the low-stock gauge are kept by
+	// inventory.Metered, which wraps the store for every caller.
 	middleware.Audit(r.Context(), "cpe.issue", serial, map[string]any{"subscriber_id": req.SubscriberID})
 	writeJSON(w, http.StatusOK, issued)
 }
@@ -367,10 +366,6 @@ func (h *Handler) RecordPurchase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stock arriving is the other event that can move a type off the
-	// low-stock list, so the gauge is refreshed here as well as at issuance
-	// — the two write paths are exactly why this needs no polling scanner.
-	h.refreshLowStockGauge(r.Context())
 	middleware.Audit(r.Context(), "cpe.purchase", strconv.Itoa(created.ID), map[string]any{
 		"device_type_id": created.DeviceTypeID, "quantity": created.Quantity,
 	})
@@ -398,25 +393,6 @@ func (h *Handler) ListPurchases(w http.ResponseWriter, r *http.Request) {
 		list = []inventory.Purchase{}
 	}
 	writeJSON(w, http.StatusOK, list)
-}
-
-// refreshLowStockGauge recomputes how many device types sit at or below
-// their reorder point.
-//
-// Called from the two paths that can change stock — issuance and purchase —
-// rather than from a polling scanner: those are the only events that move
-// the number, so checking here is both exact and immediate where a timer
-// would be strictly later and mostly redundant (MDS §4.16).
-func (h *Handler) refreshLowStockGauge(ctx context.Context) {
-	if h.inventory == nil {
-		return
-	}
-	low, err := h.inventory.GetStockLevels(ctx, true)
-	if err != nil {
-		log.Warn().Err(err).Msg("api: could not refresh the low-stock gauge")
-		return
-	}
-	inventory.LowStockTypes.Set(float64(len(low)))
 }
 
 // optionalQueryInt reads a nil-able integer query parameter, rejecting a
