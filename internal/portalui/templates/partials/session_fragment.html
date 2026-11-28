@@ -1,5 +1,6 @@
 {{define "session-inner"}}
-{{if .}}
+{{$card := .}}
+{{with .Session}}
 <h2>Live Usage</h2>
 <div class="grid">
   <div>
@@ -18,6 +19,10 @@
 </div>
 {{else}}
 <h2>Live Usage</h2>
+{{if $card.Unavailable}}
+<div class="empty-state">We could not load your live usage just now. This does not mean you are offline; it will refresh on its own.</div>
+{{else}}
 <div class="empty-state">No active session — you appear to be offline.</div>
+{{end}}
 {{end}}
 {{end}}
