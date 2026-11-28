@@ -3,6 +3,7 @@ package staffui
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -1015,6 +1016,15 @@ func (h *Handler) LEALookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refused before anything is queried or recorded, as the API does: no LEA
+	// data has been accessed yet, so there is nothing to account for.
+	if net.ParseIP(ip) == nil {
+		d.Error = "Enter an IPv4 or IPv6 address."
+		d.Data = ld
+		h.render(w, "lea", d)
+		return
+	}
+	// UTC, because the form is labelled "At (UTC)" and pre-filled in UTC.
 	at, err := time.Parse("2006-01-02T15:04", tsRaw)
 	if err != nil {
 		d.Error = "Enter the time as YYYY-MM-DDTHH:MM."
@@ -1032,7 +1042,10 @@ func (h *Handler) LEALookup(w http.ResponseWriter, r *http.Request) {
 		resultSubID = &result.SubscriberID
 	}
 	// Recorded before the result is shown, and independently of whether the
-	// lookup succeeded.
+	// lookup succeeded. If it cannot be recorded, nothing is shown — hit or
+	// miss — because FR-OBS-003 requires every LEA data access to leave an
+	// audit record, and showing it would be exactly the access that does
+	// not. This used to log the failure and show the result anyway.
 	if err := h.lea.RecordLEAAudit(r.Context(), api.LEAAuditEntry{
 		AccessorIdentity:   s.Username,
 		AccessorRole:       s.Role,
@@ -1041,7 +1054,11 @@ func (h *Handler) LEALookup(w http.ResponseWriter, r *http.Request) {
 		ResultSubscriberID: resultSubID,
 		ResultRowCount:     rowCount,
 	}); err != nil {
-		log.Error().Err(err).Str("accessor", s.Username).Msg("staffui: LEA audit write failed")
+		log.Error().Err(err).Str("accessor", s.Username).Msg("staffui: LEA audit write failed; result withheld")
+		d.Error = "The lookup could not be recorded in the LEA audit log, so its result is withheld. Try again; if it keeps failing, the audit log needs attention before any lookup can be made."
+		d.Data = ld
+		h.render(w, "lea", d)
+		return
 	}
 
 	switch {

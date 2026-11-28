@@ -102,10 +102,22 @@ func (h *Handler) LEALookup(w http.ResponseWriter, r *http.Request) {
 		ResultSubscriberID: resultSubID,
 		ResultRowCount:     rowCount,
 	}); auditErr != nil {
-		// The audit write failing must not block the LEA response — the
-		// requester already has their answer — but it must not be silent
-		// either, since a missing audit row is itself a compliance gap.
-		log.Error().Err(auditErr).Msg("api: LEA audit log write failed")
+		// FR-OBS-003: every LEA data access writes an audit record, so a
+		// lookup that cannot be recorded returns nothing — hit or miss.
+		// Returning it would be exactly the unrecorded access the requirement
+		// forbids.
+		//
+		// This used to log and carry on, reasoning that "the requester
+		// already has their answer". They did not: the audit is written
+		// before the response, so the fail-open path handed out subscriber
+		// identities with no trail. 503, because what failed is a dependency
+		// and the same request can succeed once it is back.
+		log.Error().Err(auditErr).
+			Str("accessor", middleware.SubjectFromContext(r.Context())).
+			Msg("api: LEA audit log write failed; result withheld")
+		writeError(w, http.StatusServiceUnavailable, "ERR_AUDIT_UNAVAILABLE",
+			"the lookup could not be recorded in the LEA audit log, so its result is withheld; try again")
+		return
 	}
 
 	if lookupErr != nil {

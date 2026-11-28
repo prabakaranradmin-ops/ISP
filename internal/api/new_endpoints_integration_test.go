@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -234,11 +235,17 @@ func (s *stubLEA) LookupByPublicIP(context.Context, string, *int, time.Time) (*a
 type stubLEAAudit struct {
 	mu      sync.Mutex
 	entries []api.LEAAuditEntry
+	// err makes the write fail the way the real append-only insert can:
+	// nothing is recorded.
+	err error
 }
 
 func (s *stubLEAAudit) RecordLEAAudit(_ context.Context, entry api.LEAAuditEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
 	s.entries = append(s.entries, entry)
 	return nil
 }
@@ -784,6 +791,47 @@ func TestLEALookup_MissAuditsWithZeroCount(t *testing.T) {
 	}
 	if entries[0].ResultRowCount != 0 {
 		t.Errorf("result_row_count: want 0, got %d", entries[0].ResultRowCount)
+	}
+}
+
+// FR-OBS-003: every LEA data access writes an audit record. When the record
+// cannot be written, the result is withheld — hit or miss — because returning
+// it is exactly the unrecorded access the requirement forbids.
+//
+// The handler used to log the failure and return the subscriber's identity
+// anyway, on the reasoning that "the requester already has their answer".
+// They did not: the audit is written before the response.
+func TestFR_OBS_003_AnUnrecordedLEALookupReturnsNothing(t *testing.T) {
+	for name, result := range map[string]*api.LEAResult{
+		"a hit":  {SubscriberID: 3, Username: "found@isp", Source: "direct_ip"},
+		"a miss": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			audit := &stubLEAAudit{err: errors.New("db: lea_audit_log insert failed")}
+			h := api.NewHandler(api.HandlerDeps{
+				DB: &stubDB{}, KYC: &stubKYC{}, Wallet: billing.NewWalletService(&stubWallet{}),
+				LEA: &stubLEA{result: result}, LEAAudit: audit,
+			})
+			mux := http.NewServeMux()
+			h.RegisterRoutes(mux, itJWTSecret)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/lea/lookup",
+				strings.NewReader(`{"public_ip":"203.0.113.5","timestamp":"2026-01-10T09:00:00Z"}`))
+			req.Header.Set("Authorization", "Bearer "+itRoleToken(t, "noc_engineer", true))
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusOK || rec.Code == http.StatusNotFound {
+				t.Fatalf("the audit write failed and the lookup still answered %d: %s",
+					rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "found@isp") {
+				t.Error("the subscriber's identity left the handler with no audit record")
+			}
+			if !strings.Contains(rec.Body.String(), "could not be recorded") {
+				t.Errorf("the refusal should say why: %s", rec.Body.String())
+			}
+		})
 	}
 }
 
