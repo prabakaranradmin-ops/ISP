@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
 	"github.com/prometheus/client_golang/prometheus"
@@ -72,6 +73,16 @@ var (
 	dunningNoticeEnqueued = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "billing_dunning_notice_enqueued_total",
 		Help: "Dunning notifications enqueued",
+	})
+	// A failure here is somebody suspended for not paying who is still
+	// online, so it is counted where an alert can see it.
+	dunningCutoffQueued = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "billing_dunning_cutoff_queued_total",
+		Help: "Hard-suspension disconnects queued",
+	})
+	dunningCutoffFailed = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "billing_dunning_cutoff_failed_total",
+		Help: "Hard-suspension disconnects that could not be queued",
 	})
 )
 
@@ -144,15 +155,28 @@ func TemplateForDunningState(s DunningState) (string, bool) {
 // DunningScanner advances subscribers through the dunning ladder and enqueues
 // the notification for each stage entered.
 type DunningScanner struct {
-	db     DunningScanQuerier
-	client *jobqueue.Client
-	now    func() time.Time // injectable for tests
+	db       DunningScanQuerier
+	tasks    TaskEnqueuer
+	subCache CacheInvalidator
+	now      func() time.Time // injectable for tests
 }
 
-// NewDunningScanner constructs a DunningScanner.
+// NewDunningScanner constructs a DunningScanner. A nil client leaves the
+// queue unset, rather than storing a typed nil the nil checks would miss.
 func NewDunningScanner(db DunningScanQuerier, client *jobqueue.Client) *DunningScanner {
-	return &DunningScanner{db: db, client: client, now: time.Now}
+	s := &DunningScanner{db: db, now: time.Now}
+	if client != nil {
+		s.tasks = client
+	}
+	return s
 }
+
+// SetTaskEnqueuer replaces the queue the notices and disconnects go to.
+func (s *DunningScanner) SetTaskEnqueuer(t TaskEnqueuer) { s.tasks = t }
+
+// SetSubscriberCache attaches the RADIUS auth cache, so a hard suspension is
+// forgotten there before the line is cut. See cutOff.
+func (s *DunningScanner) SetSubscriberCache(c CacheInvalidator) { s.subCache = c }
 
 // Run scans hourly until ctx is cancelled. It scans once immediately: after a
 // deployment that has never run dunning, waiting an hour to start collecting
@@ -245,8 +269,14 @@ func (s *DunningScanner) advance(ctx context.Context, c DunningCandidate, target
 		return fmt.Errorf("did not reach %s from %s within %d steps", target, c.State, maxSteps)
 	}
 
+	// Only the move into hard suspension, not every pass over someone
+	// already there.
+	if target == DunningHardSuspended && c.State != DunningHardSuspended {
+		s.cutOff(ctx, c)
+	}
+
 	templateID, notify := TemplateForDunningState(target)
-	if !notify || s.client == nil {
+	if !notify || s.tasks == nil {
 		return nil
 	}
 
@@ -274,7 +304,7 @@ func (s *DunningScanner) advance(ctx context.Context, c DunningCandidate, target
 		jobqueue.MaxRetry(3),
 		jobqueue.Retention(24*time.Hour))
 
-	if _, err := s.client.EnqueueContext(ctx, task); err != nil {
+	if _, err := s.tasks.EnqueueContext(ctx, task); err != nil {
 		if errors.Is(err, jobqueue.ErrTaskIDConflict) {
 			return nil // already notified for this stage and billing cycle
 		}
@@ -319,4 +349,57 @@ func stepToward(current, target DunningState) (DunningState, bool) {
 // being silently suppressed by last cycle's task id.
 func DunningNoticeTaskID(subscriberID int, state DunningState, planExpiry time.Time) string {
 	return fmt.Sprintf("dunning-%d-%s-%d", subscriberID, state, planExpiry.Unix())
+}
+
+// DunningCutoffTaskID keys the hard-suspension disconnect per subscriber per
+// billing cycle, like the notice, so an overlapping pass cannot queue two and
+// a later lapse is not suppressed by an earlier one's id.
+func DunningCutoffTaskID(subscriberID int, planExpiry time.Time) string {
+	return fmt.Sprintf("dunning-cutoff-%d-%d", subscriberID, planExpiry.Unix())
+}
+
+// cutOff ends a newly hard-suspended subscriber's live session.
+//
+// The dunning screen says hard suspension means "Disconnected", and RADIUS
+// refuses the next login, but until 2026-11-28 nothing ended the login they
+// already had: the status changed, the notice went, and a session that was
+// up stayed up for as long as the line held — on always-on PPPoE, days or
+// weeks of service for somebody suspended for not paying.
+//
+// The cache goes first. A disconnected router reconnects within seconds and
+// radiusd answers from an auth cache that holds a subscriber for a minute;
+// without the invalidation the reconnect is accepted on the old status and
+// the session is simply back.
+//
+// The disconnect names the subscriber, not a session: the PoD handler looks
+// up whatever session is live when it runs and skips without retrying when
+// there is none. Failures are logged and counted, never returned — the
+// suspension has committed and the notice should still go.
+func (s *DunningScanner) cutOff(ctx context.Context, c DunningCandidate) {
+	if s.subCache != nil {
+		if err := s.subCache.InvalidateSubscriber(ctx, c.Username); err != nil {
+			log.Error().Err(err).Int("subscriber_id", c.SubscriberID).
+				Msg("billing: auth-cache invalidation failed on hard suspension")
+		}
+	}
+	if s.tasks == nil {
+		return
+	}
+	payload, err := json.Marshal(fup.PoDPayload{SubscriberID: c.SubscriberID})
+	if err != nil {
+		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).Msg("billing: disconnect payload")
+		return
+	}
+	task := jobqueue.NewTask(fup.TaskTypePoD, payload,
+		jobqueue.Queue(fup.QueueNetCommands),
+		jobqueue.TaskID(DunningCutoffTaskID(c.SubscriberID, c.PlanExpiry)),
+		jobqueue.MaxRetry(5),
+		jobqueue.Retention(24*time.Hour))
+	if _, err := s.tasks.EnqueueContext(ctx, task); err != nil && !errors.Is(err, jobqueue.ErrTaskIDConflict) {
+		dunningCutoffFailed.Inc()
+		log.Error().Err(err).Int("subscriber_id", c.SubscriberID).
+			Msg("billing: could not queue the hard-suspension disconnect; the live session stays up")
+		return
+	}
+	dunningCutoffQueued.Inc()
 }

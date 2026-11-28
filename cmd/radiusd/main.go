@@ -410,6 +410,10 @@ func run(ctx context.Context) error {
 	// tested but with no caller, so until this was wired nobody was reminded to
 	// pay and nobody was suspended for not paying.
 	dunningScanner := billing.NewDunningScanner(database.Billing(), taskClient)
+	// Hard suspension disconnects the live session, and the auth cache has
+	// to forget the subscriber first or the reconnect is accepted on the old
+	// status. Same process, same cache RADIUS answers from.
+	dunningScanner.SetSubscriberCache(subscriberCache)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
