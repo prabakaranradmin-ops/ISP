@@ -3,6 +3,7 @@ package fup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
@@ -105,10 +106,13 @@ func (h *PoDHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 		}
 	}
 
-	nasIP, sessionID := p.NasIP, p.SessionID
+	sessions := []NASSession{{NasIP: p.NasIP, SessionID: p.SessionID}}
 	if !p.direct() {
 		var err error
-		nasIP, sessionID, _, _, err = h.db.GetSubscriberNASSession(ctx, p.SubscriberID)
+		// Every session the subscriber holds, not only the newest: a
+		// suspension that cut the PPPoE line and left a hotspot phone online
+		// would have suspended nothing that mattered. See subscriberSessions.
+		sessions, _, _, err = subscriberSessions(ctx, h.db, p.SubscriberID)
 		if err != nil {
 			// No live session means there is nothing left to disconnect.
 			// Retrying cannot change that, so the task should not be retried.
@@ -116,15 +120,30 @@ func (h *PoDHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 		}
 	}
 
+	// A failure on one session does not stop the others. If any failed, the
+	// task is retried; by then the sessions that did end have usually sent
+	// their Accounting-Stop and drop out of the list, and one that has not
+	// is answered "no such session", which counts as done.
+	var errs []error
+	for _, s := range sessions {
+		if err := h.sendTo(s); err != nil && !errors.Is(err, ErrSessionNotFound) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// sendTo disconnects one session.
+func (h *PoDHandler) sendTo(s NASSession) error {
 	secret, port := h.secret, h.port
 	if port == 0 {
 		port = DefaultCoAPort
 	}
 	if h.nasResolver != nil {
-		device := h.nasResolver.Resolve(nasIP)
+		device := h.nasResolver.Resolve(s.NasIP)
 		secret, port = device.Secret, device.PoDPort
 	}
-	return SendReliablePoD(nasIP, port, sessionID, secret)
+	return SendReliablePoD(s.NasIP, port, s.SessionID, secret)
 }
 
 // NewDirectPoDTask builds a disconnect task for a session named outright,

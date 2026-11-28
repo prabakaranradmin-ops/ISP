@@ -3,6 +3,7 @@ package fup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
 	"layeh.com/radius"
+	"layeh.com/radius/rfc3576"
 
 	"github.com/maaransoft/isp-bss-oss/internal/nas"
 )
@@ -39,6 +41,67 @@ type CoAPayload struct {
 // CoAQuerier retrieves subscriber state needed to build the CoA packet.
 type CoAQuerier interface {
 	GetSubscriberNASSession(ctx context.Context, subscriberID int) (nasIP, sessionID, rateLimit string, planID int, err error)
+}
+
+// NASSession is one live RADIUS session: where it is and what the NAS calls
+// it.
+type NASSession struct {
+	NasIP     string
+	SessionID string
+}
+
+// SessionLister lists every session a subscriber has open, newest first.
+// Satisfied by *db.FUPStore. Optional on a CoAQuerier: one that does not
+// list reaches the newest session only, as before.
+type SessionLister interface {
+	ListSubscriberNASSessions(ctx context.Context, subscriberID int) ([]NASSession, error)
+}
+
+// maxSessionsPerControl bounds how many sessions one CoA or disconnect task
+// addresses. A subscriber may legitimately hold several: a PPPoE line at
+// home and phones registered for MAC Auth Bypass on the hotspot. More than
+// this is open rows whose Accounting-Stop never arrived, and sending to each
+// would spend the task's lease on timeouts.
+const maxSessionsPerControl = 16
+
+// ErrSessionNotFound reports a NAS answering that it has no such session
+// (RFC 5176 Error-Cause 503, Session-Context-Not-Found). The session has
+// already ended, so retrying cannot help, and for a disconnect it is the
+// outcome that was wanted.
+var ErrSessionNotFound = errors.New("fup: the NAS has no such session")
+
+// subscriberSessions resolves a subscriber's live sessions, the rate a CoA
+// should carry and their plan, fresh at execution time.
+//
+// It used to be one session: GetSubscriberNASSession takes the newest open
+// one. A subscriber holding two, which nothing prevents, kept the other
+// through every enforcement action. A FUP throttle slowed one connection and
+// left the rest at full speed, and a hard suspension cut the newest session
+// and left the others online. Every session is addressed now.
+func subscriberSessions(ctx context.Context, db CoAQuerier, subscriberID int) ([]NASSession, string, int, error) {
+	nasIP, sessionID, rateLimit, planID, err := db.GetSubscriberNASSession(ctx, subscriberID)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	newest := []NASSession{{NasIP: nasIP, SessionID: sessionID}}
+	lister, ok := db.(SessionLister)
+	if !ok {
+		return newest, rateLimit, planID, nil
+	}
+	all, err := lister.ListSubscriberNASSessions(ctx, subscriberID)
+	if err != nil || len(all) == 0 {
+		if err != nil {
+			log.Warn().Err(err).Int("subscriber_id", subscriberID).
+				Msg("fup: could not list every session; addressing the newest only")
+		}
+		return newest, rateLimit, planID, nil
+	}
+	if len(all) > maxSessionsPerControl {
+		log.Warn().Int("subscriber_id", subscriberID).Int("open", len(all)).
+			Msg("fup: more open sessions than one task addresses; the oldest are probably stale")
+		all = all[:maxSessionsPerControl]
+	}
+	return all, rateLimit, planID, nil
 }
 
 // LiveSessionRateWriter updates the cached rate a live session's portal
@@ -95,16 +158,42 @@ func (h *CoAHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 		return fmt.Errorf("coa: unmarshal payload: %w", err)
 	}
 
-	nasIP, sessionID, rateLimit, planID, err := h.db.GetSubscriberNASSession(ctx, p.SubscriberID)
+	sessions, rateLimit, planID, err := subscriberSessions(ctx, h.db, p.SubscriberID)
 	if err != nil {
 		return fmt.Errorf("coa: get NAS session for sub %d: %w", p.SubscriberID, err)
 	}
 
+	// Every session the subscriber holds gets the rate, each on its own NAS's
+	// terms. A failure on one does not stop the others; the task is retried
+	// if any failed, and re-sending a rate already applied changes nothing.
+	var errs []error
+	gone := 0
+	for _, s := range sessions {
+		err := h.sendTo(ctx, s, rateLimit, planID, p.SubscriberID)
+		switch {
+		case errors.Is(err, ErrSessionNotFound):
+			gone++ // ended since the lookup; nothing to re-rate
+		case err != nil:
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	if gone == len(sessions) {
+		// Every session had already ended: retrying cannot change that.
+		return fmt.Errorf("coa: sub %d: %w: %w", p.SubscriberID, ErrSessionNotFound, jobqueue.ErrSkipRetry)
+	}
+	return nil
+}
+
+// sendTo re-rates one session.
+func (h *CoAHandler) sendTo(ctx context.Context, s NASSession, rateLimit string, planID, subscriberID int) error {
 	secret, port := h.secret, h.effectivePort()
 	vendor := nas.VendorMikrotik
 	profileName := ""
 	if h.nasResolver != nil {
-		device := h.nasResolver.Resolve(nasIP)
+		device := h.nasResolver.Resolve(s.NasIP)
 		secret, port, vendor = device.Secret, device.CoAPort, device.Vendor
 		profileName = h.nasResolver.ResolveProfile(planID, vendor)
 	}
@@ -115,10 +204,10 @@ func (h *CoAHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 		// enforcement action wearing a success — retrying (queue backoff,
 		// eventual dead-letter + alert) is the right failure mode, not a
 		// best-effort send.
-		return fmt.Errorf("coa: build vendor attributes for sub %d (%s): %w", p.SubscriberID, vendor, err)
+		return fmt.Errorf("coa: build vendor attributes for sub %d (%s): %w", subscriberID, vendor, err)
 	}
 
-	if err := SendReliableCoA(nasIP, port, sessionID, attrs, secret); err != nil {
+	if err := SendReliableCoA(s.NasIP, port, s.SessionID, attrs, secret); err != nil {
 		return err
 	}
 
@@ -127,8 +216,8 @@ func (h *CoAHandler) ProcessTask(ctx context.Context, t *jobqueue.Task) error {
 	// above. A failure here must not turn a successful CoA into a retried
 	// task — that would re-send an already-applied rate change.
 	if h.liveSessions != nil {
-		if err := h.liveSessions.UpdateSpeedProfile(ctx, sessionID, rateLimit); err != nil {
-			log.Warn().Err(err).Str("session_id", sessionID).Msg("coa: live session rate refresh failed")
+		if err := h.liveSessions.UpdateSpeedProfile(ctx, s.SessionID, rateLimit); err != nil {
+			log.Warn().Err(err).Str("session_id", s.SessionID).Msg("coa: live session rate refresh failed")
 		}
 	}
 	return nil
@@ -191,6 +280,14 @@ func sendReliableControl(nasIP string, port int, secret []byte, pkt *radius.Pack
 	}
 
 	if response.Code != ackCode {
+		// A NAK saying the session does not exist is not a failure to retry:
+		// the session has ended, and no number of retries brings it back.
+		// Told apart so a disconnect sent to a session that already dropped
+		// is not retried into the dead-letter queue.
+		if rfc3576.ErrorCause_Get(response) == rfc3576.ErrorCause_Value_SessionContextNotFound {
+			result.WithLabelValues("not_found").Inc()
+			return fmt.Errorf("radius control: %s: %w", nasIP, ErrSessionNotFound)
+		}
 		result.WithLabelValues("nak").Inc()
 		return fmt.Errorf("radius control: NAK (code %v) received from %s (will retry)", response.Code, nasIP)
 	}

@@ -238,6 +238,36 @@ func (s *FUPStore) GetSubscriberNASSession(ctx context.Context, subscriberID int
 	return nasIP, sessionID, rateLimit, planID, nil
 }
 
+// The CoA and disconnect handlers find the lister by type assertion and fall
+// back to the newest session without it, so a signature drift here would
+// not fail anything at run time. It fails the build instead.
+var _ fup.SessionLister = (*FUPStore)(nil)
+
+// ListSubscriberNASSessions returns every session the subscriber has open,
+// newest first, so a CoA or a disconnect reaches all of them
+// (fup.SessionLister). GetSubscriberNASSession above stays the source of
+// the rate and the plan; this only says where the sessions are.
+func (s *FUPStore) ListSubscriberNASSessions(ctx context.Context, subscriberID int) ([]fup.NASSession, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT host(nas_ip_address), session_id
+		  FROM subscriber_session_history
+		 WHERE subscriber_id = $1 AND stop_time IS NULL
+		 ORDER BY start_time DESC`, subscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list sessions for subscriber %d: %w", subscriberID, err)
+	}
+	defer rows.Close()
+	var out []fup.NASSession
+	for rows.Next() {
+		var sess fup.NASSession
+		if err := rows.Scan(&sess.NasIP, &sess.SessionID); err != nil {
+			return nil, fmt.Errorf("db: scan session for subscriber %d: %w", subscriberID, err)
+		}
+		out = append(out, sess)
+	}
+	return out, rows.Err()
+}
+
 // StartSession records a new RADIUS session at Accounting-Start.
 //
 // Idempotent on session_id: a NAS retransmits an Accounting-Start it never saw
