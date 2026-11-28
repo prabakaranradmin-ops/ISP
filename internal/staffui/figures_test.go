@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
+	"github.com/maaransoft/isp-bss-oss/internal/portal"
 	"github.com/maaransoft/isp-bss-oss/internal/revenue"
 	"github.com/shopspring/decimal"
 )
@@ -315,6 +316,121 @@ func TestFR_BIL_001_ABillingFigureThatFailedIsNotShownAsZero(t *testing.T) {
 	}
 	if !strings.Contains(body, "Could not load the ledger") {
 		t.Errorf("the failure is not reported: %s", firstLines(body))
+	}
+}
+
+// ── The subscriber page ─────────────────────────────────────────────────────
+//
+// The CSR's main screen, and the same defect five times: a subscriber lookup
+// that failed answered "No subscriber with that id" (404), a session read
+// that failed said "Offline — no active session", and a failed balance,
+// ledger or ticket read showed ₹0.00, "No ledger entries", "No tickets".
+// The session one is the worst: whether the line is up is the whole question
+// when somebody calls to say the internet is down, and a failed Redis read
+// sent the CSR troubleshooting a line that may be fine.
+
+type sessionFigure struct {
+	sess *portal.ActiveSession
+	err  error
+}
+
+func (f *sessionFigure) GetActiveSession(context.Context, int) (*portal.ActiveSession, error) {
+	return f.sess, f.err
+}
+
+type ticketFigures struct {
+	list []portal.TicketEntry
+	err  error
+}
+
+func (f *ticketFigures) ListTickets(context.Context, int) ([]portal.TicketEntry, error) {
+	return f.list, f.err
+}
+func (f *ticketFigures) UpdateTicketAdmin(context.Context, int, *string, *int, *string) (*api.TicketRecord, error) {
+	return nil, nil
+}
+
+func subscriberPage(subs *fakeSubscribers, sessions *sessionFigure, wallet *walletFigures, tickets *ticketFigures) (int, string) {
+	h := &Handler{subscribers: subs}
+	if sessions != nil {
+		h.sessions = sessions
+	}
+	if wallet != nil {
+		h.billing = wallet
+	}
+	if tickets != nil {
+		h.tickets = tickets
+	}
+	r := httptest.NewRequest(http.MethodGet, "/staff/subscribers/12", nil)
+	r.SetPathValue("id", "12")
+	r = r.WithContext(context.WithValue(r.Context(), sessionKey, owner()))
+	w := httptest.NewRecorder()
+	h.SubscriberDetail(w, r)
+	return w.Code, visibleText(w.Body.String())
+}
+
+func ravi() *fakeSubscribers {
+	return &fakeSubscribers{rec: &api.SubscriberRecord{ID: 12, Username: "ravi", Status: "active", PlanID: 1}}
+}
+
+func TestASubscriberLookupThatFailedIsNotNoSuchSubscriber(t *testing.T) {
+	code, body := subscriberPage(&fakeSubscribers{err: errFigure}, nil, nil, nil)
+	if code == http.StatusNotFound || strings.Contains(body, "No subscriber with that id") {
+		t.Errorf("a failed lookup was reported as a missing subscriber: %d %s", code, firstLines(body))
+	}
+	if code != http.StatusInternalServerError {
+		t.Errorf("got %d, want 500", code)
+	}
+	// And a genuinely missing one still is.
+	if code, _ := subscriberPage(&fakeSubscribers{}, nil, nil, nil); code != http.StatusNotFound {
+		t.Errorf("a missing subscriber: %d, want 404", code)
+	}
+}
+
+func TestASessionReadThatFailedIsNotOffline(t *testing.T) {
+	_, body := subscriberPage(ravi(), &sessionFigure{err: errFigure}, nil, nil)
+	if strings.Contains(body, "Offline") {
+		t.Error("a session read that failed was shown as offline")
+	}
+	if !strings.Contains(body, "Connection status unavailable") {
+		t.Errorf("want the status marked unavailable: %s", body)
+	}
+
+	// Control: no session and no error is offline.
+	if _, body := subscriberPage(ravi(), &sessionFigure{}, nil, nil); !strings.Contains(body, "Offline") {
+		t.Error("a subscriber with no session should read as offline")
+	}
+	if _, body := subscriberPage(ravi(), &sessionFigure{sess: &portal.ActiveSession{AssignedIP: "100.64.0.14"}}, nil, nil); !strings.Contains(body, "online") || !strings.Contains(body, "100.64.0.14") {
+		t.Error("a live session should read as online with its address")
+	}
+	// Unconfigured is not offline either.
+	if _, body := subscriberPage(ravi(), nil, nil, nil); strings.Contains(body, "Offline") {
+		t.Error("with no session store wired, the page claimed the subscriber is offline")
+	}
+}
+
+func TestSubscriberMoneyAndTicketsThatFailedAreNotEmpty(t *testing.T) {
+	wallet := &walletFigures{balanceErr: errFigure, listErr: errFigure}
+	tickets := &ticketFigures{err: errFigure}
+	_, body := subscriberPage(ravi(), &sessionFigure{}, wallet, tickets)
+
+	for _, bad := range []string{"balance ₹0.00", "No ledger entries", "No tickets"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("a failed read was shown as %q", bad)
+		}
+	}
+	for _, want := range []string{"balance unavailable", "Could not load the ledger", "Could not load tickets"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in: %s", want, body)
+		}
+	}
+
+	// Control: empty reads that succeeded still say so.
+	_, body = subscriberPage(ravi(), &sessionFigure{}, &walletFigures{balance: d("0")}, &ticketFigures{})
+	for _, want := range []string{"balance ₹0.00", "No ledger entries", "No tickets"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("an empty read that succeeded lost %q", want)
+		}
 	}
 }
 

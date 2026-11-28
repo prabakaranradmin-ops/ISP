@@ -36,7 +36,7 @@
           <dt>Speed</dt><dd>{{if .FUPThrottled}}<span class="pill warn">throttled</span>{{else}}full speed{{end}}</dd>
           <dt>Since</dt><dd>{{datetime .StartedAt}}</dd>
         </dl>
-        {{else}}<p class="empty">Offline — no active session.</p>{{end}}
+        {{else}}{{if $d.SessionUnavailable}}<p class="empty">Connection status unavailable — the session store could not be read, so this does not mean offline.</p>{{else}}<p class="empty">Offline — no active session.</p>{{end}}{{end}}
       </div>
 
       {{with $d.Health}}
@@ -54,14 +54,14 @@
 
   {{if $d.ShowBilling}}
   <section data-tab-panel="billing">
-    <div class="card"><h3>Recent ledger — balance ₹{{money $d.Balance}}</h3>
+    <div class="card"><h3>Recent ledger — balance {{if $d.BalanceUnavailable}}unavailable{{else}}₹{{money $d.Balance}}{{end}}</h3>
       <table>
         <thead><tr><th>When</th><th>Type</th><th class="right">Amount</th><th class="right">Balance after</th></tr></thead>
         <tbody>
         {{range $d.Ledger}}
           <tr><td>{{datetime .CreatedAt}}</td><td>{{.EntryType}}</td>
               <td class="right num">₹{{.Amount}}</td><td class="right num">₹{{.BalanceAfter}}</td></tr>
-        {{else}}<tr><td colspan="4" class="empty">No ledger entries.</td></tr>{{end}}
+        {{else}}<tr><td colspan="4" class="empty">{{if $d.LedgerUnavailable}}Could not load the ledger.{{else}}No ledger entries.{{end}}</td></tr>{{end}}
         </tbody>
       </table>
     </div>
@@ -368,7 +368,7 @@
         {{range $d.Tickets}}
           <tr><td>{{.Category}}</td><td>{{.Description}}</td>
               <td><span class="pill {{badge .Status}}">{{.Status}}</span></td><td>{{datetime .CreatedAt}}</td></tr>
-        {{else}}<tr><td colspan="4" class="empty">No tickets.</td></tr>{{end}}
+        {{else}}<tr><td colspan="4" class="empty">{{if $d.TicketsUnavailable}}Could not load tickets.{{else}}No tickets.{{end}}</td></tr>{{end}}
         </tbody>
       </table>
     </div>

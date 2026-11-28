@@ -287,6 +287,13 @@ type subscriberDetailData struct {
 	Balance    decimal.Decimal
 	Ledger     []api.LedgerEntry
 	Tickets    []portal.TicketEntry
+	// Set when the read failed (or, for the session, when there is no
+	// session store), so the page says so instead of "Offline", ₹0.00 or an
+	// empty list.
+	SessionUnavailable bool
+	BalanceUnavailable bool
+	LedgerUnavailable  bool
+	TicketsUnavailable bool
 	// ShowBilling and ShowTickets gate the panels by role, so a NOC engineer
 	// does not see a wallet ledger the API would refuse them. ShowSpeedOverride
 	// is narrower still — owner only, since it changes what a customer is
@@ -432,7 +439,12 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 	if h.subscribers != nil {
 		sub, err := h.subscribers.GetSubscriberByID(r.Context(), id)
 		if err != nil {
+			// Not "no such subscriber": a CSR reading that to a caller tells
+			// them they are not on the books because a query failed.
 			log.Error().Err(err).Int("id", id).Msg("staffui: subscriber lookup failed")
+			h.renderError(w, r, s, http.StatusInternalServerError,
+				"Could not load that subscriber. Try again in a moment.")
+			return
 		}
 		if sub == nil {
 			h.renderError(w, r, s, http.StatusNotFound, "No subscriber with that id.")
@@ -465,24 +477,41 @@ func (h *Handler) renderSubscriberDetail(w http.ResponseWriter, r *http.Request,
 	// Live session comes from Redis, separately from the database record: a
 	// subscriber can be active on paper and offline in fact, and the difference
 	// is the whole question when someone calls to say the internet is down.
+	//
+	// So a read that failed, or no session store at all, is "unavailable",
+	// never "offline". It used to be offline, which sent a CSR troubleshooting
+	// a line that may have been up the whole time.
+	detail.SessionUnavailable = true
 	if h.sessions != nil {
 		if sess, err := h.sessions.GetActiveSession(r.Context(), id); err == nil {
 			detail.Session = sess
+			detail.SessionUnavailable = false
 		} else {
 			log.Warn().Err(err).Int("id", id).Msg("staffui: live session unavailable")
 		}
 	}
+	// The same for money and tickets: a failed read is marked, not shown as
+	// ₹0.00 or an empty list.
 	if detail.ShowBilling && h.billing != nil {
 		if bal, err := h.billing.GetSubscriberBalance(r.Context(), id); err == nil {
 			detail.Balance = bal
+		} else {
+			log.Warn().Err(err).Int("id", id).Msg("staffui: balance unavailable")
+			detail.BalanceUnavailable = true
 		}
 		if entries, err := h.billing.ListLedgerEntries(r.Context(), id, nil, nil, 10); err == nil {
 			detail.Ledger = entries
+		} else {
+			log.Warn().Err(err).Int("id", id).Msg("staffui: ledger unavailable")
+			detail.LedgerUnavailable = true
 		}
 	}
 	if detail.ShowTickets && h.tickets != nil {
 		if ts, err := h.tickets.ListTickets(r.Context(), id); err == nil {
 			detail.Tickets = ts
+		} else {
+			log.Warn().Err(err).Int("id", id).Msg("staffui: tickets unavailable")
+			detail.TicketsUnavailable = true
 		}
 	}
 	// The static address this subscriber holds, and its history
