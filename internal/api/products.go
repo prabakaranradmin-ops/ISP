@@ -47,6 +47,7 @@ func (h *Handler) CreateProduct(ctx context.Context, in billing.Product) (*billi
 	}
 	middleware.Audit(ctx, "product.created", p.Code, map[string]any{
 		"name": p.Name, "kind": p.Kind, "price": p.Price.StringFixed(2), "hsn_sac": p.HSNSAC,
+		"adds_connections": p.AddsConnections,
 	})
 	return p, nil
 }
@@ -180,13 +181,16 @@ type productJSON struct {
 	CreatedAt   string `json:"created_at"`
 	UpdatedBy   string `json:"updated_by,omitempty"`
 	UpdatedAt   string `json:"updated_at,omitempty"`
+	// AddsConnections: each unit attached lets the subscriber hold one more
+	// simultaneous login.
+	AddsConnections bool `json:"adds_connections"`
 }
 
 func toProductJSON(p billing.Product) productJSON {
 	out := productJSON{
 		ID: p.ID, Code: p.Code, Name: p.Name, Description: p.Description, Kind: p.Kind,
 		Price: p.Price.StringFixed(2), HSNSAC: p.HSNSAC, Active: p.Active,
-		Attached: p.Attached, CreatedBy: p.CreatedBy,
+		Attached: p.Attached, CreatedBy: p.CreatedBy, AddsConnections: p.AddsConnections,
 		CreatedAt: p.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedBy: p.UpdatedBy,
 	}
@@ -262,6 +266,8 @@ type productBody struct {
 	Kind        string `json:"kind"`
 	Price       string `json:"price"`
 	HSNSAC      string `json:"hsn_sac"`
+	// AddsConnections is honoured at creation only; see UpdateProductHTTP.
+	AddsConnections bool `json:"adds_connections"`
 }
 
 // toProduct parses a request body into a Product. Validation proper is
@@ -273,7 +279,7 @@ func (b productBody) toProduct() (billing.Product, error) {
 	}
 	return billing.Product{
 		Code: b.Code, Name: b.Name, Description: b.Description,
-		Kind: b.Kind, Price: price, HSNSAC: b.HSNSAC,
+		Kind: b.Kind, Price: price, HSNSAC: b.HSNSAC, AddsConnections: b.AddsConnections,
 	}, nil
 }
 
@@ -317,15 +323,16 @@ func (h *Handler) UpdateProductHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.ID = id
-	// The code and kind are fixed after creation (see db.UpdateProduct), so
-	// whatever the body says about them is ignored rather than silently
-	// half-applied. Normalise still needs a valid-looking pair.
+	// The code, kind and whether it adds connections are fixed after
+	// creation (see db.UpdateProduct), so whatever the body says about them
+	// is ignored rather than silently half-applied. Normalise still needs a
+	// valid-looking set.
 	existing, err := h.GetProduct(r.Context(), id)
 	if err != nil {
 		writeProductError(w, err)
 		return
 	}
-	in.Code, in.Kind = existing.Code, existing.Kind
+	in.Code, in.Kind, in.AddsConnections = existing.Code, existing.Kind, existing.AddsConnections
 
 	p, err := h.UpdateProduct(r.Context(), in)
 	if err != nil {

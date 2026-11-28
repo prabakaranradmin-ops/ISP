@@ -33,6 +33,32 @@ var allKeys = []string{
 	"ONESIGNAL_APP_ID", "ONESIGNAL_API_KEY", "GST_HOME_STATE",
 	"GST_SUPPLIER_GSTIN", "GST_SUPPLIER_NAME", "CHROMIUM_PATH",
 	"PAGERDUTY_ROUTING_KEY", "WALLED_GARDEN_ADDR", "WALLED_GARDEN_REDIRECT_URL",
+	"CONNECTION_LIMIT_MODE",
+}
+
+// The connection limit starts in report mode, so nobody is cut off by a
+// deployment, and a value that is neither mode is refused at startup rather
+// than read as report: a typo for "enforce" must not leave an operator
+// believing the limit is in force.
+func TestTheConnectionLimitStartsInReportModeAndRefusesTypos(t *testing.T) {
+	apiEnv(t)
+	cfg, err := Load("api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ConnectionLimitMode != "report" {
+		t.Errorf("default mode %q, want report", cfg.ConnectionLimitMode)
+	}
+	t.Setenv("CONNECTION_LIMIT_MODE", " Enforce ")
+	if cfg, err = Load("api"); err != nil || cfg.ConnectionLimitMode != "enforce" {
+		t.Errorf("Enforce with spaces: %q %v", cfg.ConnectionLimitMode, err)
+	}
+	for _, bad := range []string{"enforced", "on", "true", "strict"} {
+		t.Setenv("CONNECTION_LIMIT_MODE", bad)
+		if _, err := Load("api"); err == nil || !strings.Contains(err.Error(), "CONNECTION_LIMIT_MODE must be report or enforce") {
+			t.Errorf("%q: err = %v", bad, err)
+		}
+	}
 }
 
 // The walled-garden redirector is off unless asked for, and asking for it

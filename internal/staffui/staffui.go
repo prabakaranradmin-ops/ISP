@@ -254,6 +254,11 @@ type HandlerDeps struct {
 	// Dunning sets grace extensions and the dunning schedule
 	// (FR-BIL-016/017). The API handler.
 	Dunning DunningManager
+	// ConnectionLimits lists subscribers over their connection limit for the
+	// Sessions screen's report; ConnectionLimitMode is CONNECTION_LIMIT_MODE,
+	// so the report says whether those logins are being refused yet.
+	ConnectionLimits    ConnectionLimitReader
+	ConnectionLimitMode string
 	// WalledGarden is how this server answers soft-suspended subscribers'
 	// redirected web traffic (FR-BIL-004), shown on the dunning screen so
 	// "browsing redirected to the payment page" can be checked rather than
@@ -348,6 +353,8 @@ type Handler struct {
 	payments           PaymentManager
 	dunning            DunningManager
 	walledGarden       WalledGardenInfo
+	connLimits         ConnectionLimitReader
+	connLimitMode      string
 	proformas          ProformaManager
 	products           ProductManager
 	planChanges        PlanChangeManager
@@ -416,6 +423,8 @@ func NewHandler(deps HandlerDeps) *Handler {
 		payments:           deps.Payments,
 		dunning:            deps.Dunning,
 		walledGarden:       deps.WalledGarden,
+		connLimits:         deps.ConnectionLimits,
+		connLimitMode:      deps.ConnectionLimitMode,
 		proformas:          deps.Proformas,
 		products:           deps.Products,
 		planChanges:        deps.PlanChanges,

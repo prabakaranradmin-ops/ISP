@@ -130,6 +130,12 @@ type Product struct {
 	// Attached is how many subscribers currently hold this product, when
 	// the query asked for it. Tells an operator what deactivating costs.
 	Attached int
+	// AddsConnections marks an extra-connection product: each unit attached
+	// to a subscriber, while the charge is active, lets them hold one more
+	// simultaneous login on top of the one every plan includes (migration
+	// 077). Recurring only, and fixed at creation like the kind: changing it
+	// would change what every existing attachment grants.
+	AddsConnections bool
 }
 
 // Recurring reports whether this product is billed every cycle.
@@ -177,9 +183,16 @@ func (p Product) Normalise() (Product, error) {
 		return p, fmt.Errorf("%w: give the HSN or SAC code this charge is taxed under, for example %s for internet services", ErrProductInvalid, PlanHSNSAC)
 	case !hsnSACRe.MatchString(p.HSNSAC):
 		return p, fmt.Errorf("%w: an HSN or SAC code is 4 to 8 digits", ErrProductInvalid)
+	case p.AddsConnections && !p.Recurring():
+		return p, fmt.Errorf("%w: a product that adds a connection has to be recurring: "+
+			"a connection is held month by month, and a one-time charge would sell one for good", ErrProductInvalid)
 	}
 	return p, nil
 }
+
+// IncludedConnections is how many simultaneous logins every plan includes
+// before any extra-connection product is attached.
+const IncludedConnections = 1
 
 // SubscriberProduct is one product attached to one subscriber.
 type SubscriberProduct struct {

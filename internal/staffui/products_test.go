@@ -217,6 +217,29 @@ func TestFR_BIL_022_ProductCatalogueScreenGates(t *testing.T) {
 	})
 }
 
+// The create form's "Adds a connection" box reaches the store, and an
+// edit cannot change it: the form for editing offers no such box, and the
+// stored value is what is kept (FR-AAA-002).
+func TestFR_BIL_022_TheAddsAConnectionBox(t *testing.T) {
+	f := newFakeProducts()
+	h := &Handler{products: f}
+	form := url.Values{"code": {"extra-conn"}, "name": {"Extra connection"},
+		"kind": {"recurring"}, "price": {"199.00"}, "hsn_sac": {"998432"}, "adds_connections": {"1"}}
+	if w := servePR(h, "billing_admin", "POST", "/staff/products", form, h.CreateProductForm); w.Code != 303 {
+		t.Fatalf("got %d", w.Code)
+	}
+	if len(f.created) != 1 || !f.created[0].AddsConnections {
+		t.Fatalf("store got %+v", f.created)
+	}
+	// Posted to an edit, the box is ignored; the fake's stored product (7)
+	// does not add connections, so the update must not either.
+	form = url.Values{"name": {"Renamed"}, "price": {"150.00"}, "hsn_sac": {"8517"}, "adds_connections": {"1"}}
+	servePR(h, "billing_admin", "POST", "/staff/products/7", form, h.UpdateProductForm)
+	if len(f.updated) != 1 || f.updated[0].AddsConnections {
+		t.Errorf("an edit changed what the product grants: %+v", f.updated)
+	}
+}
+
 func TestFR_BIL_022_ProductFormsReachTheStore(t *testing.T) {
 	t.Run("creating a product, attributed and upper-cased", func(t *testing.T) {
 		f := newFakeProducts()

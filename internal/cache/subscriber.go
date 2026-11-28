@@ -70,6 +70,11 @@ type cachedSubscriber struct {
 	// cache hit carrying only the ceiling, and would silently lose the
 	// burst they are paying for until the entry expired.
 	Shaping *nas.Shaping
+	// ConnectionLimit mirrors radius.Subscriber.ConnectionLimit, for the
+	// same reason: without it a cache hit reads as zero, which the daemon
+	// treats as one, and a subscriber who bought extra connections would be
+	// refused their second login whenever they reconnected within the TTL.
+	ConnectionLimit int
 	// NotFound records a negative result, so a flood of requests for a username
 	// that does not exist cannot turn into a flood of database queries.
 	NotFound bool
@@ -128,6 +133,7 @@ func (c *SubscriberCache) GetSubscriberByUsername(ctx context.Context, username 
 			NTHash:                 entry.NTHash,
 			StaticIP:               entry.StaticIP,
 			Shaping:                entry.Shaping,
+			ConnectionLimit:        entry.ConnectionLimit,
 		}, nil
 	}
 	subscriberCacheMisses.Inc()
@@ -161,6 +167,7 @@ func (c *SubscriberCache) cacheResult(key string, sub *radius.Subscriber, userna
 			NTHash:                 sub.NTHash,
 			StaticIP:               sub.StaticIP,
 			Shaping:                sub.Shaping,
+			ConnectionLimit:        sub.ConnectionLimit,
 		}
 	}
 

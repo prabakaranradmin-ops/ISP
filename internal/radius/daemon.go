@@ -221,6 +221,11 @@ type Subscriber struct {
 	// that address instead of one from its own pool. Empty for the
 	// subscribers who have none, which is almost all of them.
 	StaticIP string
+	// ConnectionLimit is how many simultaneous password logins the
+	// subscriber pays for: the one every plan includes plus their active
+	// extra-connection products (see connlimit.go). Zero means unknown and
+	// is treated as one.
+	ConnectionLimit int
 }
 
 // radiusJob bundles the ResponseWriter and Request so both can pass through the worker queue.
@@ -245,6 +250,10 @@ type RadiusDaemon struct {
 	acctDB        AccountingStore
 	grantUsageDB  GrantUsageDB
 	liveSessions  LiveSessionWriter
+	// connLimitMode and connCounter enforce the connection limit
+	// (connlimit.go). Report mode, or no counter, refuses nobody.
+	connLimitMode string
+	connCounter   ConnectionCounter
 	// authLog buffers authentication attempts for FR-NET-004. Optional:
 	// nil records nothing and authenticates exactly as before.
 	authLog *AuthLogger

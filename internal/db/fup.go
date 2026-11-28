@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
+	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	"github.com/maaransoft/isp-bss-oss/internal/radius"
 )
@@ -245,6 +246,98 @@ var (
 	_ fup.SessionLister     = (*FUPStore)(nil)
 	_ fup.GoneSessionCloser = (*FUPStore)(nil)
 )
+
+var _ radius.ConnectionCounter = (*FUPStore)(nil)
+
+// OpenConnections counts a subscriber's open sessions authenticated by
+// password (not MAC Auth Bypass), leaving out those from exceptDevice: a
+// router redialling its own dropped session is not a second connection.
+// Served by idx_session_active_subscriber (migration 010).
+func (s *FUPStore) OpenConnections(ctx context.Context, subscriberID int, exceptDevice string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*)
+		  FROM subscriber_session_history
+		 WHERE subscriber_id = $1 AND stop_time IS NULL AND NOT mab
+		   AND ($2 = '' OR device_mac IS DISTINCT FROM $2)`, subscriberID, exceptDevice).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("db: open connections for subscriber %d: %w", subscriberID, err)
+	}
+	return n, nil
+}
+
+// StaticAddressHeldElsewhere reports whether one of the subscriber's open
+// sessions, from a device other than exceptDevice, already holds address.
+func (s *FUPStore) StaticAddressHeldElsewhere(ctx context.Context, subscriberID int, address, exceptDevice string) (bool, error) {
+	var held bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM subscriber_session_history
+			 WHERE subscriber_id = $1 AND stop_time IS NULL
+			   AND assigned_ipv4 = $2::inet
+			   AND device_mac IS DISTINCT FROM $3)`, subscriberID, address, exceptDevice).Scan(&held)
+	if err != nil {
+		return false, fmt.Errorf("db: who holds %s for subscriber %d: %w", address, subscriberID, err)
+	}
+	return held, nil
+}
+
+// ListOverConnectionLimit lists the subscribers holding more
+// password-authenticated connections than they pay for, most over first,
+// with the sessions they hold: the console's report, which is what an
+// operator works through before the limit is enforced.
+func (s *FUPStore) ListOverConnectionLimit(ctx context.Context) ([]radius.OverLimitSubscriber, error) {
+	rows, err := s.pool.Query(ctx, `
+		WITH open AS (
+			SELECT h.subscriber_id, h.session_id, host(h.nas_ip_address) AS nas_ip,
+			       COALESCE(host(h.assigned_ipv4), '') AS assigned_ip,
+			       COALESCE(h.device_mac, '') AS device_mac, h.start_time
+			  FROM subscriber_session_history h
+			 WHERE h.stop_time IS NULL AND NOT h.mab
+		), counted AS (
+			SELECT subscriber_id, count(*) AS n FROM open GROUP BY subscriber_id
+		), limited AS (
+			SELECT c.subscriber_id, c.n,
+			       $1::int + COALESCE((
+			           SELECT SUM(sp.quantity)
+			             FROM subscriber_products sp
+			             JOIN products pr ON pr.id = sp.product_id
+			            WHERE sp.subscriber_id = c.subscriber_id AND sp.status = 'active'
+			              AND pr.adds_connections), 0)::int AS lim
+			  FROM counted c
+			 WHERE c.n > $1::int
+		)
+		SELECT l.subscriber_id, s.username, l.lim,
+		       o.session_id, o.nas_ip, o.assigned_ip, o.device_mac, o.start_time
+		  FROM limited l
+		  JOIN subscribers s ON s.id = l.subscriber_id
+		  JOIN open o        ON o.subscriber_id = l.subscriber_id
+		 WHERE l.n > l.lim
+		 ORDER BY (l.n - l.lim) DESC, s.username, o.start_time DESC
+		 LIMIT 2000`, billing.IncludedConnections)
+	if err != nil {
+		return nil, fmt.Errorf("db: list subscribers over their connection limit: %w", err)
+	}
+	defer rows.Close()
+
+	var out []radius.OverLimitSubscriber
+	for rows.Next() {
+		var (
+			id, limit int
+			username  string
+			c         radius.OpenConnection
+		)
+		if err := rows.Scan(&id, &username, &limit,
+			&c.SessionID, &c.NasIP, &c.AssignedIP, &c.DeviceMAC, &c.StartedAt); err != nil {
+			return nil, fmt.Errorf("db: scan over-limit session: %w", err)
+		}
+		if n := len(out); n == 0 || out[n-1].SubscriberID != id {
+			out = append(out, radius.OverLimitSubscriber{SubscriberID: id, Username: username, Limit: limit})
+		}
+		out[len(out)-1].Sessions = append(out[len(out)-1].Sessions, c)
+	}
+	return out, rows.Err()
+}
 
 // CloseGoneSession closes the open row for a session the NAS has answered a
 // CoA or Disconnect-Request for with "no such session" (RFC 5176

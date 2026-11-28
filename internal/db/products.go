@@ -40,17 +40,19 @@ func foreignKeyViolation(err error, constraint string) bool {
 const (
 	productColumns = `
 	p.id, p.code, p.name, p.description, p.kind, p.price::text, p.hsn_sac,
-	p.active, p.created_by, p.created_at, COALESCE(p.updated_by, ''), p.updated_at`
+	p.active, p.created_by, p.created_at, COALESCE(p.updated_by, ''), p.updated_at,
+	p.adds_connections`
 
 	productColumnsBare = `
 	id, code, name, description, kind, price::text, hsn_sac,
-	active, created_by, created_at, COALESCE(updated_by, ''), updated_at`
+	active, created_by, created_at, COALESCE(updated_by, ''), updated_at,
+	adds_connections`
 )
 
 func scanProduct(row pgx.Row, p *billing.Product, attached *int) error {
 	var price string
 	dest := []any{&p.ID, &p.Code, &p.Name, &p.Description, &p.Kind, &price, &p.HSNSAC,
-		&p.Active, &p.CreatedBy, &p.CreatedAt, &p.UpdatedBy, &p.UpdatedAt}
+		&p.Active, &p.CreatedBy, &p.CreatedAt, &p.UpdatedBy, &p.UpdatedAt, &p.AddsConnections}
 	if attached != nil {
 		dest = append(dest, attached)
 	}
@@ -69,13 +71,13 @@ func (s *BillingStore) CreateProduct(ctx context.Context, in billing.Product, by
 		return nil, err
 	}
 	const q = `
-		INSERT INTO products (code, name, description, kind, price, hsn_sac, active, created_by)
-		VALUES ($1, $2, $3, $4, $5::numeric, $6, TRUE, $7)
+		INSERT INTO products (code, name, description, kind, price, hsn_sac, active, created_by, adds_connections)
+		VALUES ($1, $2, $3, $4, $5::numeric, $6, TRUE, $7, $8)
 		RETURNING ` + productColumnsBare
 
 	var out billing.Product
 	row := s.pool.QueryRow(ctx, q,
-		in.Code, in.Name, in.Description, in.Kind, in.Price.String(), in.HSNSAC, by)
+		in.Code, in.Name, in.Description, in.Kind, in.Price.String(), in.HSNSAC, by, in.AddsConnections)
 	if err := scanProduct(row, &out, nil); err != nil {
 		if uniqueViolation(err, "products_code_key") {
 			return nil, fmt.Errorf("%w: %s", billing.ErrProductCodeTaken, in.Code)

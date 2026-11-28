@@ -196,6 +196,10 @@ func (d *RadiusDaemon) handleMAB(ctx context.Context, w radius.ResponseWriter, r
 		d.authRejected(r, RejectNotAuthorised, MethodMAB)
 		return true
 	}
+	// A hotspot device never gets the subscriber's static address. That
+	// address belongs to their line, and handing it to a phone as well puts
+	// two sessions on one address.
+	rfc2865.FramedIPAddress_Del(resp)
 
 	mabAttemptsTotal.WithLabelValues("accepted").Inc()
 	d.authAccepted(r, MethodMAB)

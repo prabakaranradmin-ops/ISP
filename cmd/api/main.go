@@ -527,10 +527,14 @@ func run(ctx context.Context) error {
 		// Shown on the dunning screen, which promises the payment-page
 		// redirect, so an operator can see whether this server does it.
 		WalledGarden: staffui.WalledGardenInfo{Addr: cfg.WalledGardenAddr, RedirectURL: cfg.WalledGardenRedirectURL},
-		Proformas:    apiHandler,
-		Diagnostics:  apiHandler,
-		BillingRuns:  apiHandler,
-		Receipts:     apiHandler,
+		// The connection-limit report on the Sessions screen, and whether
+		// radiusd is enforcing it (same app.env, so the same setting).
+		ConnectionLimits:    database.FUP(),
+		ConnectionLimitMode: cfg.ConnectionLimitMode,
+		Proformas:           apiHandler,
+		Diagnostics:         apiHandler,
+		BillingRuns:         apiHandler,
+		Receipts:            apiHandler,
 		// Product catalogue and subscriber charges (FR-BIL-022) through the
 		// API handler, so the console validates, audits and counts exactly
 		// as the API does.

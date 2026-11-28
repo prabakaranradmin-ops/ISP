@@ -50,7 +50,18 @@ func (s *RadiusStore) GetSubscriberByUsername(ctx context.Context, username stri
 		       b.name, b.max_down_bps, b.max_up_bps, b.min_down_bps, b.min_up_bps,
 		       b.burst_down_bps, b.burst_up_bps,
 		       b.burst_threshold_down, b.burst_threshold_up,
-		       b.burst_time_seconds, b.priority
+		       b.burst_time_seconds, b.priority,
+		       -- The connection limit (migration 077): the one every plan
+		       -- includes, plus each active extra-connection charge. Served
+		       -- by idx_sub_products_billable, the partial index on a
+		       -- subscriber's active charges, so it costs one small index
+		       -- scan on a subscriber who has none.
+		       $2::int + COALESCE((
+		           SELECT SUM(sp.quantity)
+		             FROM subscriber_products sp
+		             JOIN products pr ON pr.id = sp.product_id
+		            WHERE sp.subscriber_id = s.id AND sp.status = 'active'
+		              AND pr.adds_connections), 0)::int
 		FROM subscribers s
 		JOIN plans p ON p.id = s.plan_id
 		-- Joined on a primary key from an indexed foreign key, so this adds
@@ -78,14 +89,14 @@ func (s *RadiusStore) GetSubscriberByUsername(ctx context.Context, username stri
 		burstThreshDown, burstThreshUp *int64
 		burstTime, priority            *int
 	)
-	err := s.pool.QueryRow(ctx, q, username).Scan(
+	err := s.pool.QueryRow(ctx, q, username, billing.IncludedConnections).Scan(
 		&sub.ID, &sub.Username, &sub.PasswordHash, &sub.Status,
 		&sub.RateLimitStr, &sub.FUPThrottle, &sub.FUPActive, &sub.PlanID, &sub.NTHash,
 		&sub.SpeedOverrideRateLimit, &sub.SpeedOverrideExpiresAt,
 		&sub.VolumeGB, &sub.StaticIP,
 		&bwName, &maxDown, &maxUp, &minDown, &minUp,
 		&burstDown, &burstUp, &burstThreshDown, &burstThreshUp,
-		&burstTime, &priority,
+		&burstTime, &priority, &sub.ConnectionLimit,
 	)
 	if isNoRows(err) {
 		// A missing subscriber is a normal reject, not a failure: handleAuth

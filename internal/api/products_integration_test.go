@@ -182,6 +182,33 @@ func TestFR_BIL_022_ProductAPIGates(t *testing.T) {
 	})
 }
 
+// An extra-connection product (FR-AAA-002) is created with the flag, must be
+// recurring, and keeps the flag through every edit: taking it off would
+// silently take a connection away from everyone who holds the product.
+func TestFR_BIL_022_TheAddsAConnectionFlagIsSetOnceAndKept(t *testing.T) {
+	store := &stubProducts{}
+	mux := productHarness(t, store)
+	rec := httptestJSON(t, mux, "POST", "/api/v1/products", "billing_admin",
+		`{"code":"extra-conn","name":"Extra connection","kind":"recurring","price":"199.00","hsn_sac":"998432","adds_connections":true}`)
+	if rec.Code != 201 || !store.created.AddsConnections {
+		t.Fatalf("create: %d %s, stored %+v", rec.Code, rec.Body.String(), store.created)
+	}
+
+	rec = httptestJSON(t, mux, "POST", "/api/v1/products", "billing_admin",
+		`{"code":"one-off","name":"x","kind":"one_time","price":"199.00","hsn_sac":"998432","adds_connections":true}`)
+	if rec.Code != 422 || !strings.Contains(rec.Body.String(), "has to be recurring") {
+		t.Errorf("a one-time product that adds connections: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The stored product (7) does not add connections; an edit cannot turn
+	// it on, as it could not turn an existing one off.
+	rec = httptestJSON(t, mux, "PUT", "/api/v1/products/7", "billing_admin",
+		`{"name":"Renamed","price":"150.00","hsn_sac":"998432","adds_connections":true}`)
+	if rec.Code != 200 || store.created.AddsConnections {
+		t.Errorf("an edit changed what the product grants: %d, stored %+v", rec.Code, store.created)
+	}
+}
+
 func TestFR_BIL_022_ProductAPIValidation(t *testing.T) {
 	mux := productHarness(t, &stubProducts{})
 

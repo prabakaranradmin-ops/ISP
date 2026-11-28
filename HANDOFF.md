@@ -353,6 +353,30 @@ is cheaper to decide before the console grows past 53 templates than after.
   `$(link-login-only)` so the router authenticates immediately — is the
   smoother path and is not built. Also note the walled garden must allow the
   portal host, or a client cannot reach the sign-in page at all.
+- **Connection limits ship in report mode (2026-11-28, migration 077).**
+  One account used to be able to run any number of PPPoE logins at once.
+  Every plan now includes one connection; each unit of a recurring product
+  marked "Adds a connection" (Products screen) allows one more and is billed
+  monthly by the ordinary renewal. Registered hotspot devices (MAB) never
+  count, and a router redialling its own dropped session is recognised by
+  its Calling-Station-Id and let back in. `CONNECTION_LIMIT_MODE=report`, the
+  default, refuses nobody: the Sessions screen's "Over connection limit" tab
+  lists who is over, with a per-session Disconnect. Set `enforce` in app.env
+  and restart radiusd when that list is clean; refusals then show in the
+  auth log as "Over their connection limit" and in
+  `radius_connection_limit_refused_total`. Things to know before enforcing:
+  - sessions opened before migration 077 carry no device, so their router
+    is not recognised as redialling; they clear as those sessions end;
+  - a router that sends no Calling-Station-Id is never recognised as
+    redialling;
+  - a check that fails lets the login through
+    (`radius_connection_limit_check_failed_total`), since this is a
+    commercial rule;
+  - a stale open row (lost Accounting-Stop) counts until it is cleared.
+    Disconnecting it from the report clears it, because the router answers
+    "no such session" and the row is closed.
+  A static address now goes to one connection only: a second line gets a
+  dynamic address, and hotspot devices never get it.
 - **Soft suspension needs router rules to restrict anything (2026-11-28).**
   Until then it restricted nothing: RADIUS accepted a soft-suspended login
   like an active one, though the dunning screen said "Browsing redirected to

@@ -26,7 +26,7 @@
       <tr{{if not .Active}} class="muted"{{end}}>
         <td class="num">{{.Code}}</td>
         <td>{{.Name}}{{with .Description}}<br><span class="muted small">{{.}}</span>{{end}}</td>
-        <td>{{.KindLabel}}</td>
+        <td>{{.KindLabel}}{{if .AddsConnections}}<br><span class="pill neutral">adds a connection</span>{{end}}</td>
         <td class="num right">{{money .Price}}</td>
         <td class="num right">{{.HSNSAC}}</td>
         <td class="num right">
@@ -117,6 +117,12 @@
     </label>
     <label>Description <span class="muted small">(optional)</span>
       <input name="description" maxlength="500" placeholder="Monthly rental for the ONT/router supplied">
+    </label>
+    <label>
+      <input type="checkbox" name="adds_connections" value="1"> Adds a connection
+      <span class="muted small">Every plan includes one connection at a time. Each of these a subscriber holds lets
+        them run one more simultaneous login, billed every month at this price. Recurring products only, and it
+        cannot be changed once the product exists.</span>
     </label>
     <button type="submit" class="primary">Add product</button>
   </form>

@@ -242,6 +242,12 @@ func (d *RadiusDaemon) eapFinish(ctx context.Context, w radius.ResponseWriter, r
 		log.Warn().Err(err).Str("username", sess.Username).Msg("radius: EAP brute-force reset failed")
 	}
 
+	// The connection limit, as PAP applies it (connlimit.go).
+	if d.overConnectionLimit(ctx, sub, r) {
+		d.writeEAPRejectFor(w, r, sess.EAPIdentifier, RejectConnectionLimit)
+		return
+	}
+
 	resp := r.Response(radius.CodeAccessAccept)
 	success := (&EAPPacket{Code: EAPCodeSuccess, Identifier: sess.EAPIdentifier}).Encode()
 	if err := rfc2869.EAPMessage_Set(resp, success); err != nil {
@@ -261,6 +267,9 @@ func (d *RadiusDaemon) eapFinish(ctx context.Context, w radius.ResponseWriter, r
 	if err := d.applyRateLimit(resp, sub, r); err != nil {
 		d.writeEAPReject(w, r, sess.EAPIdentifier)
 		return
+	}
+	if d.withholdStaticAddress(ctx, sub, r) {
+		rfc2865.FramedIPAddress_Del(resp)
 	}
 
 	d.writeWithMessageAuthenticator(w, resp)
@@ -307,7 +316,16 @@ func (d *RadiusDaemon) writeEAPChallenge(w radius.ResponseWriter, r *radius.Requ
 
 // writeEAPReject sends an Access-Reject carrying EAP-Failure.
 func (d *RadiusDaemon) writeEAPReject(w radius.ResponseWriter, r *radius.Request, eapID uint8) {
+	d.writeEAPRejectFor(w, r, eapID, RejectEAPFailed)
+}
+
+// writeEAPRejectFor is writeEAPReject recording a specific reason, for a
+// refusal the authentication log should not file as a failed exchange.
+func (d *RadiusDaemon) writeEAPRejectFor(w radius.ResponseWriter, r *radius.Request, eapID uint8, reason string) {
 	resp := r.Response(radius.CodeAccessReject)
+	if reason == RejectConnectionLimit {
+		_ = rfc2865.ReplyMessage_SetString(resp, "Connection limit reached for this account")
+	}
 	failure := (&EAPPacket{Code: EAPCodeFailure, Identifier: eapID}).Encode()
 	if err := rfc2869.EAPMessage_Set(resp, failure); err != nil {
 		// The reject still goes out: refusing to answer at all would leave
@@ -315,7 +333,7 @@ func (d *RadiusDaemon) writeEAPReject(w radius.ResponseWriter, r *radius.Request
 		log.Error().Err(err).Msg("radius: could not set EAP-Message on the reject")
 	}
 	d.writeWithMessageAuthenticator(w, resp)
-	d.authRejected(r, RejectEAPFailed, MethodEAP)
+	d.authRejected(r, reason, MethodEAP)
 }
 
 // writeWithMessageAuthenticator adds the Message-Authenticator attribute

@@ -2,15 +2,69 @@
 {{$d := .Data}}
 <div class="pagehead">
   <h1>Sessions</h1>
-  {{with $d}}<p class="muted">{{if eq .Tab "live"}}Online now, newest first{{else}}Ended {{.From}} to {{.To}}, most recent first{{end}}</p>{{end}}
+  {{with $d}}<p class="muted">{{if eq .Tab "live"}}Online now, newest first{{else if eq .Tab "limits"}}Subscribers holding more connections than they pay for{{else}}Ended {{.From}} to {{.To}}, most recent first{{end}}</p>{{end}}
 </div>
 
 {{with $d}}
 <nav class="tabbar" aria-label="Session lists">
   <a class="tab-link{{if eq .Tab "live"}} on{{end}}" href="/staff/sessions">Online now</a>
   <a class="tab-link{{if eq .Tab "completed"}} on{{end}}" href="/staff/sessions?tab=completed">Completed</a>
+  <a class="tab-link{{if eq .Tab "limits"}} on{{end}}" href="/staff/sessions?tab=limits">Over connection limit</a>
 </nav>
 
+{{if eq .Tab "limits"}}
+{{if .LimitEnforced}}
+<div class="alert ok" role="status">The limit is being enforced: a login that would take a subscriber over their limit is refused, and shows in the authentication log as "Over their connection limit".</div>
+{{else}}
+<div class="alert warn" role="status">Report only: nobody is refused yet. Work through this list, by selling extra connections or ending connections that should not be there, then set <code>CONNECTION_LIMIT_MODE=enforce</code> in app.env and restart the RADIUS service.</div>
+{{end}}
+<p class="muted">Every plan includes one connection at a time. Each extra connection is sold from the subscriber's Billing tab with a product marked "Adds a connection" on the Products screen, and billed every month. Registered hotspot devices do not count. A router redialling its own dropped connection is not counted twice.</p>
+{{if .LimitReportOff}}
+<p class="empty">The connection limit report is not configured on this deployment.</p>
+{{else if .LimitUnavailable}}
+<p class="empty">The report could not be loaded, so this is not a list of who is over. Try again in a moment.</p>
+{{else}}
+<div class="card table-card">
+  <table>
+    <thead><tr>
+      <th>Subscriber</th><th class="right">Pays for</th><th class="right">Online</th>
+      <th>Router</th><th>IP address</th><th>Device</th><th>Started</th>
+      {{if .CanDisconnect}}<th></th>{{end}}
+    </tr></thead>
+    <tbody>
+    {{$can := .CanDisconnect}}{{$csrf := $.CSRF}}
+    {{range .OverLimit}}{{$sub := .}}
+      {{range $i, $c := .Sessions}}
+      <tr>
+        {{if eq $i 0}}
+        <td rowspan="{{len $sub.Sessions}}"><a href="/staff/subscribers/{{$sub.SubscriberID}}">{{$sub.Username}}</a></td>
+        <td rowspan="{{len $sub.Sessions}}" class="num right">{{$sub.Limit}}</td>
+        <td rowspan="{{len $sub.Sessions}}" class="num right">{{len $sub.Sessions}} <span class="pill warn">+{{$sub.Over}}</span></td>
+        {{end}}
+        <td class="num">{{$c.NasIP}}</td>
+        <td class="num">{{if $c.AssignedIP}}{{$c.AssignedIP}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        <td class="num">{{if $c.DeviceMAC}}{{$c.DeviceMAC}}{{else}}<span class="muted">not recorded</span>{{end}}</td>
+        <td class="num">{{datetime $c.StartedAt}}</td>
+        {{if $can}}
+        <td class="right">
+          <form method="post" action="/staff/sessions/{{$c.SessionID}}/disconnect?tab=limits" data-confirm="Disconnect this connection of {{$sub.Username}}'s? Only this one drops; their others stay up.">
+            <input type="hidden" name="csrf_token" value="{{$csrf}}">
+            <input type="hidden" name="username" value="{{$sub.Username}}">
+            <button type="submit" class="btn-danger">Disconnect</button>
+          </form>
+        </td>
+        {{end}}
+      </tr>
+      {{end}}
+    {{else}}
+      <tr><td colspan="{{if $can}}8{{else}}7{{end}}" class="empty">Nobody holds more connections than they pay for.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+<p class="muted small">A connection whose device shows "not recorded" started before this report existed, or came from a router that does not send its MAC. One that has really ended but still shows here is cleared when you disconnect it: the router answers that it has no such session, and the row is closed.</p>
+{{end}}
+{{else}}
 <form class="searchbar" method="get" action="/staff/sessions">
   {{if eq .Tab "completed"}}<input type="hidden" name="tab" value="completed">{{end}}
   <input name="q" value="{{.Query}}" placeholder="Username, IP, router IP or session id" aria-label="Search sessions">
@@ -90,6 +144,7 @@
     </tbody>
   </table>
 </div>
+{{end}}
 {{end}}
 {{end}}
 {{end}}

@@ -122,6 +122,15 @@ func (d *RadiusDaemon) handleAuth(ctx context.Context, w radius.ResponseWriter, 
 		}
 	}
 
+	// The connection limit (connlimit.go). Checked after the password, so
+	// the refusal confirms nothing to somebody guessing, and not counted as
+	// a failed attempt: the credentials were right.
+	if d.overConnectionLimit(ctx, sub, r) {
+		w.Write(connectionLimitReject(r)) //nolint:errcheck,gosec
+		d.authRejected(r, RejectConnectionLimit, MethodPAP)
+		return
+	}
+
 	// Build Accept response with vendor-appropriate bandwidth attributes
 	// (FR-NAS-001..004, MDS §4.11): resolved per requesting NAS when a
 	// resolver is wired, falling back to the MikroTik VSA unconditionally
@@ -132,9 +141,22 @@ func (d *RadiusDaemon) handleAuth(ctx context.Context, w radius.ResponseWriter, 
 		d.authRejected(r, RejectNotAuthorised, MethodPAP)
 		return
 	}
+	if d.withholdStaticAddress(ctx, sub, r) {
+		rfc2865.FramedIPAddress_Del(resp)
+	}
 
 	w.Write(resp) //nolint:errcheck,gosec
 	d.authAccepted(r, MethodPAP)
+}
+
+// connectionLimitReject is the Access-Reject for a login over the
+// subscriber's connection limit. The Reply-Message reaches the router's log,
+// so whoever is looking at the second router can see why it will not
+// connect without ringing the ISP.
+func connectionLimitReject(r *radius.Request) *radius.Packet {
+	resp := r.Response(radius.CodeAccessReject)
+	_ = rfc2865.ReplyMessage_SetString(resp, "Connection limit reached for this account")
+	return resp
 }
 
 // applyRateLimit attaches the vendor-appropriate bandwidth attributes for a

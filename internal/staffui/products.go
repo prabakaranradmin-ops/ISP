@@ -205,6 +205,9 @@ func productFormValues(r *http.Request) (billing.Product, error) {
 		Kind:        r.PostFormValue("kind"),
 		Price:       price,
 		HSNSAC:      r.PostFormValue("hsn_sac"),
+		// Only the create form offers it; an edit reads it back from the
+		// stored row, as it does the kind.
+		AddsConnections: r.PostFormValue("adds_connections") == "1",
 	}, nil
 }
 
@@ -254,7 +257,7 @@ func (h *Handler) UpdateProductForm(w http.ResponseWriter, r *http.Request) {
 		h.productFailure(w, r, err, "load product", strconv.Itoa(id))
 		return
 	}
-	in.Code, in.Kind = existing.Code, existing.Kind
+	in.Code, in.Kind, in.AddsConnections = existing.Code, existing.Kind, existing.AddsConnections
 
 	if _, err := h.products.UpdateProduct(ctx, in); err != nil {
 		h.productFailure(w, r, err, "update product", existing.Code)

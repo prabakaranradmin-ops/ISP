@@ -9,6 +9,7 @@ import (
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
+	"github.com/maaransoft/isp-bss-oss/internal/radius"
 	"github.com/rs/zerolog/log"
 )
 
@@ -32,7 +33,7 @@ func canDisconnect(role string) bool {
 }
 
 type sessionsData struct {
-	Tab           string // "live" or "completed"
+	Tab           string // "live", "completed" or "limits"
 	Query         string
 	FUPOnly       bool
 	From, To      string // yyyy-mm-dd, as the date inputs hold them
@@ -40,6 +41,21 @@ type sessionsData struct {
 	Completed     []CompletedSession
 	CanDisconnect bool
 	Limit         int
+	// The connection-limit report (tab "limits"): who holds more
+	// password-authenticated connections than they pay for, and whether the
+	// RADIUS service is refusing those logins yet.
+	OverLimit      []radius.OverLimitSubscriber
+	LimitEnforced  bool
+	LimitReportOff bool
+	// LimitUnavailable hides the table when the report failed, so an empty
+	// one cannot read as "nobody is over".
+	LimitUnavailable bool
+}
+
+// ConnectionLimitReader lists subscribers over their connection limit.
+// Satisfied by *db.FUPStore.
+type ConnectionLimitReader interface {
+	ListOverConnectionLimit(ctx context.Context) ([]radius.OverLimitSubscriber, error)
 }
 
 const sessionsPageLimit = 500
@@ -56,11 +72,6 @@ func (h *Handler) Sessions(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderSessions(w http.ResponseWriter, r *http.Request, s Session, message, errMsg string) {
 	d := h.page(s, "Sessions", "sessions")
 	d.Message, d.Error = message, errMsg
-	if h.console == nil {
-		d.Error = "Session monitoring is not configured on this deployment."
-		h.render(w, "sessions", d)
-		return
-	}
 
 	q := r.URL.Query()
 	sd := sessionsData{
@@ -70,11 +81,32 @@ func (h *Handler) renderSessions(w http.ResponseWriter, r *http.Request, s Sessi
 		CanDisconnect: canDisconnect(s.Role),
 		Limit:         sessionsPageLimit,
 	}
-	if sd.Tab != "completed" {
+	if sd.Tab != "completed" && sd.Tab != "limits" {
 		sd.Tab = "live"
 	}
 
 	var err error
+	if sd.Tab == "limits" {
+		sd.LimitEnforced = h.connLimitMode == radius.ConnectionLimitEnforce
+		if h.connLimits == nil {
+			sd.LimitReportOff = true
+		} else if sd.OverLimit, err = h.connLimits.ListOverConnectionLimit(r.Context()); err != nil {
+			sd.LimitUnavailable = true
+			log.Error().Err(err).Msg("staffui: connection limit report failed")
+			if d.Error == "" {
+				d.Error = "Could not load the connection limit report."
+			}
+		}
+		d.Data = sd
+		h.render(w, "sessions", d)
+		return
+	}
+	if h.console == nil {
+		d.Error = "Session monitoring is not configured on this deployment."
+		d.Data = sd
+		h.render(w, "sessions", d)
+		return
+	}
 	if sd.Tab == "live" {
 		sd.Live, err = h.console.ListLiveSessions(r.Context(), SessionFilter{
 			Query: sd.Query, FUPOnly: sd.FUPOnly, Limit: sessionsPageLimit,

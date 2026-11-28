@@ -70,6 +70,14 @@ type Config struct {
 	WalledGardenAddr        string
 	WalledGardenRedirectURL string
 
+	// ConnectionLimitMode says what happens to a login that would put a
+	// subscriber over their connection limit (1 plus their extra-connection
+	// products). "report", the default, refuses nobody and lists who is over
+	// on the console's Sessions screen, so extras can be sold before anyone
+	// is cut off. "enforce" refuses those logins. Read by radiusd, which does
+	// the refusing, and by the API, which shows the mode on that screen.
+	ConnectionLimitMode string
+
 	// ArchiveDir roots the local document-archival backend (FR-DOC-001).
 	// Empty disables archival entirely rather than defaulting to a path: a
 	// deployment that has not chosen where its invoices and KYC scans live
@@ -210,6 +218,7 @@ func Load(service string) (*Config, error) {
 
 		WalledGardenAddr:        env("WALLED_GARDEN_ADDR", ""),
 		WalledGardenRedirectURL: env("WALLED_GARDEN_REDIRECT_URL", ""),
+		ConnectionLimitMode:     strings.ToLower(env("CONNECTION_LIMIT_MODE", "report")),
 
 		// How long each monthly-partitioned table keeps history, as
 		// "table=months" pairs. Empty means keep everything, which is the
@@ -350,6 +359,12 @@ func Load(service string) (*Config, error) {
 		case Optional:
 		}
 	}
+	// Refused rather than defaulted: a typo for "enforce" that quietly meant
+	// "report" would leave an operator believing the limit is in force.
+	if cfg.ConnectionLimitMode != "report" && cfg.ConnectionLimitMode != "enforce" {
+		problems = append(problems, fmt.Sprintf(
+			"CONNECTION_LIMIT_MODE must be report or enforce, not %q", cfg.ConnectionLimitMode))
+	}
 	if service == "api" && cfg.WalledGardenAddr != "" && cfg.WalledGardenRedirectURL == "" {
 		problems = append(problems, "WALLED_GARDEN_REDIRECT_URL is required when WALLED_GARDEN_ADDR is set: "+
 			"it is where suspended subscribers are sent to pay, normally the portal's sign-in page")
@@ -377,6 +392,7 @@ func (c *Config) Redact() map[string]string {
 		"radius_acct_addr":       c.RadiusAcctAddr,
 		"walled_garden_addr":     c.WalledGardenAddr,
 		"walled_garden_redirect": c.WalledGardenRedirectURL,
+		"connection_limit_mode":  c.ConnectionLimitMode,
 		"archive_dir":            c.ArchiveDir,
 		"archive_s3_bucket":      c.ArchiveS3Bucket,
 		"archive_s3_endpoint":    c.ArchiveS3Endpoint,

@@ -240,6 +240,14 @@ func run(ctx context.Context) error {
 	// lookups and the portal's usage history all read — without it they each
 	// query an empty table and quietly do nothing.
 	daemon.SetAccountingStore(database.FUP())
+	// The connection limit (migration 077): one connection per plan, plus
+	// each extra-connection product. CONNECTION_LIMIT_MODE=report, the
+	// default, refuses nobody and the console's Sessions screen lists who is
+	// over; enforce refuses the login that would go over. The counter is
+	// wired either way, because it also keeps a static address from being
+	// handed to two of a subscriber's connections at once.
+	daemon.SetConnectionLimit(cfg.ConnectionLimitMode, database.FUP())
+	log.Info().Str("mode", cfg.ConnectionLimitMode).Msg("radiusd: connection limit")
 	// FR-NET-004: every authentication attempt is logged — who, from which
 	// NAS and MAC, accepted or rejected, and why. The password is never
 	// recorded, in any form.
