@@ -43,6 +43,22 @@ func uint32BE(v uint32) []byte {
 	}
 }
 
+// ValidatePlainRateLimit reports whether s is a plain "down/up" rate every
+// vendor builder can render: two numbers, each with an optional K, M or G
+// suffix, separated by one slash ("100M/100M", "512k/256k").
+//
+// This is the form a speed override and a FUP throttle take — deliberate
+// temporary states with no burst. It exists because a rate a builder cannot
+// render does not fail the authentication: radiusd sends the Access-Accept
+// with no bandwidth attribute at all, so the subscriber is unshaped. An
+// override meant to slow somebody down, typed as "fast" or "100Mbps", gave
+// them the full line instead, and kept doing so on every login until it was
+// cleared.
+func ValidatePlainRateLimit(s string) error {
+	_, _, err := parseRateLimitString(s)
+	return err
+}
+
 // parseRateLimitString parses MikroTik-format "first/second" (e.g.
 // "50M/50M", "10M/5M") into bits-per-second. Suffixes K/M/G (kilo/mega/giga
 // bit per second) are case-insensitive; no suffix means bits/sec.

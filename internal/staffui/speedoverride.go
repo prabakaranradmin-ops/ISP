@@ -10,6 +10,7 @@ import (
 
 	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
+	"github.com/maaransoft/isp-bss-oss/internal/nas"
 	"github.com/rs/zerolog/log"
 )
 
@@ -61,9 +62,15 @@ func (h *Handler) ApplySpeedOverride(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Checked with the parser the vendor builders use, not just for a
+	// slash: "fast/slow" used to pass. A rate the builders cannot render
+	// does not fail the subscriber's login — the Accept goes out with no
+	// bandwidth attribute at all — so a mistyped override meant to slow
+	// somebody down gave them the full line until it was cleared.
 	rateLimit := strings.TrimSpace(r.PostFormValue("rate_limit_string"))
-	if !strings.Contains(rateLimit, "/") {
-		h.renderSubscriberDetail(w, r, s, id, "Speed must be in MikroTik rate-limit form, for example 100M/100M.")
+	if err := nas.ValidatePlainRateLimit(rateLimit); err != nil {
+		h.renderSubscriberDetail(w, r, s, id,
+			"Speed must be in MikroTik rate-limit form, for example 100M/100M or 512k/256k, with no burst settings.")
 		return
 	}
 

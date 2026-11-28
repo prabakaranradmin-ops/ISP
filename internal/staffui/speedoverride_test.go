@@ -211,6 +211,17 @@ func TestMalformedSpeedOverrideInputIsRefusedWithoutWritingOrSending(t *testing.
 		"no rate": {url.Values{"rate_limit_string": {""}}, "MikroTik rate-limit form"},
 		"rate with no slash": {url.Values{"rate_limit_string": {"200M"}},
 			"MikroTik rate-limit form"},
+		// These had a slash, so they used to pass. None can be rendered by
+		// the vendor builders, and an unrenderable rate leaves the
+		// subscriber unshaped rather than refused.
+		"words with a slash": {url.Values{"rate_limit_string": {"fast/slow"}},
+			"MikroTik rate-limit form"},
+		"units spelled out": {url.Values{"rate_limit_string": {"100Mbps/100Mbps"}},
+			"MikroTik rate-limit form"},
+		"burst form": {url.Values{"rate_limit_string": {"10M/10M 20M/20M"}},
+			"MikroTik rate-limit form"},
+		"one side missing": {url.Values{"rate_limit_string": {"10M/"}},
+			"MikroTik rate-limit form"},
 		"duration not a number": {url.Values{
 			"rate_limit_string": {"200M/200M"}, "duration_minutes": {"an hour"},
 		}, "positive number of minutes"},

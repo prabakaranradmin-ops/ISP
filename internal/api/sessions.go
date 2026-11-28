@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	"github.com/maaransoft/isp-bss-oss/internal/health"
 	"github.com/maaransoft/isp-bss-oss/internal/jobqueue"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
+	"github.com/maaransoft/isp-bss-oss/internal/nas"
 	"github.com/rs/zerolog/log"
 )
 
@@ -221,8 +223,18 @@ func (h *Handler) SpeedOverride(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ERR_BAD_REQUEST", err.Error())
 		return
 	}
+	req.RateLimitString = strings.TrimSpace(req.RateLimitString)
 	if req.RateLimitString == "" {
 		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION", "rate_limit_string is required")
+		return
+	}
+	// Checked with the parser the vendor builders use. A rate they cannot
+	// render is not refused at authentication: the Accept goes out with no
+	// bandwidth attribute, and the subscriber is unshaped until the override
+	// is cleared — the opposite of what an override is usually for.
+	if err := nas.ValidatePlainRateLimit(req.RateLimitString); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "ERR_VALIDATION",
+			"rate_limit_string must be a plain down/up rate such as \"10M/10M\" or \"512k/256k\"")
 		return
 	}
 	if req.DurationMinutes < 0 {
