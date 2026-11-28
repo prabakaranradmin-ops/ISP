@@ -502,7 +502,10 @@ func TestFR_HSP_001_SubscriberMABSessionIsNotMeteredAsAVoucher(t *testing.T) {
 // number means sessions are outliving their authorisation.
 func TestFR_HSP_001_VoucherSessionWithNoLiveGrantIsCounted(t *testing.T) {
 	meter := &acctGrantMeter{matched: false}
-	d := acctDaemon(t, &acctRecorder{matched: true})
+	// matched: false because a voucher session has no session-history row:
+	// once its grant has gone, nothing anywhere matches the record, and the
+	// session-id path is what counts it.
+	d := acctDaemon(t, &acctRecorder{matched: false})
 	d.SetGrantUsageDB(meter)
 
 	before := acctCounter(t, radiusAcctUnmatched)
@@ -513,6 +516,56 @@ func TestFR_HSP_001_VoucherSessionWithNoLiveGrantIsCounted(t *testing.T) {
 
 	if got := acctCounter(t, radiusAcctUnmatched); got != before+1 {
 		t.Errorf("radius_acct_unmatched_total: want +1, got %v", got-before)
+	}
+}
+
+// A subscriber's registered device deactivated mid-session (or their
+// captive-portal grant expired): nothing authorises the MAC any more, but the
+// session it started is in session history under the subscriber. Its updates
+// and Stop must still land there. They used to be claimed by the voucher
+// path and dropped, so the row stayed open for good, the subscriber showed as
+// online forever, and the device's usage stopped counting towards FUP.
+func TestFR_HSP_002_ASessionOutlivingItsDeviceIsStillAccounted(t *testing.T) {
+	store := &acctRecorder{matched: true} // the row the Start opened
+	meter := &acctGrantMeter{matched: false}
+	d := acctDaemon(t, store)
+	d.SetGrantUsageDB(meter)
+	ctx := context.Background()
+	const lapsed = "AA:BB:CC:00:00:01" // in no device or grant the harness knows
+
+	before := acctCounter(t, radiusAcctUnmatched)
+	d.handleAccounting(ctx, &acctWriter{}, acctRequest(t, acctOpts{
+		SessionID: "sess-phone", Username: lapsed,
+		Status:      rfc2866.AcctStatusType_Value_InterimUpdate,
+		InputOctets: 4_000_000, OutputOctets: 1_000_000,
+	}))
+	d.handleAccounting(ctx, &acctWriter{}, acctRequest(t, acctOpts{
+		SessionID: "sess-phone", Username: lapsed,
+		Status:      rfc2866.AcctStatusType_Value_Stop,
+		InputOctets: 9_000_000, OutputOctets: 2_000_000,
+		Cause: rfc2866.AcctTerminateCause_Value_AdminReset,
+	}))
+
+	_, updates, stops := store.snapshot()
+	if len(updates) != 1 || updates[0].SessionID != "sess-phone" || updates[0].In != 4_000_000 {
+		t.Errorf("interim updates %+v; the device's usage must keep counting", updates)
+	}
+	if len(stops) != 1 || stops[0].SessionID != "sess-phone" {
+		t.Errorf("stops %+v; without the Stop the row stays open and the subscriber looks online for good", stops)
+	}
+	if got := acctCounter(t, radiusAcctUnmatched); got != before {
+		t.Errorf("radius_acct_unmatched_total rose by %v for records that matched a session", got-before)
+	}
+
+	// A Start for such a MAC is still the voucher path's to count.
+	d.handleAccounting(ctx, &acctWriter{}, acctRequest(t, acctOpts{
+		SessionID: "sess-new", Username: lapsed, Status: rfc2866.AcctStatusType_Value_Start,
+	}))
+	if starts, _, _ := store.snapshot(); len(starts) != 0 {
+		t.Errorf("a Start for a MAC nothing authorises opened a row: %+v", starts)
+	}
+	if got := acctCounter(t, radiusAcctUnmatched); got != before+1 {
+		t.Errorf("an unauthorised Start was not counted unmatched")
 	}
 }
 

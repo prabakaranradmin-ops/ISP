@@ -147,7 +147,7 @@ func (d *RadiusDaemon) handleAccounting(ctx context.Context, w radius.ResponseWr
 	// A voucher-backed hotspot session is metered on its grant instead, since
 	// it has no subscriber row for session history to reference. Checked first
 	// because for these the subscriber path below can only fail.
-	if d.meterVoucherSession(ctx, r, sessionID, status, inputOctets+outputOctets) {
+	if d.meterVoucherSession(ctx, r, sessionID, statusType, status, inputOctets+outputOctets) {
 		return
 	}
 
@@ -170,7 +170,7 @@ func (d *RadiusDaemon) handleAccounting(ctx context.Context, w radius.ResponseWr
 // single volume, and splitting it would invite the question of which direction
 // the cap applies to when the answer is both.
 func (d *RadiusDaemon) meterVoucherSession(ctx context.Context, r *radius.Request,
-	sessionID, status string, totalOctets int64,
+	sessionID string, statusType rfc2866.AcctStatusType, status string, totalOctets int64,
 ) bool {
 	if d.grantUsageDB == nil {
 		return false
@@ -203,9 +203,23 @@ func (d *RadiusDaemon) meterVoucherSession(ctx context.Context, r *radius.Reques
 		return true
 	}
 	if !matched {
-		// No live grant for this MAC: the voucher expired or was revoked
-		// mid-session. Counted rather than silently dropped, since a rising
-		// number here means sessions are outliving their authorisation.
+		// No live grant for this MAC. For an Interim-Update or Stop that is
+		// not evidence of a voucher session at all: nothing authorises the
+		// MAC *now*, which is also what a subscriber's own device looks like
+		// after its registration is deactivated, or after their captive-portal
+		// grant expires, mid-session. Those sessions are in session history,
+		// keyed by Acct-Session-Id, and claiming the record here used to drop
+		// every update and the Stop: the row stayed open for good, the
+		// subscriber looked online forever, and the device's usage stopped
+		// counting towards their fair-use cap. The session-id path decides
+		// instead, and counts it unmatched itself if it has no row either.
+		if statusType != rfc2866.AcctStatusType_Value_Start {
+			return false
+		}
+		// A Start for a MAC with no live grant: the voucher expired or was
+		// revoked before the session began. Counted rather than silently
+		// dropped, since a rising number here means sessions are outliving
+		// their authorisation.
 		radiusAcctUnmatched.Inc()
 		radiusAcctProcessed.WithLabelValues(status, "unmatched").Inc()
 		return true
