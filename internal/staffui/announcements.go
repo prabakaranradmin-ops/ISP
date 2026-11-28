@@ -223,13 +223,23 @@ func (h *Handler) SendAnnouncementForm(w http.ResponseWriter, r *http.Request) {
 		h.renderAnnouncements(w, r, s, announcementsData{}, "", "That announcement no longer exists.")
 	case errors.Is(err, api.ErrAnnouncementDispatchDown):
 		h.renderAnnouncements(w, r, s, announcementsData{}, "", "Sending is not configured on this deployment.")
+	case errors.Is(err, api.ErrAnnouncementQueueDown):
+		log.Error().Err(err).Int("announcement_id", id).Msg("staffui: announcement queued nothing")
+		h.renderAnnouncements(w, r, s, announcementsData{}, "",
+			"Nothing was sent: no message could be queued for delivery, so the announcement is marked failed. "+
+				"Compose it again once the message queue is back.")
 	case err != nil:
 		log.Error().Err(err).Int("announcement_id", id).Msg("staffui: send announcement failed")
 		h.renderAnnouncements(w, r, s, announcementsData{}, "", "The announcement could not be sent. It is marked failed; nothing was retried.")
 	default:
-		h.renderAnnouncements(w, r, s, announcementsData{},
-			"Sent to "+strconv.Itoa(res.Recipients)+" subscriber"+plural(res.Recipients)+": "+
-				strconv.Itoa(res.TasksEnqueued)+" message"+plural(res.TasksEnqueued)+" queued for delivery.", "")
+		msg := "Sent to " + strconv.Itoa(res.Recipients) + " subscriber" + plural(res.Recipients) + ": " +
+			strconv.Itoa(res.TasksEnqueued) + " message" + plural(res.TasksEnqueued) + " queued for delivery."
+		errMsg := ""
+		if res.TasksFailed > 0 {
+			errMsg = strconv.Itoa(res.TasksFailed) + " message" + plural(res.TasksFailed) +
+				" could not be queued and will not be delivered; the server log names who missed out."
+		}
+		h.renderAnnouncements(w, r, s, announcementsData{}, msg, errMsg)
 	}
 }
 

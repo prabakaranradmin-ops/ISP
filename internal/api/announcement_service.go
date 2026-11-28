@@ -26,6 +26,11 @@ var (
 	ErrAnnouncementInvalid      = errors.New("api: invalid announcement")
 	ErrAnnouncementNotFound     = errors.New("api: announcement not found")
 	errAnnouncementSegment      = errors.New("api: could not resolve the announcement segment")
+	// ErrAnnouncementQueueDown is a broadcast that had messages to send and
+	// could queue none of them. It is recorded failed rather than sent:
+	// until 2026-11-28 it was recorded 'sent' and reported as success, with
+	// nobody having received anything and no way to send it again.
+	ErrAnnouncementQueueDown = errors.New("api: no announcement message could be queued")
 )
 
 func announcementInvalid(msg string) error { return fmt.Errorf("%w: %s", ErrAnnouncementInvalid, msg) }
@@ -113,6 +118,10 @@ func (h *Handler) ComposeAnnouncement(ctx context.Context, in AnnouncementInput)
 type SendResult struct {
 	Recipients    int
 	TasksEnqueued int
+	// TasksFailed counts messages that could not be queued and so will not
+	// be delivered. Non-zero only on a partial failure; a broadcast where
+	// every message failed is ErrAnnouncementQueueDown instead.
+	TasksFailed int
 }
 
 // BroadcastAnnouncement claims a draft and fans it out. Errors:
@@ -147,16 +156,21 @@ func (h *Handler) BroadcastAnnouncement(ctx context.Context, id int) (*SendResul
 		h.finishAnnouncement(ctx, id, notifications.AnnouncementFailed, 0)
 		return nil, fmt.Errorf("%w: %v", errAnnouncementSegment, err)
 	}
-	enqueued := h.fanOutAnnouncement(claimed, recipients)
+	enqueued, failed := h.fanOutAnnouncement(claimed, recipients)
 	// A portal-only announcement legitimately enqueues nothing, so 'sent'
-	// with zero recipients is a correct outcome, not a failure.
+	// with zero recipients is a correct outcome, not a failure. What is a
+	// failure is having messages to queue and queuing none of them.
+	if failed > 0 && enqueued == 0 {
+		h.finishAnnouncement(ctx, id, notifications.AnnouncementFailed, 0)
+		return nil, fmt.Errorf("%w: %d message(s)", ErrAnnouncementQueueDown, failed)
+	}
 	h.finishAnnouncement(ctx, id, notifications.AnnouncementSent, enqueued)
 
 	notifications.AnnouncementsSentTotal.Inc()
 	middleware.Audit(ctx, "announcement.send", strconv.Itoa(id), map[string]any{
-		"recipients": len(recipients), "tasks_enqueued": enqueued,
+		"recipients": len(recipients), "tasks_enqueued": enqueued, "tasks_failed": failed,
 	})
-	return &SendResult{Recipients: len(recipients), TasksEnqueued: enqueued}, nil
+	return &SendResult{Recipients: len(recipients), TasksEnqueued: enqueued, TasksFailed: failed}, nil
 }
 
 // AnnouncementList lists announcements, optionally by status.

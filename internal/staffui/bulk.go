@@ -2,6 +2,7 @@ package staffui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -155,12 +156,18 @@ func (h *Handler) bulkNotify(w http.ResponseWriter, r *http.Request, s Session, 
 	enqueued, err := h.bulkActions.SendBulkNotification(ctx, s.Username, ids, title, body, channels, showInPortal)
 	if err != nil {
 		log.Error().Err(err).Msg("staffui: bulk notification failed")
-		h.renderSubscribers(w, r, s, DirectoryFilter{}, "", "Could not send the notification.")
+		msg := "Could not send the notification."
+		if errors.Is(err, api.ErrAnnouncementQueueDown) {
+			msg = "Nothing was sent: no message could be queued for delivery. Try again once the message queue is back."
+		}
+		h.renderSubscribers(w, r, s, DirectoryFilter{}, "", msg)
 		return
 	}
+	// The count queued, not "sent to N of N": it used to say all of them
+	// were sent whatever the queue had accepted.
 	h.renderSubscribers(w, r, s, DirectoryFilter{},
-		fmt.Sprintf("Notification sent to %d of %d selected subscriber(s) (%d message(s) enqueued).",
-			len(ids), len(ids), enqueued), "")
+		fmt.Sprintf("Notification queued for %d selected subscriber(s): %d message(s) queued for delivery.",
+			len(ids), enqueued), "")
 }
 
 func splitBulkResults(results []api.BulkResult) (ok int, failed []string) {

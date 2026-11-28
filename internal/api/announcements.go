@@ -104,6 +104,9 @@ func (h *Handler) CreateAnnouncement(w http.ResponseWriter, r *http.Request) {
 // non-HTTP caller (internal/staffui) the same way ProvisionSubscriber does
 // for subscriber creation.
 func (h *Handler) SendBulkNotification(ctx context.Context, requestedBy string, ids []int, title, body string, channels []string, showInPortal bool) (enqueued int, err error) {
+	if h.announcements == nil || h.tasks == nil {
+		return 0, ErrAnnouncementDispatchDown
+	}
 	created, err := h.announcements.CreateAnnouncement(ctx, notifications.Announcement{
 		Title: title, Body: body, Channels: channels,
 		// Transactional: a hand-picked, staff-initiated notice (an outage
@@ -133,12 +136,18 @@ func (h *Handler) SendBulkNotification(ctx context.Context, requestedBy string, 
 		return 0, fmt.Errorf("resolve bulk announcement %d recipients: %w", created.ID, err)
 	}
 
-	enqueued = h.fanOutAnnouncement(claimed, recipients)
+	enqueued, failed := h.fanOutAnnouncement(claimed, recipients)
+	// Messages due and none queued is a failure, recorded as one — not a
+	// 'sent' notice nobody received. See ErrAnnouncementQueueDown.
+	if failed > 0 && enqueued == 0 {
+		h.finishAnnouncement(ctx, created.ID, notifications.AnnouncementFailed, 0)
+		return 0, fmt.Errorf("bulk announcement %d: %w: %d message(s)", created.ID, ErrAnnouncementQueueDown, failed)
+	}
 	h.finishAnnouncement(ctx, created.ID, notifications.AnnouncementSent, enqueued)
 
 	notifications.AnnouncementsSentTotal.Inc()
 	middleware.Audit(ctx, "announcement.send", strconv.Itoa(created.ID), map[string]any{
-		"recipients": len(recipients), "tasks_enqueued": enqueued, "bulk": true,
+		"recipients": len(recipients), "tasks_enqueued": enqueued, "tasks_failed": failed, "bulk": true,
 	})
 	return enqueued, nil
 }
@@ -185,23 +194,27 @@ func (h *Handler) SendAnnouncement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "ERR_NOT_DRAFT", notifications.ErrAnnouncementNotDraft.Error())
 	case errors.Is(err, errAnnouncementSegment):
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not resolve the announcement segment")
+	case errors.Is(err, ErrAnnouncementQueueDown):
+		writeError(w, http.StatusServiceUnavailable, "ERR_QUEUE_UNAVAILABLE",
+			"no message could be queued for delivery, so the announcement is marked failed")
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "ERR_INTERNAL", "could not send the announcement")
 	default:
 		writeJSON(w, http.StatusAccepted, map[string]any{
-			"status": notifications.AnnouncementSent, "recipients": res.Recipients, "tasks_enqueued": res.TasksEnqueued,
+			"status": notifications.AnnouncementSent, "recipients": res.Recipients,
+			"tasks_enqueued": res.TasksEnqueued, "tasks_failed": res.TasksFailed,
 		})
 	}
 }
 
 // fanOutAnnouncement enqueues one task per recipient per channel, returning
-// how many actually landed.
+// how many landed and how many could not be queued. A task already queued
+// by an earlier attempt is neither: it was not lost.
 //
 // One task per message rather than one bulk task: each gets the queue's retry
 // and dead-lettering, and a single unreachable subscriber cannot fail the
 // broadcast for everyone else.
-func (h *Handler) fanOutAnnouncement(a *notifications.Announcement, recipients []int) int {
-	enqueued := 0
+func (h *Handler) fanOutAnnouncement(a *notifications.Announcement, recipients []int) (enqueued, failed int) {
 	for _, subscriberID := range recipients {
 		for _, channel := range a.Channels {
 			payload, err := json.Marshal(notifications.AnnouncementPayload{
@@ -226,13 +239,14 @@ func (h *Handler) fanOutAnnouncement(a *notifications.Announcement, recipients [
 				log.Error().Err(err).
 					Int("announcement_id", a.ID).Int("subscriber_id", subscriberID).
 					Str("channel", channel).Msg("api: announcement fan-out enqueue failed")
+				failed++
 				continue
 			}
 			enqueued++
 			notifications.AnnouncementRecipientsTotal.Inc()
 		}
 	}
-	return enqueued
+	return enqueued, failed
 }
 
 func (h *Handler) finishAnnouncement(ctx context.Context, id int, status string, count int) {
