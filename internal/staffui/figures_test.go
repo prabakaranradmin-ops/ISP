@@ -19,7 +19,9 @@ import (
 // The owner's Revenue screen and the Billing lookup: what they show when a
 // figure could not be read.
 //
-// FR-REV-003 (collections) and FR-BIL-001 (wallet and ledger). Both screens
+// FR-REV-002 (reconciliation variance) and FR-REV-003 (collections) on the
+// Revenue screen. The Billing lookup has no requirement of its own; the
+// wallet ledger it shows is FR-BIL-003's. Both screens
 // read several figures and, when one query failed, rendered its zero value
 // as though it had been read: "0 unbilled subscribers", "₹0.00 total wallet
 // balance", "Nobody is in arrears", a wallet balance of ₹0.00. The first
@@ -138,7 +140,7 @@ func TestFR_REV_003_TheRevenueFigures(t *testing.T) {
 
 // The variance threshold is the nightly alert's: within a paisa either way is
 // balanced.
-func TestFR_REV_003_TheVarianceThresholdMatchesTheAlert(t *testing.T) {
+func TestFR_REV_002_TheVarianceThresholdMatchesTheAlert(t *testing.T) {
 	for v, want := range map[string]string{
 		"0.01": "balanced", "-0.01": "balanced", "0.02": "investigate", "-5.00": "investigate",
 	} {
@@ -264,7 +266,7 @@ func serveBilling(h *Handler, s Session, query string) string {
 	return visibleText(w.Body.String())
 }
 
-func TestFR_BIL_001_TheBillingLookup(t *testing.T) {
+func TestTheBillingLookup(t *testing.T) {
 	f := &walletFigures{balance: d("349.00"), entries: []api.LedgerEntry{
 		{EntryType: "recharge", Description: "UPI top-up", Amount: "500.00", BalanceAfter: "849.00", CreatedAt: time.Now()},
 	}}
@@ -294,7 +296,7 @@ func TestFR_BIL_001_TheBillingLookup(t *testing.T) {
 
 // A balance that could not be read is not ₹0.00, and a ledger that could not
 // be read is not "no entries".
-func TestFR_BIL_001_ABillingFigureThatFailedIsNotShownAsZero(t *testing.T) {
+func TestABillingFigureThatFailedIsNotShownAsZero(t *testing.T) {
 	f := &walletFigures{balanceErr: errFigure, entries: []api.LedgerEntry{
 		{EntryType: "recharge", Description: "UPI top-up", Amount: "500.00", BalanceAfter: "500.00"},
 	}}

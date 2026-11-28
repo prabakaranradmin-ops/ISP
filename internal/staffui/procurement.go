@@ -150,7 +150,16 @@ func (h *Handler) DecidePurchaseOrderForm(w http.ResponseWriter, r *http.Request
 		h.renderProcurement(w, r, s, "", "", "Invalid purchase order id.")
 		return
 	}
-	approve := r.PostFormValue("decision") == "approve"
+	// The decision has to be one of the two. Anything but "approve" used to
+	// count as a rejection, including no decision at all, and a rejection
+	// cannot be undone — so a form posted without its select threw the order
+	// away.
+	decision := r.PostFormValue("decision")
+	if decision != "approve" && decision != "reject" {
+		h.renderProcurement(w, r, s, "", "", "Choose approve or reject.")
+		return
+	}
+	approve := decision == "approve"
 	reason := strings.TrimSpace(r.PostFormValue("reason"))
 	if !approve && reason == "" {
 		h.renderProcurement(w, r, s, "", "", "A reason is required to reject a purchase order.")
@@ -158,7 +167,13 @@ func (h *Handler) DecidePurchaseOrderForm(w http.ResponseWriter, r *http.Request
 	}
 
 	existing, err := h.procurement.GetPurchaseOrder(r.Context(), id)
-	if err != nil || existing == nil {
+	if err != nil {
+		// Not "not found": the order exists, the read failed.
+		log.Error().Err(err).Int("id", id).Msg("staffui: purchase order lookup failed")
+		h.renderProcurement(w, r, s, "", "", "Could not load that purchase order. Try again in a moment.")
+		return
+	}
+	if existing == nil {
 		h.renderProcurement(w, r, s, "", "", "Purchase order not found.")
 		return
 	}

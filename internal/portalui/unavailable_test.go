@@ -12,7 +12,7 @@ import (
 )
 
 // What a subscriber is told when the portal could not read something —
-// FR-POR-001 (dashboard: plan, balance, live usage).
+// FR-SUB-001 (live usage) and FR-SUB-002 (plan and balance).
 //
 // The dashboard discarded the session store's error, so a failed read told
 // the customer "No active session — you appear to be offline", on the page
@@ -42,7 +42,7 @@ func signedInGet(t *testing.T, mux *http.ServeMux, path string) *httptest.Respon
 	return rec
 }
 
-func TestFR_POR_001_ASessionReadThatFailedIsNotOffline(t *testing.T) {
+func TestFR_SUB_001_ASessionReadThatFailedIsNotOffline(t *testing.T) {
 	mux := newTestMux(t, stubSessionsFailing{}, &stubSessionHistory{})
 	for _, path := range []string{"/ui/dashboard", "/ui/dashboard/session"} {
 		rec := signedInGet(t, mux, path)
@@ -62,7 +62,7 @@ func TestFR_POR_001_ASessionReadThatFailedIsNotOffline(t *testing.T) {
 	}
 }
 
-func TestFR_POR_001_AnAccountLookupThatFailedIsNotNotFound(t *testing.T) {
+func TestFR_SUB_002_AnAccountLookupThatFailedIsNotNotFound(t *testing.T) {
 	deps := baseTestDeps()
 	mux := newTestMuxWithDeps(t, deps)
 	got := loginAndGetCookie(t, mux, "testuser", "testpass")
