@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/maaransoft/isp-bss-oss/internal/api"
@@ -97,7 +98,10 @@ func (h *Handler) renderDemo(w http.ResponseWriter, r *http.Request, s Session, 
 	status, err := h.demo.Status(r.Context())
 	if err != nil {
 		log.Error().Err(err).Msg("staffui: demo status failed")
-		d.Error = "Could not read demo data status."
+		// Keep a caller's more specific message rather than replacing it.
+		if d.Error == "" {
+			d.Error = "Could not read demo data status."
+		}
 		h.render(w, "demo", d)
 		return
 	}
@@ -194,6 +198,19 @@ func (h *Handler) LoadDemoData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// What actually happened, so the confirmation reports that rather than
+	// what was meant to happen. It used to claim a ticket, an invoice, a
+	// router and three activated statuses whatever became of them; only the
+	// invoice was checked. And a row that could not be flagged as demo data
+	// was logged and forgotten, although Remove deletes by that flag — so it
+	// stayed behind as real data, for a subscriber an active account with the
+	// walkthrough's published password.
+	var skipped []string
+	unflagged := 0
+	notActivated := 0
+	ticketMade, invoiceMade := false, false
+	invoiceReason := ""
+
 	planIDs := make(map[string]int, len(demoPlans))
 	for _, dp := range demoPlans {
 		created, err := h.catalogue.CreatePlan(ctx, Plan{
@@ -210,11 +227,11 @@ func (h *Handler) LoadDemoData(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := h.demo.MarkPlanDemo(ctx, created.ID); err != nil {
 			log.Error().Err(err).Int("plan_id", created.ID).Msg("staffui: mark demo plan failed")
+			unflagged++
 		}
 		planIDs[dp.name] = created.ID
 	}
 
-	invoiceSkipped := false
 	for _, ds := range demoSubscribers {
 		created, err := h.subscriberCreator.ProvisionSubscriber(ctx, api.CreateSubscriberRequest{
 			CAFNumber:       ds.caf,
@@ -227,11 +244,13 @@ func (h *Handler) LoadDemoData(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			log.Error().Err(err).Str("username", ds.username).Msg("staffui: demo subscriber creation failed")
-			h.renderDemo(w, r, s, "", "Could not create demo subscribers — check the server log.")
+			h.renderDemo(w, r, s, "", "Could not create demo subscribers — check the server log. "+
+				"What was created so far is flagged as demo data; Remove demo data clears it before you try again.")
 			return
 		}
 		if err := h.demo.MarkSubscriberDemo(ctx, created.ID); err != nil {
 			log.Error().Err(err).Int("subscriber_id", created.ID).Msg("staffui: mark demo subscriber failed")
+			unflagged++
 		}
 
 		// Status and expiry are set together, in one call, because migration
@@ -248,49 +267,87 @@ func (h *Handler) LoadDemoData(w http.ResponseWriter, r *http.Request) {
 			status = "active"
 		}
 		expiry := time.Now().AddDate(0, 0, ds.expiryDays)
-		if _, err := h.subscribers.UpdateSubscriber(ctx, created.ID, nil, &status, &expiry); err != nil {
+		if h.subscribers == nil {
+			notActivated++
+		} else if _, err := h.subscribers.UpdateSubscriber(ctx, created.ID, nil, &status, &expiry); err != nil {
 			log.Error().Err(err).Str("username", ds.username).Msg("staffui: demo subscriber activation failed")
+			notActivated++
 		}
 
 		if ds.withTicket && h.ticketCreator != nil {
 			if _, err := h.ticketCreator.CreateTicketAdmin(ctx, created.ID,
 				"connectivity", "Speed drops every evening around 8pm.", nil); err != nil {
 				log.Error().Err(err).Str("username", ds.username).Msg("staffui: demo ticket creation failed")
+			} else {
+				ticketMade = true
 			}
 		}
 
-		if ds.withInvoice && h.invoiceSeeder != nil {
-			if err := h.seedDemoInvoice(ctx, created.ID, ds.planName); err != nil {
+		if ds.withInvoice {
+			if h.invoiceSeeder == nil {
+				invoiceReason = "invoicing is not configured"
+			} else if err := h.seedDemoInvoice(ctx, created.ID, ds.planName); err != nil {
 				log.Warn().Err(err).Str("username", ds.username).Msg("staffui: demo invoice skipped")
-				invoiceSkipped = true
+				invoiceReason = "configure a GST rate under Catalogue first, then remove and reload"
+			} else {
+				invoiceMade = true
 			}
 		}
 	}
 
-	if h.nas != nil && h.secretEncryptor != nil {
+	routerMade := false
+	switch {
+	case h.nas == nil || h.secretEncryptor == nil:
+		skipped = append(skipped, "the sample router (router management is not configured)")
+	default:
 		encrypted, err := h.secretEncryptor.Encrypt(demoSecret)
 		if err != nil {
 			log.Error().Err(err).Msg("staffui: encrypt demo nas secret failed")
-		} else {
-			created, err := h.nas.CreateNASDevice(ctx, nas.NewNASDevice{
-				IP: demoNASIP, Vendor: "mikrotik", Description: "Demo router (sample data)",
-				SecretEncrypted: encrypted, KeyVersion: h.secretEncryptor.ActiveVersion(),
-				CoAPort: defaultControlPort, PoDPort: defaultControlPort,
-			})
-			if err != nil {
-				log.Error().Err(err).Msg("staffui: demo nas creation failed")
-			} else if err := h.demo.MarkNASDemo(ctx, created.ID); err != nil {
-				log.Error().Err(err).Int("nas_id", created.ID).Msg("staffui: mark demo nas failed")
-			}
+			break
 		}
+		created, err := h.nas.CreateNASDevice(ctx, nas.NewNASDevice{
+			IP: demoNASIP, Vendor: "mikrotik", Description: "Demo router (sample data)",
+			SecretEncrypted: encrypted, KeyVersion: h.secretEncryptor.ActiveVersion(),
+			CoAPort: defaultControlPort, PoDPort: defaultControlPort,
+		})
+		if err != nil {
+			log.Error().Err(err).Msg("staffui: demo nas creation failed")
+			break
+		}
+		routerMade = true
+		if err := h.demo.MarkNASDemo(ctx, created.ID); err != nil {
+			log.Error().Err(err).Int("nas_id", created.ID).Msg("staffui: mark demo nas failed")
+			unflagged++
+		}
+	}
+	if !routerMade && (h.nas != nil && h.secretEncryptor != nil) {
+		skipped = append(skipped, "the sample router (see the server log)")
+	}
+	if !ticketMade {
+		skipped = append(skipped, "the support ticket")
+	}
+	if !invoiceMade {
+		if invoiceReason == "" {
+			invoiceReason = "see the server log"
+		}
+		skipped = append(skipped, "the sample invoice ("+invoiceReason+")")
+	}
+	if notActivated > 0 {
+		skipped = append(skipped, fmt.Sprintf(
+			"activating %d of the subscribers, who are still pending payment", notActivated))
 	}
 
 	msg := "Demo data loaded: 2 plans, 5 subscribers (active, soft-suspended, hard-suspended), " +
 		"1 support ticket, 1 invoice and 1 sample router."
-	if invoiceSkipped {
-		msg = "Demo data loaded, except the sample invoice — configure a GST rate under Catalogue first, then remove and reload."
+	if len(skipped) > 0 {
+		msg = "Demo data loaded, except " + strings.Join(skipped, "; ") + "."
 	}
-	h.renderDemo(w, r, s, msg, "")
+	errMsg := ""
+	if unflagged > 0 {
+		errMsg = fmt.Sprintf("%d of the rows just created could not be marked as demo data, so "+
+			"Remove demo data will not delete them. Check the server log and remove them by hand.", unflagged)
+	}
+	h.renderDemo(w, r, s, msg, errMsg)
 }
 
 // seedDemoInvoice raises one real GST-calculated invoice for a demo
