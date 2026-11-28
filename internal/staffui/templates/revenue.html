@@ -1,27 +1,40 @@
 {{define "content"}}
 {{$d := .Data}}
+{{$na := $d.Unavailable}}
 <h1>Revenue</h1>
+{{if $d.Loaded}}
 <div class="grid3">
-  <div class="card"><h3>Unbilled active subscribers</h3><p class="big num">{{$d.Unbilled}}</p>
+  <div class="card"><h3>Unbilled active subscribers</h3>
+    {{if index $na "unbilled"}}<p class="big muted">unavailable</p>
+    {{else}}<p class="big num">{{$d.Unbilled}}</p>{{end}}
     <p class="muted">Active accounts with no invoice this period.</p></div>
   <div class="card"><h3>Ledger variance</h3>
+    {{if index $na "variance"}}<p class="big muted">unavailable</p>
+    {{else}}
     <p class="big num">₹{{money $d.Variance}}</p>
     <p>{{if $d.VarianceOK}}<span class="pill ok">balanced</span>{{else}}<span class="pill bad">investigate</span>{{end}}
-       <span class="muted">alert threshold ₹0.01</span></p></div>
-  <div class="card"><h3>Total wallet balance</h3><p class="big num">₹{{money $d.TotalBalance}}</p>
-    <p class="muted">Across {{$d.Subscribers}} subscribers.</p></div>
+       <span class="muted">alert threshold ₹0.01</span></p>
+    {{end}}</div>
+  <div class="card"><h3>Total wallet balance</h3>
+    {{if index $na "balance"}}<p class="big muted">unavailable</p>
+    {{else}}<p class="big num">₹{{money $d.TotalBalance}}</p>{{end}}
+    <p class="muted">{{if index $na "subscribers"}}Subscriber count unavailable.{{else}}Across {{$d.Subscribers}} subscribers.{{end}}</p></div>
 </div>
 <p class="muted">These are read live. The same figures are written to a snapshot nightly at 02:00 IST.</p>
 
 <h2>Collections</h2>
 <div class="grid3">
   <div class="card"><h3>Outstanding</h3>
-    <p class="big num">&#8377;{{money $d.TotalOutstanding}}</p>
+    {{if index $na "collections"}}<p class="big muted">unavailable</p>
+    {{else}}<p class="big num">&#8377;{{money $d.TotalOutstanding}}</p>{{end}}
     <p class="muted">Renewal value of every lapsed subscriber.</p></div>
   <div class="card"><h3>Service stopped</h3>
-    <p class="big num">{{$d.AtRiskCount}}</p>
+    {{if index $na "collections"}}<p class="big muted">unavailable</p>
+    {{else}}<p class="big num">{{$d.AtRiskCount}}</p>{{end}}
     <p class="muted">Subscribers suspended, soft or hard.</p></div>
   <div class="card"><h3>Collected this month</h3>
+    {{if index $na "recovery"}}<p class="big muted">unavailable</p>
+    {{else}}
     <p class="big num">&#8377;{{money $d.ThisMonth}}</p>
     <p>
       {{if $d.RecoveryComparable}}
@@ -34,7 +47,8 @@
       {{else}}
         <span class="muted">no prior month to compare against</span>
       {{end}}
-    </p></div>
+    </p>
+    {{end}}</div>
 </div>
 
 <div class="card">
@@ -50,7 +64,7 @@
         <td class="num right">&#8377;{{money .Outstanding}}</td>
       </tr>
     {{else}}
-      <tr><td colspan="4" class="empty">Nobody is in arrears.</td></tr>
+      <tr><td colspan="4" class="empty">{{if index $na "collections"}}Could not load collections by stage.{{else}}Nobody is in arrears.{{end}}</td></tr>
     {{end}}
     </tbody>
   </table>
@@ -61,4 +75,5 @@
     staff-issued credits are excluded.
   </p>
 </div>
+{{end}}
 {{end}}

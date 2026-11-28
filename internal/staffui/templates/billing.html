@@ -20,7 +20,9 @@
   </p>
 </div>
 {{if $d.Looked}}
-<div class="card"><h3>Wallet balance</h3><p class="big">₹{{money $d.Balance}}</p></div>
+<div class="card"><h3>Wallet balance</h3>
+  {{if $d.BalanceUnavailable}}<p class="big muted">unavailable</p>
+  {{else}}<p class="big">₹{{money $d.Balance}}</p>{{end}}</div>
 <div class="card"><h3>Ledger</h3>
   <table>
     <thead><tr><th>When</th><th>Type</th><th>Description</th><th class="right">Amount</th><th class="right">Balance after</th></tr></thead>
@@ -28,7 +30,7 @@
     {{range $d.Ledger}}
       <tr><td>{{datetime .CreatedAt}}</td><td>{{.EntryType}}</td><td>{{.Description}}</td>
           <td class="right num">₹{{.Amount}}</td><td class="right num">₹{{.BalanceAfter}}</td></tr>
-    {{else}}<tr><td colspan="5" class="empty">No ledger entries for this subscriber.</td></tr>{{end}}
+    {{else}}<tr><td colspan="5" class="empty">{{if $d.LedgerUnavailable}}Could not load the ledger.{{else}}No ledger entries for this subscriber.{{end}}</td></tr>{{end}}
     </tbody>
   </table>
 </div>

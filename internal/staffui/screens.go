@@ -561,6 +561,10 @@ type billingData struct {
 	Balance      decimal.Decimal
 	Ledger       []api.LedgerEntry
 	Looked       bool
+	// BalanceUnavailable and LedgerUnavailable mark a read that failed, so
+	// neither is shown as ₹0.00 or "no entries".
+	BalanceUnavailable bool
+	LedgerUnavailable  bool
 }
 
 // Billing shows a subscriber's wallet ledger.
@@ -591,17 +595,26 @@ func (h *Handler) Billing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A read that fails is marked, not left at its zero value: a CSR reading
+	// "₹0.00" to a caller, or "no ledger entries" under an error banner, is
+	// telling them something nobody measured.
 	bd := billingData{SubscriberID: id, Looked: true}
+	var problems []string
 	if bal, err := h.billing.GetSubscriberBalance(r.Context(), id); err == nil {
 		bd.Balance = bal
 	} else {
 		log.Warn().Err(err).Int("id", id).Msg("staffui: balance unavailable")
+		bd.BalanceUnavailable = true
+		problems = append(problems, "Could not load the wallet balance.")
 	}
 	if entries, err := h.billing.ListLedgerEntries(r.Context(), id, nil, nil, 50); err == nil {
 		bd.Ledger = entries
 	} else {
-		d.Error = "Could not load the ledger for that subscriber."
+		log.Warn().Err(err).Int("id", id).Msg("staffui: ledger unavailable")
+		bd.LedgerUnavailable = true
+		problems = append(problems, "Could not load the ledger for that subscriber.")
 	}
+	d.Error = strings.Join(problems, " ")
 
 	d.Data = bd
 	h.render(w, "billing", d)
@@ -888,6 +901,13 @@ func (h *Handler) enqueueTicketUpdate(ctx context.Context, ticket api.TicketReco
 // ── Revenue (isp_owner) ─────────────────────────────────────────────────────
 
 type revenueData struct {
+	// Loaded is false when revenue reporting is not configured, so the page
+	// shows its banner and no figures rather than a screen of zeros.
+	Loaded bool
+	// Unavailable names the figures whose query failed: "unbilled",
+	// "variance", "balance", "subscribers", "collections", "recovery".
+	Unavailable map[string]bool
+
 	Unbilled     int
 	Variance     decimal.Decimal
 	TotalBalance decimal.Decimal
@@ -921,20 +941,36 @@ func (h *Handler) Revenue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rd := revenueData{}
-	if n, err := h.revenue.GetUnbilledActiveSubscribers(r.Context()); err == nil {
+	// Each figure that cannot be read is marked unavailable rather than left
+	// at its zero value. They used to be left at zero, and not logged: a
+	// failed query read as "0 unbilled subscribers", a ₹0.00 total balance,
+	// "Nobody is in arrears" — the good-news reading of a failure, on the
+	// screen an owner acts on without a second look.
+	rd := revenueData{Loaded: true, Unavailable: map[string]bool{}}
+	var failed []string
+	missing := func(key, label string, err error) bool {
+		if err == nil {
+			return false
+		}
+		log.Error().Err(err).Str("figure", key).Msg("staffui: revenue figure failed")
+		rd.Unavailable[key] = true
+		failed = append(failed, label)
+		return true
+	}
+
+	if n, err := h.revenue.GetUnbilledActiveSubscribers(r.Context()); !missing("unbilled", "unbilled subscribers", err) {
 		rd.Unbilled = n
 	}
-	if v, err := h.revenue.GetLedgerVariance(r.Context()); err == nil {
+	if v, err := h.revenue.GetLedgerVariance(r.Context()); !missing("variance", "ledger variance", err) {
 		rd.Variance = v
 		// Same threshold the nightly reconciliation alerts on, so the screen
 		// and the alert cannot disagree about what "balanced" means.
 		rd.VarianceOK = v.Abs().LessThanOrEqual(decimal.NewFromFloat(0.01))
 	}
-	if b, err := h.revenue.GetTotalWalletBalance(r.Context()); err == nil {
+	if b, err := h.revenue.GetTotalWalletBalance(r.Context()); !missing("balance", "total wallet balance", err) {
 		rd.TotalBalance = b
 	}
-	if rows, err := h.revenue.ListSubscribers(r.Context(), nil); err == nil {
+	if rows, err := h.revenue.ListSubscribers(r.Context(), nil); !missing("subscribers", "subscriber count", err) {
 		rd.Subscribers = len(rows)
 	}
 
@@ -942,9 +978,7 @@ func (h *Handler) Revenue(w http.ResponseWriter, r *http.Request) {
 	// than the page: the reconciliation figures above are what the screen
 	// has always been for, and losing them because a collections query
 	// failed would be the worse trade.
-	if stages, err := h.revenue.GetCollectionsByDunningStage(r.Context()); err != nil {
-		log.Error().Err(err).Msg("staffui: collections by stage failed")
-	} else {
+	if stages, err := h.revenue.GetCollectionsByDunningStage(r.Context()); !missing("collections", "collections by stage", err) {
 		rd.Stages = stages
 		for _, st := range stages {
 			rd.TotalOutstanding = rd.TotalOutstanding.Add(st.Outstanding)
@@ -953,9 +987,7 @@ func (h *Handler) Revenue(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if recovery, err := h.revenue.GetMonthlyRecovery(r.Context(), 2); err != nil {
-		log.Error().Err(err).Msg("staffui: monthly recovery failed")
-	} else {
+	if recovery, err := h.revenue.GetMonthlyRecovery(r.Context(), 2); !missing("recovery", "monthly collections", err) {
 		// Ordered most recent first by the query. A month with no
 		// collections produces no row at all rather than a zero one, so
 		// the slice can be shorter than asked for - indexing it blindly
@@ -969,6 +1001,10 @@ func (h *Handler) Revenue(w http.ResponseWriter, r *http.Request) {
 		rd.RecoveryPct, rd.RecoveryComparable = revenue.RecoveryRate(rd.ThisMonth, rd.LastMonth)
 	}
 
+	if len(failed) > 0 {
+		d.Error = "Some figures could not be loaded and are marked unavailable: " +
+			strings.Join(failed, ", ") + "."
+	}
 	d.Data = rd
 	h.render(w, "revenue", d)
 }
