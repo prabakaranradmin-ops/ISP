@@ -1180,6 +1180,9 @@ func (h *Handler) UpdateSubscriber(w http.ResponseWriter, r *http.Request) {
 	// that never happened.
 	if body.Status != nil {
 		h.emit(r.Context(), partner.EventSubscriberStatusChanged, id)
+		// A status RADIUS refuses ends the session already up, not just
+		// the next login. See cutOffIfNoLongerAuthorised.
+		h.cutOffIfNoLongerAuthorised(r.Context(), updated)
 	}
 	writeJSON(w, http.StatusOK, updated)
 }

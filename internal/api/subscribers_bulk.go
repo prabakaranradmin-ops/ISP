@@ -158,6 +158,9 @@ func (h *Handler) UpdateStatusForMany(ctx context.Context, ids []int, status str
 		}
 		middleware.Audit(ctx, "subscriber.update", strconv.Itoa(id), map[string]any{"status": status})
 		h.emit(ctx, partner.EventSubscriberStatusChanged, id)
+		// A suspension the router would refuse at login ends the session
+		// already up, as PATCH does. See cutOffIfNoLongerAuthorised.
+		h.cutOffIfNoLongerAuthorised(ctx, updated)
 		results = append(results, BulkResult{SubscriberID: id, OK: true})
 	}
 	return results

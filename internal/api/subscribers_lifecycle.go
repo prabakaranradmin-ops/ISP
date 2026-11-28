@@ -17,6 +17,7 @@ import (
 	"github.com/maaransoft/isp-bss-oss/internal/billing"
 	"github.com/maaransoft/isp-bss-oss/internal/fup"
 	"github.com/maaransoft/isp-bss-oss/internal/middleware"
+	"github.com/maaransoft/isp-bss-oss/internal/radius"
 	"github.com/maaransoft/isp-bss-oss/internal/workflow"
 )
 
@@ -394,6 +395,27 @@ func enqueueCoAIfSessionActive(ctx context.Context, h *Handler, subscriberID int
 	if _, err := h.tasks.Enqueue(task); err != nil {
 		log.Error().Err(err).Int("subscriber_id", subscriberID).Msg("api: enqueue CoA task failed")
 	}
+}
+
+// cutOffIfNoLongerAuthorised ends a subscriber's live session after a status
+// change that RADIUS would refuse on their next login.
+//
+// PATCH /subscribers/{id} and the console's bulk "Suspend" set such a status
+// and, until 2026-11-28, left the login already in progress alone: a
+// subscriber hard-suspended by hand kept full service until the line dropped,
+// which on always-on PPPoE can be weeks. The same allowlist RADIUS uses
+// decides, so the two cannot disagree about who is cut off — soft suspension
+// and grace leave the session up, as they do at login.
+//
+// The cache invalidation reaches the shared verifier tier only; radiusd's own
+// one-minute cache holds nobody who has not authenticated in the last minute,
+// so a session that has been up for days reconnects against the new status.
+func (h *Handler) cutOffIfNoLongerAuthorised(ctx context.Context, sub *SubscriberRecord) {
+	if sub == nil || radius.AuthorisesService(sub.Status) {
+		return
+	}
+	h.invalidateSubscriberCache(ctx, sub.Username)
+	enqueuePoDIfSessionActive(ctx, h, sub.ID)
 }
 
 // enqueuePoDIfSessionActive mirrors DisconnectSession's PoD-enqueue pattern,
